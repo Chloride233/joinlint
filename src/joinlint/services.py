@@ -20,6 +20,7 @@ from joinlint.contracts import Envelope, canonical_json
 from joinlint.model import load_model, model_digest
 from joinlint.scanner import ScanCatalog, scan_snapshot
 from joinlint.snapshots import snapshot_source
+from joinlint.validation import ValidationResult, validate_relationship
 
 
 SCANNER_VERSION = "0.1.0"
@@ -100,6 +101,38 @@ def accept_candidate_by_id(project: Path, candidate_id: str) -> Envelope:
     return Envelope(command="accept", status="ok", data={"candidate_id": candidate_id})
 
 
+def validate_project(project: Path) -> Envelope:
+    model = load_model(project)
+    relationships_by_source: dict[str, list[object]] = {}
+    for relationship in model.relationships:
+        from_entity = model.entities[relationship.from_.split(".", maxsplit=1)[0]]
+        to_entity = model.entities[relationship.to.split(".", maxsplit=1)[0]]
+        if from_entity.source != to_entity.source:
+            raise JoinLintError(
+                "RELATIONSHIP_CROSS_SOURCE_UNSUPPORTED",
+                "cross-source relationship validation is not available",
+                2,
+            )
+        relationships_by_source.setdefault(from_entity.source, []).append(relationship)
+
+    results: list[ValidationResult] = []
+    for source_id in sorted(relationships_by_source, key=lambda value: value.encode("utf-8")):
+        with snapshot_source(project, source_id) as snapshot:
+            catalog = scan_snapshot(snapshot)
+            results.extend(
+                validate_relationship(relationship, snapshot, catalog)
+                for relationship in relationships_by_source[source_id]
+            )
+    findings = [finding for result in results for finding in result.findings]
+    findings.sort(key=lambda finding: finding.code.encode("utf-8"))
+    return Envelope(
+        command="validate",
+        status="findings" if findings else "ok",
+        data={"relationships": [_validation_document(result) for result in results]},
+        findings=findings,
+    )
+
+
 def _candidate_by_id(project: Path, candidate_id: str, *, include_rejected: bool) -> RelationshipCandidate:
     candidates = _fresh_candidates(project, include_rejected=include_rejected)
     for candidate in candidates:
@@ -131,6 +164,16 @@ def _catalog_document(catalog: ScanCatalog) -> dict[str, object]:
 
 def _candidate_document(candidate: RelationshipCandidate) -> dict[str, object]:
     return asdict(candidate)
+
+
+def _validation_document(result: ValidationResult) -> dict[str, object]:
+    return {
+        "relationship_id": result.relationship_id,
+        "observed_cardinality": result.observed_cardinality,
+        "from_rows_per_to": result.from_rows_per_to,
+        "to_rows_per_from": result.to_rows_per_from,
+        "findings": [finding.model_dump() for finding in result.findings],
+    }
 
 
 def _json_bytes(document: object) -> bytes:

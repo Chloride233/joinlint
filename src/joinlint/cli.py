@@ -12,7 +12,13 @@ from joinlint.contracts import Envelope, envelope_for
 from joinlint.errors import JoinLintError
 from joinlint.model import ModelV1
 from joinlint.paths import SafeProject
-from joinlint.services import accept_candidate_by_id, list_candidates, reject_candidate_by_id, scan_project
+from joinlint.services import (
+    accept_candidate_by_id,
+    list_candidates,
+    reject_candidate_by_id,
+    scan_project,
+    validate_project,
+)
 
 
 app = typer.Typer(no_args_is_help=True)
@@ -35,7 +41,10 @@ def _emit(envelope: Envelope, *, json_output: bool) -> None:
         typer.echo(body)
     else:
         typer.echo(f"{envelope.status}: {envelope.command}")
-    exit_code = 0 if envelope.status in {"ok", "findings"} else 3 if envelope.status == "inconclusive" else 2
+    if envelope.status == "findings":
+        exit_code = 1 if any(finding.severity == "blocking" for finding in envelope.findings) else 0
+    else:
+        exit_code = 0 if envelope.status == "ok" else 3 if envelope.status == "inconclusive" else 2
     raise typer.Exit(exit_code)
 
 
@@ -160,6 +169,18 @@ def reject(
         _emit(reject_candidate_by_id(project, candidate_id), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("reject", error, json_output=json_output)
+
+
+@app.command()
+def validate(
+    project: Path = typer.Option(Path.cwd(), "--project"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Validate all confirmed single-source relationships against current data."""
+    try:
+        _emit(validate_project(project), json_output=json_output)
+    except JoinLintError as error:
+        _emit_service_error("validate", error, json_output=json_output)
 
 
 @source_app.command("add")

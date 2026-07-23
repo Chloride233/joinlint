@@ -99,3 +99,50 @@ def test_candidates_and_reject_commands_require_fresh_evidence(tmp_path: Path) -
     stale = runner.invoke(app, ["candidates", "--project", str(project), "--json"])
     assert stale.exit_code == 3
     assert json.loads(stale.output)["error"]["code"] == "EVIDENCE_STALE"
+
+
+def test_validate_reports_blocking_drift_with_exit_one(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    data = project / "data"
+    data.mkdir()
+    (data / "parents.csv").write_text("id\na\nb\n", encoding="utf-8")
+    (data / "children.csv").write_text("id,parent_id\n1,a\n2,a\n", encoding="utf-8")
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["source", "add", "sales", "data", "--project", str(project)]).exit_code == 0
+    (project / ".joinlint" / "model.yaml").write_text(
+        """version: 1
+entities:
+  children:
+    source: sales
+    object: children.csv
+    grain:
+      keys: [id]
+      status: confirmed
+  parents:
+    source: sales
+    object: parents.csv
+    grain:
+      keys: [id]
+      status: confirmed
+relationships:
+  - id: child_to_parent
+    from: children.parent_id
+    to: parents.id
+    cardinality: many_to_one
+    status: confirmed
+""",
+        encoding="utf-8",
+    )
+
+    valid = runner.invoke(app, ["validate", "--project", str(project), "--json"])
+    with (data / "parents.csv").open("a", encoding="utf-8") as source:
+        source.write("a\n")
+    drifted = runner.invoke(app, ["validate", "--project", str(project), "--json"])
+
+    assert valid.exit_code == 0, valid.output
+    assert json.loads(valid.output)["status"] == "findings"
+    assert drifted.exit_code == 1
+    assert "CARDINALITY_DRIFT" in {
+        finding["code"] for finding in json.loads(drifted.output)["findings"]
+    }
