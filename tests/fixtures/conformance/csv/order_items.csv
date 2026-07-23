@@ -1,0 +1,4 @@
+order_item_id,order_id,sku
+100,10,a
+101,10,b
+102,12,a

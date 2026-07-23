@@ -1,0 +1,4 @@
+payment_id,order_id,amount
+200,10,20.5
+201,11,10.0
+202,13,7
