@@ -10,7 +10,7 @@
 ## 1. Summary
 
 JoinLint v0 is a local, Git-native data relationship linter for developers and
-the coding or data agents they already use. It scans CSV, Parquet, DuckDB, and
+the coding or data agents they already use. It scans local CSV directories and
 SQLite sources; records deterministic evidence about schemas, candidate keys,
 cardinality, referential coverage, and row multiplication; proposes relationship
 candidates without trusting them automatically; and preserves human-confirmed
@@ -56,7 +56,7 @@ with an unfamiliar multi-table dataset.
 
 Primary jobs:
 
-1. Inspect a new CSV, Parquet, or DuckDB data project.
+1. Inspect a new CSV directory or SQLite database.
 2. Discover relationship candidates with inspectable evidence.
 3. Confirm or reject those candidates without losing decisions on rescan.
 4. Validate a proposed join before writing application or analytical SQL.
@@ -128,8 +128,10 @@ or silently remove a confirmed decision.
 ### Included
 
 - Python 3.12+ command-line application.
-- Local CSV and Parquet directories.
-- Local DuckDB and SQLite files in read-only mode.
+- macOS and Linux support; Windows is deferred until an equivalent safe-path
+  adapter exists.
+- Local CSV directories.
+- Local SQLite files through a consistent read-only snapshot.
 - Deterministic schema and column profiling.
 - Candidate single-column key discovery.
 - Candidate single-column relationship discovery.
@@ -151,7 +153,7 @@ or silently remove a confirmed decision.
 - Standalone chat interface or autonomous Agent loop.
 - Interactive relationship graph editor.
 - Chart or dashboard generation.
-- PostgreSQL, MySQL, BigQuery, Snowflake, or remote warehouses.
+- Parquet, DuckDB, PostgreSQL, MySQL, BigQuery, Snowflake, or remote warehouses.
 - Metric definitions or a general semantic-layer framework.
 - Composite-key inference or arbitrary relationship expressions.
 - Arbitrary SQL generation or execution through MCP.
@@ -165,7 +167,7 @@ or silently remove a confirmed decision.
 ## 7. Architecture
 
 ```text
-CSV / Parquet / DuckDB / SQLite
+CSV directory / SQLite
         |
         v
 Source boundary and deterministic scanner
@@ -195,18 +197,43 @@ the first code layout combines very small modules.
 
 Loads source registration from `config.yaml`, resolves project-relative paths,
 identifies supported formats, and prevents access outside approved roots. It
-owns no semantic logic and never edits configuration during a scan.
+owns no semantic logic and never edits configuration during a scan. On macOS
+and Linux it opens paths component-by-component relative to an anchored project
+directory descriptor using no-follow semantics, verifies the opened object with
+`fstat`, and fails closed when the platform cannot provide those guarantees.
 
 #### Scanner
 
-Reads source metadata and computes exact observed facts. It is deterministic
-and does not call an LLM. Every generated record includes the source
-fingerprint, scanner version, policy version, and timestamp. A v0 fingerprint
-uses SHA-256 over canonical source bytes: a single file hashes its bytes; a
-directory hashes the sorted POSIX-relative file paths and each supported file's
-SHA-256. Generated evidence identifiers additionally include the scanner and
-policy versions. Directory order, timestamps, and absolute paths do not affect
-the digest.
+Reads a consistent local snapshot and computes exact observed facts. It is
+deterministic and does not call an LLM. Every generated record includes the
+source fingerprint, canonical model digest, scanner version, policy version,
+and timestamp.
+
+For a CSV directory, the scanner opens the project root and every path component
+descriptor-relatively with no-follow semantics, copies each supported regular
+file into a private temporary snapshot while hashing the copied bytes, and
+rescans directory membership and opened-file identity afterward. Any membership,
+device, inode, size, or modification-time change returns
+`SOURCE_CHANGED_DURING_SCAN`; evidence is computed only from the snapshots.
+
+For SQLite, the scanner opens the source read-only through the same safe path
+boundary and uses SQLite's online backup API inside a read transaction to create
+a private temporary snapshot that includes committed WAL state. The scanner
+hashes and reads only the backup. An active or failed backup is inconclusive and
+never yields passing evidence.
+
+The version-1 source fingerprint is SHA-256 over a framed binary manifest:
+ASCII `joinlint-source-v1`, followed for every POSIX-bytewise-sorted object by
+an unsigned 64-bit big-endian path length, UTF-8 relative-path bytes, unsigned
+64-bit big-endian snapshot size, and the 32 raw SHA-256 bytes of its snapshot.
+SQLite uses the fixed relative object name from `config.yaml` and the same frame.
+Timestamps and absolute paths are excluded. Generated evidence identifiers also
+include scanner and policy versions.
+
+The canonical model digest is SHA-256 over schema-validated `model.yaml`
+serialized as UTF-8 RFC 8785 JSON. Relationship evidence additionally records a
+digest of its canonical relationship object. Evidence is valid only for exactly
+matching source, model, relationship, scanner, and policy digests.
 
 #### Candidate engine
 
@@ -266,6 +293,7 @@ The user's project receives:
 |   `-- rejections.json
 |-- analyses/                  # reserved for later sanitized artifacts
 `-- generated/                 # reproducible cache, ignored by Git
+    |-- manifest.json
     |-- catalog.json
     |-- relationship-candidates.json
     |-- profile.json
@@ -275,8 +303,8 @@ The user's project receives:
 Rules:
 
 - `config.yaml` contains source identifiers, kinds, project-relative paths,
-  limits, and policy selection. `joinlint source add` is the only v0 command
-  that edits it.
+  limits, and policy selection. Only `joinlint source add`, `source set`, and
+  `source remove` edit it.
 - `model.yaml` contains only explicit confirmed semantics that refer to source
   identifiers from `config.yaml`.
 - `baseline.json` contains a schema version, source fingerprints, normalized
@@ -284,8 +312,9 @@ Rules:
   cardinality results. It contains no raw values, samples, credentials, or
   absolute paths. Updating it is an explicit user action after exact validation.
 - `state/rejections.json` is local durable user state, not a reproducible cache.
-  A rejection key hashes the candidate policy version, endpoints, types, and
-  confidence band. It is invalidated when any of those inputs changes.
+  A rejection key hashes the candidate policy version, endpoints, types,
+  relevant source fingerprints, and canonical exact-evidence digest. It is
+  invalidated when any input or evidence changes.
 - Generated files record fingerprints, scanner version, policy version, and
   timestamp.
 - Generated evidence never overwrites confirmed semantics.
@@ -298,6 +327,10 @@ Rules:
 - Scan output, including `report.html`, is written to a sibling temporary
   directory and atomically replaces `generated/` only after every artifact is
   complete.
+- `manifest.json` proves that every registered source participated in the same
+  completed scan transaction and records all source, model, relationship,
+  scanner, and policy digests. Reports and MCP reject incomplete or mismatched
+  manifests.
 
 ## 9. Confirmed model shape
 
@@ -310,8 +343,15 @@ from human-confirmed semantics.
 version: 1
 sources:
   sales:
-    kind: directory
+    kind: csv_directory
     path: data
+    limits:
+      max_source_bytes: 1073741824
+      max_scan_seconds: 60
+
+  warehouse:
+    kind: sqlite
+    path: data/app.sqlite
     limits:
       max_source_bytes: 1073741824
       max_scan_seconds: 60
@@ -376,13 +416,34 @@ Validates and atomically registers one supported project-relative source in
 `config.yaml`. It rejects duplicate identifiers, paths outside the project root,
 symlinks, unsupported formats, and configuration races.
 
-### `joinlint scan [source-id]`
+### `joinlint source set <source-id> <path>`
 
-Exactly scans all registered sources by default or one registered source and
-writes generated catalog, profile, candidate, and report artifacts. It never
-edits `config.yaml`, `model.yaml`, or `baseline.json` and does not confirm
-relationships. If exact scanning exceeds a configured limit, the command fails
-as inconclusive and preserves the previous generated transaction.
+Atomically replaces the path for an existing source after safe-path and format
+validation. It preserves the source identifier, invalidates generated evidence
+and local rejections involving that source, and makes the tracked baseline stale
+until a successful scan, validation, and explicit baseline update. Confirmed
+semantics remain visible but cannot pass validation while stale.
+
+### `joinlint source remove <source-id>`
+
+Removes a source only when no entity in `model.yaml` refers to it. Otherwise it
+fails with `SOURCE_IN_USE` and lists bounded dependent identifiers. Successful
+removal atomically updates configuration and invalidates generated state, local
+rejections, and the baseline. Renaming source identifiers is not supported in
+v0; users add a new identifier, update confirmed references explicitly, validate,
+then remove the old identifier. Direct edits to `config.yaml` are supported but
+must pass the same referential, path, and stale-state validation on the next
+command.
+
+### `joinlint scan`
+
+Exactly scans every registered source into one consistent generated transaction
+and writes manifest, catalog, profile, candidate, and report artifacts. Partial
+or single-source scans are not supported in v0. The command never edits
+`config.yaml`, `model.yaml`, or `baseline.json` and does not confirm
+relationships. If exact scanning exceeds a configured limit or any source
+changes during snapshot creation, the command fails as inconclusive and
+preserves the previous generated transaction.
 
 ### `joinlint candidates`
 
@@ -422,7 +483,10 @@ never run implicitly by `scan`, `validate`, `check`, or MCP.
 
 ### `joinlint report`
 
-Regenerates the static HTML report from current artifacts.
+Regenerates the static HTML report only from a complete generated manifest whose
+source, model, scanner, and policy digests match current state. Otherwise it
+returns `EVIDENCE_STALE`. It writes the report atomically without changing other
+generated artifacts.
 
 ### `joinlint serve-mcp`
 
@@ -430,10 +494,13 @@ Starts the local STDIO MCP server bound to the current trusted project.
 
 ### Exit codes
 
-- `0`: command completed and no configured blocking finding exists;
-- `1`: validation or drift finding should fail CI;
-- `2`: invalid arguments, malformed configuration, unsupported input, or
-  internal processing error.
+- `0`: `ok`, or `findings` containing warnings only;
+- `1`: `findings` containing at least one configured blocking finding;
+- `2`: user-correctable `error`, including invalid arguments, malformed
+  configuration, unsupported input, or referential conflicts;
+- `3`: `inconclusive`, including resource limits, source mutation,
+  `BASELINE_MISSING`, `EVIDENCE_STALE`, or `OUTPUT_LIMIT_EXCEEDED`;
+- `4`: unexpected internal `error`.
 
 Findings also have stable machine-readable codes so CI does not parse prose.
 
@@ -443,9 +510,11 @@ All commands accept `--project <path>`. Without it, commands other than `init`
 walk from the resolved current directory upward and select the nearest directory
 containing `.joinlint/config.yaml`; absence is an error. `init` uses the resolved
 current directory unless `--project` is provided. The resolved project root and
-approved source paths are immutable for a process lifetime. v0 rejects any
-source path containing a symlink. Every file open repeats canonical containment
-checks to prevent path replacement after startup.
+approved source paths are immutable for a process lifetime. v0 rejects symlinks
+and opens every component descriptor-relatively from an anchored project
+directory descriptor with no-follow flags, then verifies the opened device,
+inode, type, and containment before reading. Platforms without equivalent
+guarantees fail closed and are unsupported in v0.
 
 ### Machine-readable output
 
@@ -463,11 +532,16 @@ to stderr. The versioned envelope is:
 }
 ```
 
-`status` is `ok`, `findings`, `inconclusive`, or `error`. Every finding and error
-has a stable code, severity, bounded message, and source identifier without an
-absolute path. JSON commands never truncate correctness-critical findings; they
-fail with `OUTPUT_LIMIT_EXCEEDED` if the configured 1 MiB output limit would be
-exceeded.
+`status` is `ok`, `findings`, `inconclusive`, or `error`. For `ok`, `error` is
+null and `findings` is empty. For `findings`, `error` is null and `findings` is a
+non-empty stable-ID-sorted array. For `inconclusive` or `error`, `error` is a
+non-null object and `data` is null; completed non-authoritative findings may be
+included but cannot contain `PASS`. Every finding and error has a stable code,
+severity enum (`info`, `warning`, `blocking`), bounded message, and source
+identifier without an absolute path. JSON object fields and enum values are
+schema-versioned; identifiers sort by UTF-8 byte order. JSON commands never
+truncate correctness-critical findings and return `OUTPUT_LIMIT_EXCEEDED` with
+exit 3 if the 1 MiB output limit would be exceeded.
 
 ## 11. MCP contract
 
@@ -489,13 +563,15 @@ changes. It never invents an unconfirmed edge.
 ### `validate_join`
 
 Accepts confirmed relationship identifiers or a path returned by
-`find_join_path`. MCP never scans sources or writes cache state. Before returning
-validation evidence, it recomputes the canonical source SHA-256 fingerprints and
-requires an exact generated profile with matching fingerprints, scanner
-version, and policy version. Missing or stale evidence returns
-`EVIDENCE_STALE` with the instruction to run CLI `joinlint scan`. Otherwise it
-returns deterministic evidence and stable warning codes. It does not execute
-user-provided SQL.
+`find_join_path`. MCP never performs semantic scans or writes cache state.
+Before returning validation evidence, it creates the same bounded consistent source snapshots
+used by CLI scanning only to recompute source fingerprints, then discards them.
+It requires a complete generated manifest and exact profile with matching source
+fingerprints, canonical model digest, relationship-definition digests, scanner
+version, and policy version. It neither computes new validation evidence nor
+writes cache state. Missing or mismatched evidence returns `EVIDENCE_STALE` with
+the instruction to run CLI `joinlint scan`. Otherwise it returns deterministic
+evidence and stable warning codes. It does not execute user-provided SQL.
 
 All tool responses use schema version 1 and the same finding and error envelopes
 as CLI JSON. Responses are limited to 1 MiB. `find_join_path` accepts a maximum
@@ -549,9 +625,11 @@ Security requirements are part of v0, not deferred polish.
 - Processing is local by default and requires no model provider.
 - Only sources registered in `config.yaml` and contained within the immutable
   project root are readable.
-- Source paths containing symlinks are rejected in v0. Canonical containment is
-  rechecked at every file open to resist path replacement after startup.
-- DuckDB and SQLite sources are opened read-only; arbitrary SQL is not accepted.
+- Source paths containing symlinks are rejected in v0. Every component is opened
+  descriptor-relatively with no-follow semantics and verified after open to
+  resist path-replacement races.
+- SQLite sources are accessed through read-only snapshots; arbitrary SQL is not
+  accepted.
 - Extension installation, external access, database attachment, and network
   access are not exposed by JoinLint commands or MCP tools.
 - Scans have configurable file-size, memory, execution-time, and output limits.
@@ -589,7 +667,8 @@ Security requirements are part of v0, not deferred polish.
 ## 15. Benchmark strategy
 
 Core v0 and external evaluation have separate completion gates. Core v0 has no
-network or third-party dataset dependency.
+runtime network download; every fixture is vendored under its compatible
+license with origin, version, and SHA-256 recorded.
 
 ### Core v0 smoke
 
@@ -597,6 +676,14 @@ A small MIT-licensed Chinook SQLite fixture is pinned with its upstream version
 and SHA-256 for installation, CLI, MCP, and known-relationship smoke tests. It
 uses the same SQLite source adapter as users and is not evidence of
 generalization.
+
+### Core v0 adapter conformance
+
+One logical four-table fixture is materialized as a CSV directory and SQLite
+database. Both public adapters must produce the same normalized schemas,
+eligible-pair set, relationship candidates, cardinalities, and finding codes.
+Adapter conformance is a release gate, so no advertised v0 format can remain
+untested.
 
 ### Core v0 JoinSafetyBench
 
@@ -611,12 +698,19 @@ JoinLint maintains a deterministic generated corpus covering:
 - multi-edge multiplication;
 - controlled schema and cardinality drift.
 
-Generation specifications and expected findings are public. Development and
-evaluation seeds are separate and fixed before implementation tuning. The core
-gate requires detection of every seeded blocking safety and drift case with no
-incorrect `PASS` result. On GitHub Actions `ubuntu-latest`, the pinned one-million
-row performance fixture must complete exact scan and validation within 60
-seconds and below 1 GiB peak RSS; the workflow records both values.
+Generation specifications, labels, and expected findings are public. The frozen
+evaluation manifest contains twelve positive and twelve negative single-column
+candidate pairs, sixteen blocking join/drift cases, and eight benign controls.
+Development and evaluation seeds and manifests are separate and committed
+before candidate-policy tuning. Candidate precision and recall are computed only
+over the 24 explicitly labeled pairs: `TP/(TP+FP)` and `TP/(TP+FN)`. The core
+gate requires precision at least 0.85, recall at least 0.80, every blocking case
+to emit its exact expected blocking code, and every benign control to complete
+without any unexpected blocking finding. This is an implementation regression
+gate, not evidence of generalization. On GitHub Actions `ubuntu-latest`, the
+pinned one-million-row performance fixture must complete exact scan and
+validation within 60 seconds and below 1 GiB peak RSS; the workflow records both
+values.
 
 ### v0 demonstration
 
@@ -663,41 +757,68 @@ percentage change and include failures.
 - Benchmark tests that pin dataset version, transformation, and expected
   metrics.
 
+### 16.1 Required delivery stages
+
+Implementation planning must use these ordered, independently passing stages.
+No later stage starts until the prior exit gate is reproducible.
+
+1. **Contract and safe snapshots.** Implement project-root discovery,
+   `config.yaml`, `model.yaml`, descriptor-relative access, consistent CSV and
+   SQLite snapshots, fingerprints, and adapter conformance. Exit when the two
+   adapters produce the same normalized conformance result and mutation/race
+   fixtures fail closed.
+2. **Candidates and join safety.** Implement exact profiling, candidates,
+   confirmation/rejection state, directed cardinality, path validation, and the
+   frozen candidate and JoinSafetyBench fixtures. Exit when benchmark thresholds
+   and benign controls pass.
+3. **Git and CI workflow.** Implement baseline update, clean-checkout `check`,
+   drift codes, JSON/exit contracts, atomic generated state, and the escaped
+   static report. Exit when clean-checkout, malicious-identifier, and no-write
+   tests pass.
+4. **Local MCP.** Implement the three STDIO tools, bounded envelopes, model- and
+   source-bound freshness, and stale-evidence behavior. Exit when a real MCP
+   host passes current, stale-source, stale-model, path-boundary, and no-mutation
+   tests.
+5. **Release gate.** Run the complete adapter, security, benchmark, performance,
+   packaging, and documentation checks. Exit only when every v0 acceptance
+   criterion passes from a clean environment.
+
 ## 17. v0 acceptance criteria
 
 v0 is complete only when all of the following are reproducible:
 
 1. A new user can initialize and scan the bundled smoke dataset with documented
    commands through the public SQLite adapter.
-2. The scanner produces facts and candidates without an LLM or network access.
-3. Candidates show evidence and remain untrusted until explicit confirmation.
-4. Confirmed corrections and unchanged local rejections survive rescans without
+2. The CSV-directory and SQLite adapter-conformance fixtures produce identical
+   normalized schemas, candidates, cardinalities, and finding codes.
+3. The scanner produces facts and candidates without an LLM or network access.
+4. Candidates show evidence and remain untrusted until explicit confirmation.
+5. Confirmed corrections and unchanged local rejections survive rescans without
    mixing user state into generated cache.
-5. All seeded fan-out, duplicate-key, orphan, null-key, grain, and drift cases
-   produce their expected stable findings, with zero incorrect `PASS` results.
-6. The fixed held-out single-column relationship fixture reaches at least 0.85
-   precision and 0.80 recall under the declared eligible-pair protocol. These
-   thresholds validate the implementation but do not support a generalization
-   claim.
-7. On GitHub Actions `ubuntu-latest`, the pinned one-million-row fixture
+6. All sixteen frozen blocking cases produce their exact expected blocking code,
+   and all eight benign controls finish without unexpected blocking findings.
+7. The frozen 24-pair candidate manifest reaches at least 0.85 precision and
+   0.80 recall using the formulas in the benchmark section. These thresholds
+   validate the implementation but do not support a generalization claim.
+8. On GitHub Actions `ubuntu-latest`, the pinned one-million-row fixture
    completes exact scan and validation within 60 seconds and below 1 GiB peak
    RSS.
-8. From a clean checkout with no generated cache, `joinlint check` compares a
+9. From a clean checkout with no generated cache, `joinlint check` compares a
    fresh exact scan with tracked `baseline.json`, returns CI-appropriate exit
    codes, and changes no project file.
-9. The static report shows sources, confirmed relationships, candidates,
+10. The static report shows sources, confirmed relationships, candidates,
    evidence, and risks without remote assets or raw rows.
-10. A local MCP host can retrieve the confirmed model, find a confirmed path,
+11. A local MCP host can retrieve the confirmed model, find a confirmed path,
     and validate matching exact evidence through the three v0 tools; stale
     evidence deterministically returns `EVIDENCE_STALE`.
-11. CLI JSON and MCP tests enforce the versioned envelopes, numeric limits,
+12. CLI JSON and MCP tests enforce the versioned envelopes, numeric limits,
     deterministic ordering, stdout/stderr policy, and stable errors.
-12. MCP and CLI cannot execute arbitrary SQL, mutate confirmed semantics during
+13. MCP and CLI cannot execute arbitrary SQL, mutate confirmed semantics during
     read operations, follow symlinks, read outside approved roots, or return raw
     sample rows.
-13. The checked-in core harness reports relationship-fixture, join-safety, drift,
+14. The checked-in core harness reports relationship-fixture, join-safety, drift,
     runtime, and memory results with pinned versions and commands.
-14. Documentation states measured limits and does not present demo performance
+15. Documentation states measured limits and does not present demo performance
     as generalization evidence.
 
 The product decision gate after v0 is usage evidence. A conversational analysis
@@ -709,14 +830,15 @@ next workflow bottleneck.
 
 Potential follow-ups, in order of evidence rather than commitment:
 
-1. Import dbt manifest and catalog metadata.
-2. Composite keys and explicit user-defined relationship expressions.
-3. Python API for Notebook and Polars workflows.
-4. Sandboxed read-only query execution after an explicit security design.
-5. Interactive local relationship editor if YAML correction is a measured
+1. Parquet and DuckDB adapters, each gated by adapter conformance.
+2. Import dbt manifest and catalog metadata.
+3. Composite keys and explicit user-defined relationship expressions.
+4. Python API for Notebook and Polars workflows.
+5. Sandboxed read-only query execution after an explicit security design.
+6. Interactive local relationship editor if YAML correction is a measured
    adoption bottleneck.
-6. Agentic multi-step analysis using the confirmed model.
-7. PostgreSQL and other remote sources.
-8. Remote MCP and multi-user governance.
+7. Agentic multi-step analysis using the confirmed model.
+8. PostgreSQL and other remote sources.
+9. Remote MCP and multi-user governance.
 
 These items are not part of v0 and must not appear as delivered behavior.
