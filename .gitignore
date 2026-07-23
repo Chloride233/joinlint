@@ -21,6 +21,7 @@ htmlcov/
 # JoinLint generated and private runtime data
 .joinlint/generated/
 .joinlint/private/
+.joinlint/state/
 
 # Editors and operating systems
 .DS_Store

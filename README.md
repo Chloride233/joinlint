@@ -18,7 +18,7 @@ JoinLint is currently in the design phase. Implementation has not started.
 - local STDIO MCP adapter for existing coding and data agents
 - no arbitrary SQL execution through MCP
 
-See the approved [JoinLint v0 design](docs/superpowers/specs/2026-07-23-joinlint-v0-design.md).
+See the current [JoinLint v0 design](docs/superpowers/specs/2026-07-23-joinlint-v0-design.md).
 
 ## License
 
