@@ -64,7 +64,7 @@ class RelationshipCandidate:
 def discover_candidates(
     snapshot: SourceSnapshot, catalog: ScanCatalog, model: ModelV1
 ) -> list[RelationshipCandidate]:
-    values = _snapshot_values(snapshot)
+    values = snapshot_values(snapshot)
     candidates: list[RelationshipCandidate] = []
     for child_table in catalog.tables:
         for child_column in child_table.columns:
@@ -163,8 +163,8 @@ def _candidate_for_columns(
     parent_column: ColumnProfile,
     parent_values: Iterable[object],
 ) -> RelationshipCandidate | None:
-    normalized_parent_values = {_normalize_value(value) for value in parent_values if value not in (None, "")}
-    normalized_child_values = [_normalize_value(value) for value in child_values if value not in (None, "")]
+    normalized_parent_values = {normalize_value(value) for value in parent_values if value not in (None, "")}
+    normalized_child_values = [normalize_value(value) for value in child_values if value not in (None, "")]
     if not normalized_child_values:
         return None
     inclusion_numerator = sum(value in normalized_parent_values for value in normalized_child_values)
@@ -217,7 +217,7 @@ def _types_are_compatible(child: ColumnProfile, parent: ColumnProfile) -> bool:
     return {child.physical_type, parent.physical_type} <= {"integer", "number"}
 
 
-def _snapshot_values(snapshot: SourceSnapshot) -> dict[str, dict[str, list[object]]]:
+def snapshot_values(snapshot: SourceSnapshot) -> dict[str, dict[str, list[object]]]:
     return _csv_snapshot_values(snapshot) if snapshot.kind == "csv_directory" else _sqlite_snapshot_values(snapshot)
 
 
@@ -259,7 +259,7 @@ def _quote_identifier(identifier: str) -> str:
     return f'"{identifier.replace('"', '""')}"'
 
 
-def _normalize_value(value: object) -> str:
+def normalize_value(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
