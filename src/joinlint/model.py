@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from joinlint.config import _StrictModel, _project_boundary, _read_yaml
+from joinlint.config import _StrictModel, _project_boundary, _read_yaml, write_yaml_atomically
+from joinlint.contracts import canonical_json
 from joinlint.errors import JoinLintError
 from joinlint.paths import SafeProject
 
@@ -71,3 +73,12 @@ def load_model(project: Path | SafeProject) -> ModelV1:
             return ModelV1.model_validate(document)
         except ValidationError as exc:
             raise JoinLintError("MALFORMED_MODEL", "model.yaml does not match schema version 1", 2) from exc
+
+
+def model_digest(model: ModelV1) -> str:
+    return hashlib.sha256(canonical_json(model.model_dump(mode="json", by_alias=True))).hexdigest()
+
+
+def write_model(project: Path | SafeProject, model: ModelV1) -> None:
+    with _project_boundary(project) as boundary:
+        write_yaml_atomically(boundary.root / ".joinlint" / "model.yaml", model)
