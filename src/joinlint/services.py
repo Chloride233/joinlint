@@ -5,8 +5,16 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from joinlint.artifacts import write_generated_transaction
-from joinlint.candidates import POLICY_VERSION, discover_candidates
+from joinlint.artifacts import load_fresh_manifest, write_generated_transaction
+from joinlint.candidates import (
+    POLICY_VERSION,
+    RelationshipCandidate,
+    accept_candidate,
+    discover_candidates,
+    reject_candidate,
+    visible_candidates,
+)
+from joinlint.errors import JoinLintError
 from joinlint.config import load_config
 from joinlint.contracts import Envelope, canonical_json
 from joinlint.model import load_model, model_digest
@@ -71,12 +79,58 @@ def scan_project(project: Path) -> Envelope:
     )
 
 
+def list_candidates(project: Path) -> Envelope:
+    candidates = _fresh_candidates(project)
+    return Envelope(
+        command="candidates",
+        status="ok",
+        data={"candidates": [_candidate_document(candidate) for candidate in candidates]},
+    )
+
+
+def reject_candidate_by_id(project: Path, candidate_id: str) -> Envelope:
+    candidate = _candidate_by_id(project, candidate_id, include_rejected=False)
+    reject_candidate(project, candidate)
+    return Envelope(command="reject", status="ok", data={"candidate_id": candidate_id})
+
+
+def accept_candidate_by_id(project: Path, candidate_id: str) -> Envelope:
+    candidate = _candidate_by_id(project, candidate_id, include_rejected=False)
+    accept_candidate(project, candidate)
+    return Envelope(command="accept", status="ok", data={"candidate_id": candidate_id})
+
+
+def _candidate_by_id(project: Path, candidate_id: str, *, include_rejected: bool) -> RelationshipCandidate:
+    candidates = _fresh_candidates(project, include_rejected=include_rejected)
+    for candidate in candidates:
+        if candidate.id == candidate_id:
+            return candidate
+    raise JoinLintError("CANDIDATE_NOT_FOUND", "candidate is not current", 2)
+
+
+def _fresh_candidates(project: Path, *, include_rejected: bool = False) -> list[RelationshipCandidate]:
+    config = load_config(project)
+    model = load_model(project)
+    candidates: list[RelationshipCandidate] = []
+    source_fingerprints: list[str] = []
+    for source_id in sorted(config.sources, key=lambda value: value.encode("utf-8")):
+        with snapshot_source(project, source_id) as snapshot:
+            catalog = scan_snapshot(snapshot)
+            source_fingerprints.append(snapshot.fingerprint)
+            if include_rejected:
+                candidates.extend(discover_candidates(snapshot, catalog, model))
+            else:
+                candidates.extend(visible_candidates(project, snapshot, catalog, model))
+    load_fresh_manifest(project, source_fingerprints, model_digest(model))
+    return sorted(candidates, key=lambda candidate: candidate.id.encode("utf-8"))
+
+
 def _catalog_document(catalog: ScanCatalog) -> dict[str, object]:
     return {"source_id": catalog.source_id, "tables": [asdict(table) for table in catalog.tables]}
 
 
-def _candidate_document(candidate: object) -> dict[str, object]:
-    return asdict(candidate)  # type: ignore[arg-type]
+def _candidate_document(candidate: RelationshipCandidate) -> dict[str, object]:
+    return asdict(candidate)
 
 
 def _json_bytes(document: object) -> bytes:

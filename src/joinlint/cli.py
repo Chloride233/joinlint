@@ -12,7 +12,7 @@ from joinlint.contracts import Envelope, envelope_for
 from joinlint.errors import JoinLintError
 from joinlint.model import ModelV1
 from joinlint.paths import SafeProject
-from joinlint.services import scan_project
+from joinlint.services import accept_candidate_by_id, list_candidates, reject_candidate_by_id, scan_project
 
 
 app = typer.Typer(no_args_is_help=True)
@@ -37,6 +37,13 @@ def _emit(envelope: Envelope, *, json_output: bool) -> None:
         typer.echo(f"{envelope.status}: {envelope.command}")
     exit_code = 0 if envelope.status in {"ok", "findings"} else 3 if envelope.status == "inconclusive" else 2
     raise typer.Exit(exit_code)
+
+
+def _emit_service_error(command: str, error: JoinLintError, *, json_output: bool) -> None:
+    if json_output:
+        status = "inconclusive" if error.exit_code == 3 else "error"
+        _emit(envelope_for(command=command, status=status, error_code=error.code), json_output=True)
+    _exit_for_error(error)
 
 
 def _init_project(project: Path, force: bool) -> None:
@@ -114,9 +121,45 @@ def scan(
     try:
         _emit(scan_project(project), json_output=json_output)
     except JoinLintError as error:
-        if json_output:
-            _emit(envelope_for(command="scan", status="inconclusive", error_code=error.code), json_output=True)
-        _exit_for_error(error)
+        _emit_service_error("scan", error, json_output=json_output)
+
+
+@app.command()
+def candidates(
+    project: Path = typer.Option(Path.cwd(), "--project"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """List fresh, non-rejected relationship candidates."""
+    try:
+        _emit(list_candidates(project), json_output=json_output)
+    except JoinLintError as error:
+        _emit_service_error("candidates", error, json_output=json_output)
+
+
+@app.command()
+def accept(
+    candidate_id: str,
+    project: Path = typer.Option(Path.cwd(), "--project"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Confirm a fresh candidate in model.yaml."""
+    try:
+        _emit(accept_candidate_by_id(project, candidate_id), json_output=json_output)
+    except JoinLintError as error:
+        _emit_service_error("accept", error, json_output=json_output)
+
+
+@app.command()
+def reject(
+    candidate_id: str,
+    project: Path = typer.Option(Path.cwd(), "--project"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Record a local rejection for a fresh candidate."""
+    try:
+        _emit(reject_candidate_by_id(project, candidate_id), json_output=json_output)
+    except JoinLintError as error:
+        _emit_service_error("reject", error, json_output=json_output)
 
 
 @source_app.command("add")

@@ -72,3 +72,30 @@ def test_scan_writes_generated_evidence_without_mutating_model(tmp_path: Path) -
     assert (project / ".joinlint" / "generated" / "manifest.json").exists()
     assert (project / ".joinlint" / "generated" / "relationship-candidates.json").exists()
     assert (project / ".joinlint" / "model.yaml").read_bytes() == model_before
+
+
+def test_candidates_and_reject_commands_require_fresh_evidence(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    data = project / "data"
+    data.mkdir()
+    (data / "parents.csv").write_text("id\na\nb\n", encoding="utf-8")
+    (data / "children.csv").write_text("id,parent_id\n1,a\n2,a\n", encoding="utf-8")
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["source", "add", "sales", "data", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["scan", "--project", str(project)]).exit_code == 0
+
+    candidates = runner.invoke(app, ["candidates", "--project", str(project), "--json"])
+    candidate_id = json.loads(candidates.output)["data"]["candidates"][0]["id"]
+    rejected = runner.invoke(app, ["reject", candidate_id, "--project", str(project)])
+    candidates_after_reject = runner.invoke(app, ["candidates", "--project", str(project), "--json"])
+
+    assert candidates.exit_code == 0, candidates.output
+    assert rejected.exit_code == 0, rejected.output
+    assert candidate_id not in {item["id"] for item in json.loads(candidates_after_reject.output)["data"]["candidates"]}
+
+    with (data / "children.csv").open("a", encoding="utf-8") as source:
+        source.write("3,missing\n")
+    stale = runner.invoke(app, ["candidates", "--project", str(project), "--json"])
+    assert stale.exit_code == 3
+    assert json.loads(stale.output)["error"]["code"] == "EVIDENCE_STALE"
