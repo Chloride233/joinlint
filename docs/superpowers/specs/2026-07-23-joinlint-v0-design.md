@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-23
 
-**Status:** Revised after independent audit; pending re-audit
+**Status:** Independent audit passed; pending user review
 
 **Product:** JoinLint
 **Tagline:** Stop AI agents from guessing database joins.
