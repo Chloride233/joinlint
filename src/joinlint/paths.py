@@ -132,3 +132,42 @@ class SafeProject:
             if exc.errno == errno.ELOOP:
                 raise JoinLintError("SYMLINK_NOT_ALLOWED", "symlinks are not allowed", 2) from exc
             raise JoinLintError("SAFE_PATH_OPEN_FAILED", "could not open project-relative path", 2) from exc
+
+    def open_parent_relative(self, relative: PurePosixPath) -> tuple[int, str, os.stat_result]:
+        """Return an anchored parent FD, validated leaf name, and leaf identity."""
+        if self._root_fd == -1:
+            raise JoinLintError("SAFE_PROJECT_CLOSED", "project boundary is closed", 4)
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            raise JoinLintError("PATH_OUTSIDE_PROJECT", "path is not project-relative", 2)
+
+        descriptor = os.dup(self._root_fd)
+        try:
+            for component in relative.parts[:-1]:
+                component_stat = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+                if stat.S_ISLNK(component_stat.st_mode):
+                    raise JoinLintError("SYMLINK_NOT_ALLOWED", "symlinks are not allowed", 2)
+                next_descriptor = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=descriptor,
+                )
+                os.close(descriptor)
+                descriptor = next_descriptor
+                if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                    raise JoinLintError("SAFE_PATH_OPEN_FAILED", "path component is not a directory", 2)
+
+            leaf = relative.parts[-1]
+            leaf_stat = os.stat(leaf, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISLNK(leaf_stat.st_mode):
+                raise JoinLintError("SYMLINK_NOT_ALLOWED", "symlinks are not allowed", 2)
+            if not stat.S_ISREG(leaf_stat.st_mode):
+                raise JoinLintError("UNSUPPORTED_SOURCE", "expected a regular file", 2)
+            return descriptor, leaf, leaf_stat
+        except JoinLintError:
+            os.close(descriptor)
+            raise
+        except OSError as exc:
+            os.close(descriptor)
+            if exc.errno == errno.ELOOP:
+                raise JoinLintError("SYMLINK_NOT_ALLOWED", "symlinks are not allowed", 2) from exc
+            raise JoinLintError("SAFE_PATH_OPEN_FAILED", "could not open project-relative path", 2) from exc

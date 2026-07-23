@@ -79,3 +79,19 @@ def test_non_regular_final_path_is_rejected(project: Path) -> None:
         with pytest.raises(JoinLintError) as captured:
             safe_project.open_relative(PurePosixPath("pipe"), os.O_RDONLY | os.O_NONBLOCK)
     assert captured.value.code == "UNSUPPORTED_SOURCE"
+
+
+def test_open_parent_relative_keeps_verified_parent_and_leaf_identity(project: Path) -> None:
+    (project / "data").mkdir()
+    database = project / "data" / "app.sqlite"
+    database.write_bytes(b"SQLite format 3\x00")
+
+    with SafeProject(project) as safe_project:
+        parent_descriptor, leaf, identity = safe_project.open_parent_relative(
+            PurePosixPath("data/app.sqlite")
+        )
+        try:
+            assert leaf == "app.sqlite"
+            assert os.stat(leaf, dir_fd=parent_descriptor, follow_symlinks=False).st_ino == identity.st_ino
+        finally:
+            os.close(parent_descriptor)
