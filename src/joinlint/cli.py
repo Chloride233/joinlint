@@ -8,9 +8,11 @@ from typing import Iterator
 import typer
 
 from joinlint.config import ConfigV1, SourceConfig, add_source, load_config, remove_source, set_source_path, write_yaml_atomically
+from joinlint.contracts import Envelope, envelope_for
 from joinlint.errors import JoinLintError
 from joinlint.model import ModelV1
 from joinlint.paths import SafeProject
+from joinlint.services import scan_project
 
 
 app = typer.Typer(no_args_is_help=True)
@@ -21,6 +23,20 @@ app.add_typer(source_app, name="source")
 def _exit_for_error(error: JoinLintError) -> None:
     typer.echo(f"{error.code}: {error}", err=True)
     raise typer.Exit(error.exit_code)
+
+
+def _emit(envelope: Envelope, *, json_output: bool) -> None:
+    if json_output:
+        body = envelope.model_dump_json(exclude_none=False)
+        if len(body.encode("utf-8")) > 1_048_576:
+            body = envelope_for(command=envelope.command, status="inconclusive", error_code="OUTPUT_LIMIT_EXCEEDED").model_dump_json(
+                exclude_none=False
+            )
+        typer.echo(body)
+    else:
+        typer.echo(f"{envelope.status}: {envelope.command}")
+    exit_code = 0 if envelope.status in {"ok", "findings"} else 3 if envelope.status == "inconclusive" else 2
+    raise typer.Exit(exit_code)
 
 
 def _init_project(project: Path, force: bool) -> None:
@@ -86,6 +102,20 @@ def init(
     try:
         _init_project(project, force)
     except JoinLintError as error:
+        _exit_for_error(error)
+
+
+@app.command()
+def scan(
+    project: Path = typer.Option(Path.cwd(), "--project"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Create one complete generated-evidence transaction for all sources."""
+    try:
+        _emit(scan_project(project), json_output=json_output)
+    except JoinLintError as error:
+        if json_output:
+            _emit(envelope_for(command="scan", status="inconclusive", error_code=error.code), json_output=True)
         _exit_for_error(error)
 
 

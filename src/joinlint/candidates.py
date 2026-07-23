@@ -48,6 +48,7 @@ class CandidateEvidence:
 @dataclass(frozen=True)
 class RelationshipCandidate:
     id: str
+    source_id: str
     from_endpoint: str
     to_endpoint: str
     cardinality: Literal["one_to_one", "many_to_one"]
@@ -58,7 +59,7 @@ class RelationshipCandidate:
     model_digest: str
 
     def identity(self) -> dict[str, str]:
-        return {"from": self.from_endpoint, "to": self.to_endpoint}
+        return {"source": self.source_id, "from": self.from_endpoint, "to": self.to_endpoint}
 
 
 def discover_candidates(
@@ -187,11 +188,11 @@ def _candidate_for_columns(
     )
     from_endpoint = f"{child_table.name}.{child_column.name}"
     to_endpoint = f"{parent_table.name}.{parent_column.name}"
-    candidate_id = "candidate_" + hashlib.sha256(
-        canonical_json({"from": from_endpoint, "to": to_endpoint})
-    ).hexdigest()[:16]
+    identity = {"source": snapshot.source_id, "from": from_endpoint, "to": to_endpoint}
+    candidate_id = "candidate_" + hashlib.sha256(canonical_json(identity)).hexdigest()[:16]
     return RelationshipCandidate(
         id=candidate_id,
+        source_id=snapshot.source_id,
         from_endpoint=from_endpoint,
         to_endpoint=to_endpoint,
         cardinality=cardinality,

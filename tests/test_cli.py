@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -50,3 +51,24 @@ def test_source_add_rejects_symlink(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "SYMLINK_NOT_ALLOWED" in result.output
+
+
+def test_scan_writes_generated_evidence_without_mutating_model(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    data = project / "data"
+    data.mkdir()
+    (data / "parents.csv").write_text("id\na\nb\n", encoding="utf-8")
+    (data / "children.csv").write_text("id,parent_id\n1,a\n2,a\n", encoding="utf-8")
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["source", "add", "sales", "data", "--project", str(project)]).exit_code == 0
+    model_before = (project / ".joinlint" / "model.yaml").read_bytes()
+
+    result = runner.invoke(app, ["scan", "--project", str(project), "--json"])
+
+    assert result.exit_code == 0, result.output
+    envelope = json.loads(result.output)
+    assert envelope["status"] == "ok"
+    assert (project / ".joinlint" / "generated" / "manifest.json").exists()
+    assert (project / ".joinlint" / "generated" / "relationship-candidates.json").exists()
+    assert (project / ".joinlint" / "model.yaml").read_bytes() == model_before
