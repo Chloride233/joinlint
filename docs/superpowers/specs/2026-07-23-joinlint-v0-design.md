@@ -314,7 +314,12 @@ Rules:
 - `state/rejections.json` is local durable user state, not a reproducible cache.
   A rejection key hashes the candidate policy version, endpoints, types,
   relevant source fingerprints, and canonical exact-evidence digest. It is
-  invalidated when any input or evidence changes.
+  invalidated when any input or evidence changes. The evidence digest is RFC
+  8785 JSON over endpoint identifiers and types, source fingerprints, exact
+  matched-distinct count, inclusion numerator and denominator, null count,
+  orphan count, uniqueness result, and directed cardinality. It excludes scan
+  timestamps, absolute paths, display messages, ordering metadata, and other
+  run-variant fields, so unchanged evidence produces the same rejection key.
 - Generated files record fingerprints, scanner version, policy version, and
   timestamp.
 - Generated evidence never overwrites confirmed semantics.
@@ -370,7 +375,7 @@ entities:
 
   order_items:
     source: sales
-    object: order_items.parquet
+    object: order_items.csv
     grain:
       keys: [order_item_id]
       status: confirmed
@@ -419,10 +424,14 @@ symlinks, unsupported formats, and configuration races.
 ### `joinlint source set <source-id> <path>`
 
 Atomically replaces the path for an existing source after safe-path and format
-validation. It preserves the source identifier, invalidates generated evidence
-and local rejections involving that source, and makes the tracked baseline stale
-until a successful scan, validation, and explicit baseline update. Confirmed
-semantics remain visible but cannot pass validation while stale.
+validation. It preserves both the source identifier and existing `kind`; a path
+whose format does not match that kind fails with `SOURCE_KIND_MISMATCH`. Kind
+transitions require adding a new source identifier, explicitly updating model
+references, validating, and removing the old source. A successful set invalidates
+generated evidence and local rejections involving that source and makes the
+tracked baseline stale until a successful scan, validation, and explicit
+baseline update. Confirmed semantics remain visible but cannot pass validation
+while stale.
 
 ### `joinlint source remove <source-id>`
 
@@ -613,10 +622,14 @@ The validator must detect and assign stable codes to:
 - join changes the `from` or `to` grain according to the directed cardinality;
 - many-to-many join can multiply both sides;
 - a join path compounds row multiplication;
-- observed evidence is stale for the current source fingerprint.
 
 The validator reports facts and risks. It does not claim that a statistically
 valid relationship is semantically correct.
+
+Stale or missing evidence is not a join-safety finding. Validation returns
+status `inconclusive`, exit 3, and a non-null `EVIDENCE_STALE` error. It may
+include completed non-authoritative context findings, but none may be `PASS` or
+be interpreted as validation of the requested relationship.
 
 ## 13. Security and privacy
 
