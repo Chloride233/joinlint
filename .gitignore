@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# JoinLint generated and private runtime data
+.joinlint/generated/
+.joinlint/private/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
