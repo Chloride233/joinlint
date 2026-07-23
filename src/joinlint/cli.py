@@ -1,6 +1,135 @@
 from __future__ import annotations
 
+import os
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Iterator
+
 import typer
+
+from joinlint.config import ConfigV1, SourceConfig, add_source, load_config, remove_source, set_source_path, write_yaml_atomically
+from joinlint.errors import JoinLintError
+from joinlint.model import ModelV1
+from joinlint.paths import SafeProject
 
 
 app = typer.Typer(no_args_is_help=True)
+source_app = typer.Typer(no_args_is_help=True)
+app.add_typer(source_app, name="source")
+
+
+def _exit_for_error(error: JoinLintError) -> None:
+    typer.echo(f"{error.code}: {error}", err=True)
+    raise typer.Exit(error.exit_code)
+
+
+def _init_project(project: Path, force: bool) -> None:
+    try:
+        root = project.resolve(strict=True)
+    except OSError as exc:
+        raise JoinLintError("PROJECT_NOT_FOUND", "project directory is unavailable", 2) from exc
+    if not root.is_dir() or root.is_symlink():
+        raise JoinLintError("PROJECT_NOT_FOUND", "project must be a non-symlink directory", 2)
+    joinlint_directory = root / ".joinlint"
+    config_path = joinlint_directory / "config.yaml"
+    model_path = joinlint_directory / "model.yaml"
+    if (config_path.exists() or model_path.exists()) and not force:
+        raise JoinLintError("ALREADY_INITIALIZED", "JoinLint files already exist; use --force to replace", 2)
+    joinlint_directory.mkdir(exist_ok=True)
+    if joinlint_directory.is_symlink():
+        raise JoinLintError("SYMLINK_NOT_ALLOWED", "JoinLint directory cannot be a symlink", 2)
+    for directory in ("state", "analyses", "generated"):
+        (joinlint_directory / directory).mkdir(exist_ok=True)
+    write_yaml_atomically(config_path, ConfigV1(version=1, sources={}))
+    write_yaml_atomically(model_path, ModelV1(version=1, entities={}, relationships=[]))
+
+
+@contextmanager
+def _config_lock(project: Path) -> Iterator[None]:
+    import fcntl
+
+    lock_path = project / ".joinlint" / ".lock"
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _source_kind(project: Path, source_path: str) -> str:
+    candidate = SourceConfig(kind="csv_directory", path=source_path).path
+    with SafeProject(project) as safe_project:
+        try:
+            descriptor = safe_project.open_relative(candidate, os.O_RDONLY | os.O_DIRECTORY)
+        except JoinLintError as error:
+            if error.code != "SAFE_PATH_OPEN_FAILED":
+                raise
+        else:
+            os.close(descriptor)
+            return "csv_directory"
+        descriptor = safe_project.open_relative(candidate, os.O_RDONLY)
+        try:
+            if candidate.suffix != ".sqlite":
+                raise JoinLintError("UNSUPPORTED_SOURCE", "source file must be a SQLite database", 2)
+            return "sqlite"
+        finally:
+            os.close(descriptor)
+
+
+@app.command()
+def init(
+    project: Path = typer.Option(Path.cwd(), "--project"),
+    force: bool = typer.Option(False, "--force"),
+) -> None:
+    """Create the JoinLint project files without scanning data."""
+    try:
+        _init_project(project, force)
+    except JoinLintError as error:
+        _exit_for_error(error)
+
+
+@source_app.command("add")
+def source_add(
+    source_id: str,
+    path: str,
+    project: Path = typer.Option(Path.cwd(), "--project"),
+) -> None:
+    """Register a safe local CSV-directory or SQLite source."""
+    try:
+        with _config_lock(project):
+            add_source(project, source_id, path, _source_kind(project, path))
+    except JoinLintError as error:
+        _exit_for_error(error)
+
+
+@source_app.command("set")
+def source_set(
+    source_id: str,
+    path: str,
+    project: Path = typer.Option(Path.cwd(), "--project"),
+) -> None:
+    """Replace a source path without changing its registered kind."""
+    try:
+        with _config_lock(project):
+            existing = load_config(project).sources.get(source_id)
+            if existing is None:
+                raise JoinLintError("SOURCE_NOT_FOUND", "source ID does not exist", 2)
+            if _source_kind(project, path) != existing.kind:
+                raise JoinLintError("SOURCE_KIND_MISMATCH", "source kind cannot change", 2)
+            set_source_path(project, source_id, path)
+    except JoinLintError as error:
+        _exit_for_error(error)
+
+
+@source_app.command("remove")
+def source_remove(
+    source_id: str,
+    project: Path = typer.Option(Path.cwd(), "--project"),
+) -> None:
+    """Remove an unreferenced source from the project."""
+    try:
+        with _config_lock(project):
+            remove_source(project, source_id)
+    except JoinLintError as error:
+        _exit_for_error(error)
