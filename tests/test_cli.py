@@ -146,3 +146,14 @@ relationships:
     assert "CARDINALITY_DRIFT" in {
         finding["code"] for finding in json.loads(drifted.output)["findings"]
     }
+
+
+def test_check_reports_missing_baseline_as_inconclusive(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+
+    result = runner.invoke(app, ["check", "--project", str(project), "--json"])
+
+    assert result.exit_code == 3
+    assert json.loads(result.output)["error"]["code"] == "BASELINE_MISSING"

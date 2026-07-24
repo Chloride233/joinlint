@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from joinlint.artifacts import load_fresh_manifest, write_generated_transaction
@@ -17,13 +17,21 @@ from joinlint.candidates import (
 from joinlint.errors import JoinLintError
 from joinlint.config import load_config
 from joinlint.contracts import Envelope, canonical_json
-from joinlint.model import load_model, model_digest
+from joinlint.model import Relationship, load_model, model_digest
 from joinlint.scanner import ScanCatalog, scan_snapshot
 from joinlint.snapshots import snapshot_source
 from joinlint.validation import ValidationResult, validate_relationship
 
 
 SCANNER_VERSION = "0.1.0"
+
+
+@dataclass(frozen=True)
+class CurrentEvidence:
+    source_fingerprints: tuple[str, ...]
+    schemas: list[dict[str, object]]
+    relationship_results: list[dict[str, object]]
+    findings: list[object]
 
 
 def scan_project(project: Path) -> Envelope:
@@ -102,8 +110,19 @@ def accept_candidate_by_id(project: Path, candidate_id: str) -> Envelope:
 
 
 def validate_project(project: Path) -> Envelope:
+    evidence = collect_current_evidence(project)
+    return Envelope(
+        command="validate",
+        status="findings" if evidence.findings else "ok",
+        data={"relationships": evidence.relationship_results},
+        findings=evidence.findings,
+    )
+
+
+def collect_current_evidence(project: Path) -> CurrentEvidence:
+    config = load_config(project)
     model = load_model(project)
-    relationships_by_source: dict[str, list[object]] = {}
+    relationships_by_source: dict[str, list[Relationship]] = {}
     for relationship in model.relationships:
         from_entity = model.entities[relationship.from_.split(".", maxsplit=1)[0]]
         to_entity = model.entities[relationship.to.split(".", maxsplit=1)[0]]
@@ -116,19 +135,38 @@ def validate_project(project: Path) -> Envelope:
         relationships_by_source.setdefault(from_entity.source, []).append(relationship)
 
     results: list[ValidationResult] = []
-    for source_id in sorted(relationships_by_source, key=lambda value: value.encode("utf-8")):
+    schemas: list[dict[str, object]] = []
+    source_fingerprints: list[str] = []
+    for source_id in sorted(config.sources, key=lambda value: value.encode("utf-8")):
         with snapshot_source(project, source_id) as snapshot:
             catalog = scan_snapshot(snapshot)
+            schemas.append(_catalog_document(catalog))
+            source_fingerprints.append(snapshot.fingerprint)
             results.extend(
                 validate_relationship(relationship, snapshot, catalog)
-                for relationship in relationships_by_source[source_id]
+                for relationship in relationships_by_source.get(source_id, [])
             )
     findings = [finding for result in results for finding in result.findings]
     findings.sort(key=lambda finding: finding.code.encode("utf-8"))
+    return CurrentEvidence(
+        source_fingerprints=tuple(source_fingerprints),
+        schemas=schemas,
+        relationship_results=[_validation_document(result) for result in results],
+        findings=findings,
+    )
+
+
+def run_check(project: Path) -> Envelope:
+    from joinlint.baseline import compare_baseline, load_baseline
+
+    baseline = load_baseline(project)
+    evidence = collect_current_evidence(project)
+    findings = [*evidence.findings, *compare_baseline(baseline, evidence)]
+    findings.sort(key=lambda finding: finding.code.encode("utf-8"))
     return Envelope(
-        command="validate",
+        command="check",
         status="findings" if findings else "ok",
-        data={"relationships": [_validation_document(result) for result in results]},
+        data={"relationships": evidence.relationship_results},
         findings=findings,
     )
 

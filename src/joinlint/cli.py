@@ -10,12 +10,14 @@ import typer
 from joinlint.config import ConfigV1, SourceConfig, add_source, load_config, remove_source, set_source_path, write_yaml_atomically
 from joinlint.contracts import Envelope, envelope_for
 from joinlint.errors import JoinLintError
+from joinlint.baseline import update_baseline
 from joinlint.model import ModelV1
 from joinlint.paths import SafeProject
 from joinlint.services import (
     accept_candidate_by_id,
     list_candidates,
     reject_candidate_by_id,
+    run_check,
     scan_project,
     validate_project,
 )
@@ -23,7 +25,9 @@ from joinlint.services import (
 
 app = typer.Typer(no_args_is_help=True)
 source_app = typer.Typer(no_args_is_help=True)
+baseline_app = typer.Typer(no_args_is_help=True)
 app.add_typer(source_app, name="source")
+app.add_typer(baseline_app, name="baseline")
 
 
 def _exit_for_error(error: JoinLintError) -> None:
@@ -181,6 +185,31 @@ def validate(
         _emit(validate_project(project), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("validate", error, json_output=json_output)
+
+
+@app.command()
+def check(
+    project: Path = typer.Option(Path.cwd(), "--project"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Compare a fresh in-memory scan with the tracked baseline."""
+    try:
+        _emit(run_check(project), json_output=json_output)
+    except JoinLintError as error:
+        _emit_service_error("check", error, json_output=json_output)
+
+
+@baseline_app.command("update")
+def baseline_update(
+    project: Path = typer.Option(Path.cwd(), "--project"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Explicitly replace the tracked sanitized baseline."""
+    try:
+        baseline = update_baseline(project)
+        _emit(Envelope(command="baseline update", status="ok", data=baseline), json_output=json_output)
+    except JoinLintError as error:
+        _emit_service_error("baseline update", error, json_output=json_output)
 
 
 @source_app.command("add")
