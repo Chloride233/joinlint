@@ -5,7 +5,8 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from joinlint.artifacts import load_fresh_manifest, write_generated_transaction, write_report_atomically
+from joinlint.artifacts import load_fresh_manifest as load_fresh_manifest_file
+from joinlint.artifacts import write_generated_transaction, write_report_atomically
 from joinlint.candidates import (
     POLICY_VERSION,
     RelationshipCandidate,
@@ -261,7 +262,7 @@ def _require_fresh_manifest(project: Path, model: object) -> None:
     for source_id in sorted(config.sources, key=lambda value: value.encode("utf-8")):
         with snapshot_source(project, source_id) as snapshot:
             fingerprints.append(snapshot.fingerprint)
-    load_fresh_manifest(project, fingerprints, model_digest(model))
+    _load_fresh_evidence(project, fingerprints, model)
 
 
 def _path_edge(relationship: Relationship, direction: str) -> dict[str, str]:
@@ -289,8 +290,14 @@ def _fresh_candidates(project: Path, *, include_rejected: bool = False) -> list[
                 candidates.extend(discover_candidates(snapshot, catalog, model))
             else:
                 candidates.extend(visible_candidates(project, snapshot, catalog, model))
-    load_fresh_manifest(project, source_fingerprints, model_digest(model))
+    _load_fresh_evidence(project, source_fingerprints, model)
     return sorted(candidates, key=lambda candidate: candidate.id.encode("utf-8"))
+
+
+def _load_fresh_evidence(project: Path, source_fingerprints: list[str], model: object) -> None:
+    manifest = load_fresh_manifest_file(project, source_fingerprints, model_digest(model))
+    if manifest.get("scanner_version") != SCANNER_VERSION or manifest.get("policy_version") != POLICY_VERSION:
+        raise JoinLintError("EVIDENCE_STALE", "generated evidence uses a different scanner or policy", 3)
 
 
 def _catalog_document(catalog: ScanCatalog) -> dict[str, object]:

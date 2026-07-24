@@ -254,6 +254,26 @@ relationships:
     assert "exclusive-raw-value" not in report
 
 
+def test_report_rejects_generated_evidence_from_a_different_policy(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    data = project / "data"
+    data.mkdir()
+    (data / "records.csv").write_text("id\n1\n", encoding="utf-8")
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["source", "add", "sales", "data", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["scan", "--project", str(project)]).exit_code == 0
+    manifest_path = project / ".joinlint" / "generated" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["policy_version"] = "candidate-next"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = runner.invoke(app, ["report", "--project", str(project), "--json"])
+
+    assert result.exit_code == 3
+    assert json.loads(result.output)["error"]["code"] == "EVIDENCE_STALE"
+
+
 def test_source_set_invalidates_generated_rejections_and_baseline(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

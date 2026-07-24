@@ -11,7 +11,8 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from joinlint.config import add_source
 from joinlint.errors import JoinLintError
-from joinlint.mcp_server import create_server
+from joinlint.contracts import Envelope
+from joinlint.mcp_server import _response, create_server
 from joinlint.services import find_join_path, scan_project
 
 
@@ -64,6 +65,19 @@ relationships:
         find_join_path(project, "source", "target", max_depth=1)
 
     assert captured.value.code == "OUTPUT_LIMIT_EXCEEDED"
+
+
+def test_mcp_response_limit_returns_inconclusive_envelope() -> None:
+    response = _response(
+        "get_data_model",
+        lambda: Envelope(command="get_data_model", status="ok", data={"value": "x" * 1_048_576}),
+    )
+
+    assert response["status"] == "inconclusive"
+    assert response["error"] == {
+        "code": "OUTPUT_LIMIT_EXCEEDED",
+        "message": "OUTPUT_LIMIT_EXCEEDED",
+    }
 
 
 def test_stdio_mcp_current_and_stale_evidence_never_mutates_project(project: Path) -> None:
