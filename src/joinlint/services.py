@@ -16,7 +16,7 @@ from joinlint.candidates import (
 )
 from joinlint.errors import JoinLintError
 from joinlint.config import load_config
-from joinlint.contracts import Envelope, canonical_json
+from joinlint.contracts import Envelope, Finding, canonical_json
 from joinlint.model import Relationship, load_model, model_digest
 from joinlint.scanner import ScanCatalog, scan_snapshot
 from joinlint.snapshots import snapshot_source
@@ -42,6 +42,8 @@ def scan_project(project: Path) -> Envelope:
     candidates: list[dict[str, object]] = []
     source_fingerprints: list[str] = []
     report_identifiers: list[str] = []
+    validation_results: list[ValidationResult] = []
+    relationships_by_source = _relationships_by_source(model)
     for source_id in sorted(config.sources, key=lambda value: value.encode("utf-8")):
         with snapshot_source(project, source_id) as snapshot:
             catalog = scan_snapshot(snapshot)
@@ -51,6 +53,10 @@ def scan_project(project: Path) -> Envelope:
             candidates.extend(
                 _candidate_document(candidate)
                 for candidate in discover_candidates(snapshot, catalog, model)
+            )
+            validation_results.extend(
+                validate_relationship(relationship, snapshot, catalog)
+                for relationship in relationships_by_source.get(source_id, [])
             )
     digest = model_digest(model)
     scan_id = hashlib.sha256(
@@ -78,6 +84,9 @@ def scan_project(project: Path) -> Envelope:
         "profile.json": _json_bytes({"schema_version": 1, "sources": [_catalog_document(item) for item in catalogs]}),
         "relationship-candidates.json": _json_bytes(
             {"schema_version": 1, "candidates": sorted(candidates, key=lambda item: str(item["id"]).encode("utf-8"))}
+        ),
+        "validation.json": _json_bytes(
+            {"schema_version": 1, "relationships": [_validation_document(result) for result in validation_results]}
         ),
     }
     write_generated_transaction(project, files, {"identifiers": report_identifiers})
@@ -122,17 +131,7 @@ def validate_project(project: Path) -> Envelope:
 def collect_current_evidence(project: Path) -> CurrentEvidence:
     config = load_config(project)
     model = load_model(project)
-    relationships_by_source: dict[str, list[Relationship]] = {}
-    for relationship in model.relationships:
-        from_entity = model.entities[relationship.from_.split(".", maxsplit=1)[0]]
-        to_entity = model.entities[relationship.to.split(".", maxsplit=1)[0]]
-        if from_entity.source != to_entity.source:
-            raise JoinLintError(
-                "RELATIONSHIP_CROSS_SOURCE_UNSUPPORTED",
-                "cross-source relationship validation is not available",
-                2,
-            )
-        relationships_by_source.setdefault(from_entity.source, []).append(relationship)
+    relationships_by_source = _relationships_by_source(model)
 
     results: list[ValidationResult] = []
     schemas: list[dict[str, object]] = []
@@ -169,6 +168,81 @@ def run_check(project: Path) -> Envelope:
         data={"relationships": evidence.relationship_results},
         findings=findings,
     )
+
+
+def get_data_model(project: Path) -> Envelope:
+    model = load_model(project)
+    return Envelope(command="get_data_model", status="ok", data=model.model_dump(mode="json", by_alias=True))
+
+
+def find_join_path(project: Path, source_entity: str, target_entity: str, max_depth: int) -> Envelope:
+    if not 1 <= max_depth <= 4:
+        raise JoinLintError("INVALID_DEPTH", "max_depth must be between 1 and 4", 2)
+    model = load_model(project)
+    if source_entity not in model.entities or target_entity not in model.entities:
+        raise JoinLintError("ENTITY_NOT_FOUND", "entity is not confirmed", 2)
+    paths: list[list[dict[str, str]]] = []
+    queue: list[tuple[str, list[dict[str, str]], set[str]]] = [(source_entity, [], {source_entity})]
+    while queue and len(paths) < 20:
+        entity, path, seen = queue.pop(0)
+        if entity == target_entity and path:
+            paths.append(path)
+            continue
+        if len(path) == max_depth:
+            continue
+        for relationship in model.relationships:
+            from_entity = relationship.from_.split(".", maxsplit=1)[0]
+            to_entity = relationship.to.split(".", maxsplit=1)[0]
+            if entity == from_entity and to_entity not in seen:
+                queue.append((to_entity, [*path, _path_edge(relationship, "forward")], seen | {to_entity}))
+            if entity == to_entity and from_entity not in seen:
+                queue.append((from_entity, [*path, _path_edge(relationship, "reverse")], seen | {from_entity}))
+    return Envelope(command="find_join_path", status="ok", data={"paths": paths})
+
+
+def validate_cached_edges(project: Path, edge_ids: list[str]) -> Envelope:
+    if not edge_ids or len(edge_ids) > 16:
+        raise JoinLintError("INVALID_ARGUMENT", "edge_ids must contain between 1 and 16 IDs", 2)
+    model = load_model(project)
+    _require_fresh_manifest(project, model)
+    try:
+        document = json.loads((project / ".joinlint" / "generated" / "validation.json").read_text(encoding="utf-8"))
+        results = {item["relationship_id"]: item for item in document["relationships"]}
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise JoinLintError("EVIDENCE_STALE", "validation evidence is unavailable", 3) from exc
+    if any(edge_id not in {relationship.id for relationship in model.relationships} or edge_id not in results for edge_id in edge_ids):
+        raise JoinLintError("EVIDENCE_STALE", "validation evidence is stale", 3)
+    findings = [
+        Finding.model_validate(finding)
+        for edge_id in edge_ids
+        for finding in results[edge_id]["findings"]
+    ]
+    findings.sort(key=lambda finding: finding.code.encode("utf-8"))
+    return Envelope(command="validate_join", status="findings" if findings else "ok", data={"relationships": [results[item] for item in edge_ids]}, findings=findings)
+
+
+def _relationships_by_source(model: object) -> dict[str, list[Relationship]]:
+    relationships_by_source: dict[str, list[Relationship]] = {}
+    for relationship in model.relationships:
+        from_entity = model.entities[relationship.from_.split(".", maxsplit=1)[0]]
+        to_entity = model.entities[relationship.to.split(".", maxsplit=1)[0]]
+        if from_entity.source != to_entity.source:
+            raise JoinLintError("RELATIONSHIP_CROSS_SOURCE_UNSUPPORTED", "cross-source relationship validation is not available", 2)
+        relationships_by_source.setdefault(from_entity.source, []).append(relationship)
+    return relationships_by_source
+
+
+def _require_fresh_manifest(project: Path, model: object) -> None:
+    config = load_config(project)
+    fingerprints: list[str] = []
+    for source_id in sorted(config.sources, key=lambda value: value.encode("utf-8")):
+        with snapshot_source(project, source_id) as snapshot:
+            fingerprints.append(snapshot.fingerprint)
+    load_fresh_manifest(project, fingerprints, model_digest(model))
+
+
+def _path_edge(relationship: Relationship, direction: str) -> dict[str, str]:
+    return {"id": relationship.id, "direction": direction, "cardinality": relationship.cardinality}
 
 
 def _candidate_by_id(project: Path, candidate_id: str, *, include_rejected: bool) -> RelationshipCandidate:

@@ -12,6 +12,7 @@ from joinlint.contracts import Envelope, envelope_for
 from joinlint.errors import JoinLintError
 from joinlint.baseline import update_baseline
 from joinlint.model import ModelV1
+from joinlint.mcp_server import run_server
 from joinlint.paths import SafeProject
 from joinlint.services import (
     accept_candidate_by_id,
@@ -197,6 +198,15 @@ def check(
         _emit(run_check(project), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("check", error, json_output=json_output)
+
+
+@app.command("serve-mcp")
+def serve_mcp(project: Path = typer.Option(Path.cwd(), "--project")) -> None:
+    """Start the local STDIO MCP server for one trusted project."""
+    try:
+        run_server(project)
+    except JoinLintError as error:
+        _exit_for_error(error)
 
 
 @baseline_app.command("update")
