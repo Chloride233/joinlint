@@ -10,6 +10,7 @@ from joinlint.config import add_source
 from joinlint.errors import JoinLintError
 from joinlint.model import load_model
 from joinlint.scanner import scan_snapshot
+from joinlint.services import scan_project
 from joinlint.snapshots import snapshot_source
 
 
@@ -84,6 +85,7 @@ def test_same_evidence_keeps_local_rejection_but_changed_evidence_invalidates_it
     candidate = _order_items_candidate(project)
 
     reject_candidate(project, candidate)
+    scan_project(project)
 
     with snapshot_source(project, "sales") as snapshot:
         assert candidate.id not in {

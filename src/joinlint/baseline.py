@@ -10,6 +10,12 @@ from joinlint.contracts import Finding
 from joinlint.errors import JoinLintError
 
 
+class BaselineValidationError(JoinLintError):
+    def __init__(self, findings: list[Finding]) -> None:
+        super().__init__("BASELINE_VALIDATION_FAILED", "blocking findings prevent baseline update", 1)
+        self.findings = findings
+
+
 def load_baseline(project: Path) -> dict[str, Any]:
     path = project / ".joinlint" / "baseline.json"
     if not path.exists():
@@ -28,7 +34,7 @@ def update_baseline(project: Path) -> dict[str, Any]:
 
     evidence = collect_current_evidence(project)
     if any(finding.severity == "blocking" for finding in evidence.findings):
-        raise JoinLintError("BASELINE_VALIDATION_FAILED", "blocking findings prevent baseline update", 1)
+        raise BaselineValidationError(evidence.findings)
     baseline = make_baseline(evidence)
     _write_baseline(project / ".joinlint" / "baseline.json", baseline)
     return baseline

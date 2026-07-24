@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from joinlint.config import ConfigV1, SourceConfig, add_source, load_config, remove_source, set_source_path, write_yaml_atomically
 from joinlint.contracts import Envelope, envelope_for
 from joinlint.errors import JoinLintError
-from joinlint.baseline import update_baseline
+from joinlint.baseline import BaselineValidationError, update_baseline
 from joinlint.model import ModelV1
 from joinlint.mcp_server import run_server
 from joinlint.paths import SafeProject, resolve_project_root
@@ -316,6 +316,16 @@ def baseline_update(
     try:
         baseline = update_baseline(_command_project(project))
         _emit(Envelope(command="baseline update", status="ok", data=baseline), json_output=json_output)
+    except BaselineValidationError as error:
+        _emit(
+            Envelope(
+                command="baseline update",
+                status="findings",
+                data={"baseline_updated": False},
+                findings=error.findings,
+            ),
+            json_output=json_output,
+        )
     except JoinLintError as error:
         _emit_service_error("baseline update", error, json_output=json_output)
     except typer.Exit:

@@ -306,6 +306,49 @@ def test_json_internal_errors_are_stable_and_use_exit_four(monkeypatch, tmp_path
     assert "private/secret" not in result.output
 
 
+def test_baseline_update_returns_blocking_findings_with_exit_one(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    data = project / "data"
+    data.mkdir()
+    (data / "parents.csv").write_text("id\na\na\n", encoding="utf-8")
+    (data / "children.csv").write_text("id,parent_id\n1,a\n", encoding="utf-8")
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["source", "add", "sales", "data", "--project", str(project)]).exit_code == 0
+    (project / ".joinlint" / "model.yaml").write_text(
+        """version: 1
+entities:
+  children:
+    source: sales
+    object: children.csv
+    grain:
+      keys: [id]
+      status: confirmed
+  parents:
+    source: sales
+    object: parents.csv
+    grain:
+      keys: [id]
+      status: confirmed
+relationships:
+  - id: child_to_parent
+    from: children.parent_id
+    to: parents.id
+    cardinality: many_to_one
+    status: confirmed
+""",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["baseline", "update", "--project", str(project), "--json"])
+
+    assert result.exit_code == 1
+    envelope = json.loads(result.output)
+    assert envelope["status"] == "findings"
+    assert "REFERENCED_KEY_NOT_UNIQUE" in {finding["code"] for finding in envelope["findings"]}
+    assert not (project / ".joinlint" / "baseline.json").exists()
+
+
 def test_source_set_invalidates_generated_rejections_and_baseline(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
