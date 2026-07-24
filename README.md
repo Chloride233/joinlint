@@ -29,6 +29,24 @@ joinlint check --project .
 `joinlint serve-mcp --project .` starts a local STDIO MCP server with three
 read-only tools: `get_data_model`, `find_join_path`, and `validate_join`.
 
+## Bundled SQLite smoke test
+
+The repository includes a pinned MIT-licensed Chinook SQLite fixture. To scan
+it through the public adapter:
+
+```bash
+work=$(mktemp -d)
+mkdir "$work/data"
+cp tests/fixtures/chinook/chinook.sqlite "$work/data/chinook.sqlite"
+joinlint init --project "$work"
+joinlint source add chinook data/chinook.sqlite --project "$work"
+joinlint scan --project "$work"
+```
+
+`python -m pytest tests/test_end_to_end.py -q` also exercises the complete
+workflow: scan, explicit model review, candidate confirmation, validation,
+baseline update, clean-checkout `check`, and static report generation.
+
 ## Scope
 
 - Local CSV directories and SQLite files on macOS and Linux.

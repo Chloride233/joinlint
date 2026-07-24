@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -11,6 +12,12 @@ from joinlint.cli import app
 
 FIXTURE = Path(__file__).parent / "fixtures" / "chinook" / "chinook.sqlite"
 runner = CliRunner()
+
+
+def test_chinook_fixture_sha256_is_pinned() -> None:
+    assert hashlib.sha256(FIXTURE.read_bytes()).hexdigest() == (
+        "bdf635be69850bd3be09c9a2dbeef7ddfb80036bd3ef3381383cd03b61e4a61a"
+    )
 
 
 def test_chinook_sqlite_workflow_from_init_to_report(tmp_path: Path) -> None:
