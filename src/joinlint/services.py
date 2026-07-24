@@ -41,7 +41,6 @@ def scan_project(project: Path) -> Envelope:
     catalogs: list[ScanCatalog] = []
     candidates: list[dict[str, object]] = []
     source_fingerprints: list[str] = []
-    report_identifiers: list[str] = []
     validation_results: list[ValidationResult] = []
     relationships_by_source = _relationships_by_source(model)
     for source_id in sorted(config.sources, key=lambda value: value.encode("utf-8")):
@@ -49,7 +48,6 @@ def scan_project(project: Path) -> Envelope:
             catalog = scan_snapshot(snapshot)
             catalogs.append(catalog)
             source_fingerprints.append(snapshot.fingerprint)
-            report_identifiers.extend(f"{source_id}.{table.name}" for table in catalog.tables)
             candidates.extend(
                 _candidate_document(candidate)
                 for candidate in discover_candidates(snapshot, catalog, model)
@@ -89,7 +87,7 @@ def scan_project(project: Path) -> Envelope:
             {"schema_version": 1, "relationships": [_validation_document(result) for result in validation_results]}
         ),
     }
-    write_generated_transaction(project, files, {"identifiers": report_identifiers})
+    write_generated_transaction(project, files, _report_data(config, model, catalogs, candidates, validation_results))
     return Envelope(
         command="scan",
         status="ok",
@@ -174,16 +172,17 @@ def regenerate_report(project: Path) -> Envelope:
     model = load_model(project)
     _require_fresh_manifest(project, model)
     try:
+        config = load_config(project)
         catalog = json.loads((project / ".joinlint" / "generated" / "catalog.json").read_text(encoding="utf-8"))
-        identifiers = [
-            f"{source['source_id']}.{table['name']}"
-            for source in catalog["sources"]
-            for table in source["tables"]
-        ]
+        candidates = json.loads(
+            (project / ".joinlint" / "generated" / "relationship-candidates.json").read_text(encoding="utf-8")
+        )
+        validations = json.loads((project / ".joinlint" / "generated" / "validation.json").read_text(encoding="utf-8"))
+        report_data = _report_data_from_documents(config, model, catalog, candidates, validations)
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise JoinLintError("EVIDENCE_STALE", "catalog evidence is unavailable", 3) from exc
-    write_report_atomically(project, {"identifiers": identifiers})
-    return Envelope(command="report", status="ok", data={"identifiers": sorted(identifiers)})
+        raise JoinLintError("EVIDENCE_STALE", "generated evidence is unavailable", 3) from exc
+    write_report_atomically(project, report_data)
+    return Envelope(command="report", status="ok", data={"sources": sorted(config.sources)})
 
 
 def get_data_model(project: Path) -> Envelope:
@@ -309,6 +308,56 @@ def _validation_document(result: ValidationResult) -> dict[str, object]:
         "from_rows_per_to": result.from_rows_per_to,
         "to_rows_per_from": result.to_rows_per_from,
         "findings": [finding.model_dump() for finding in result.findings],
+    }
+
+
+def _report_data(
+    config: object,
+    model: object,
+    catalogs: list[ScanCatalog],
+    candidates: list[dict[str, object]],
+    validations: list[ValidationResult],
+) -> dict[str, object]:
+    return {
+        "sources": [
+            {
+                "source_id": catalog.source_id,
+                "kind": config.sources[catalog.source_id].kind,
+                "tables": [asdict(table) for table in catalog.tables],
+            }
+            for catalog in catalogs
+        ],
+        "relationships": [relationship.model_dump(mode="json", by_alias=True) for relationship in model.relationships],
+        "candidates": candidates,
+        "validations": [_validation_document(result) for result in validations],
+    }
+
+
+def _report_data_from_documents(
+    config: object,
+    model: object,
+    catalog: dict[str, object],
+    candidates: dict[str, object],
+    validations: dict[str, object],
+) -> dict[str, object]:
+    source_catalogs = catalog["sources"]
+    candidate_rows = candidates["candidates"]
+    validation_rows = validations["relationships"]
+    if not all(isinstance(value, list) for value in (source_catalogs, candidate_rows, validation_rows)):
+        raise TypeError("generated evidence has invalid collections")
+    sources = [
+        {
+            "source_id": item["source_id"],
+            "kind": config.sources[item["source_id"]].kind,
+            "tables": item["tables"],
+        }
+        for item in source_catalogs
+    ]
+    return {
+        "sources": sources,
+        "relationships": [relationship.model_dump(mode="json", by_alias=True) for relationship in model.relationships],
+        "candidates": candidate_rows,
+        "validations": validation_rows,
     }
 
 

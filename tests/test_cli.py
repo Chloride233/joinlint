@@ -205,6 +205,55 @@ def test_report_requires_fresh_generated_evidence(tmp_path: Path) -> None:
     assert json.loads(stale.output)["error"]["code"] == "EVIDENCE_STALE"
 
 
+def test_report_lists_sanitized_sources_relationships_candidates_and_risks(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    data = project / "data"
+    data.mkdir()
+    (data / "parents.csv").write_text("id\na\nb\n", encoding="utf-8")
+    (data / "children.csv").write_text(
+        "id,parent_id\n1,a\n2,a\n3,exclusive-raw-value\n", encoding="utf-8"
+    )
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["source", "add", "sales", "data", "--project", str(project)]).exit_code == 0
+    (project / ".joinlint" / "model.yaml").write_text(
+        """version: 1
+entities:
+  children:
+    source: sales
+    object: children.csv
+    grain:
+      keys: [id]
+      status: confirmed
+  parents:
+    source: sales
+    object: parents.csv
+    grain:
+      keys: [id]
+      status: confirmed
+relationships:
+  - id: child_to_parent
+    from: children.parent_id
+    to: parents.id
+    cardinality: many_to_one
+    status: confirmed
+""",
+        encoding="utf-8",
+    )
+    assert runner.invoke(app, ["scan", "--project", str(project)]).exit_code == 0
+
+    result = runner.invoke(app, ["report", "--project", str(project), "--json"])
+    report = (project / ".joinlint" / "generated" / "report.html").read_text(encoding="utf-8")
+
+    assert result.exit_code == 0, result.output
+    assert "Sources" in report
+    assert "Confirmed relationships" in report
+    assert "Candidates and evidence" in report
+    assert "Validation evidence" in report
+    assert "ORPHAN_CHILD_ROW" in report
+    assert "exclusive-raw-value" not in report
+
+
 def test_source_set_invalidates_generated_rejections_and_baseline(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
