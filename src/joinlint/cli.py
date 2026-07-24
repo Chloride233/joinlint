@@ -15,7 +15,7 @@ from joinlint.errors import JoinLintError
 from joinlint.baseline import update_baseline
 from joinlint.model import ModelV1
 from joinlint.mcp_server import run_server
-from joinlint.paths import SafeProject
+from joinlint.paths import SafeProject, resolve_project_root
 from joinlint.services import (
     accept_candidate_by_id,
     list_candidates,
@@ -97,11 +97,7 @@ def _command_project(project: Path | None) -> Path:
         if not root.is_dir():
             raise JoinLintError("PROJECT_NOT_FOUND", "project must be a directory", 2)
         return root
-    current = Path.cwd()
-    for root in (current, *current.parents):
-        if (root / ".joinlint" / "config.yaml").exists():
-            return root
-    raise JoinLintError("PROJECT_NOT_FOUND", "no JoinLint project exists in this directory tree", 2)
+    return resolve_project_root(Path.cwd())
 
 
 @contextmanager
