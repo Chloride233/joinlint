@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from joinlint.candidates import normalize_value, snapshot_values
 from joinlint.contracts import Finding
 from joinlint.errors import JoinLintError
-from joinlint.model import Relationship
+from joinlint.model import ModelV1, Relationship, entity_table_name
 from joinlint.scanner import ScanCatalog
 from joinlint.snapshots import SourceSnapshot
 
@@ -27,10 +27,10 @@ class PathValidationResult:
 
 
 def validate_relationship(
-    relationship: Relationship, snapshot: SourceSnapshot, catalog: ScanCatalog
+    relationship: Relationship, snapshot: SourceSnapshot, catalog: ScanCatalog, model: ModelV1 | None = None
 ) -> ValidationResult:
-    from_table, from_column = _endpoint(relationship.from_, catalog)
-    to_table, to_column = _endpoint(relationship.to, catalog)
+    from_table, from_column = _endpoint(relationship.from_, snapshot, catalog, model)
+    to_table, to_column = _endpoint(relationship.to, snapshot, catalog, model)
     values = snapshot_values(snapshot)
     from_values = values[from_table][from_column]
     to_values = values[to_table][to_column]
@@ -67,9 +67,9 @@ def validate_relationship(
 
 
 def validate_path(
-    relationships: list[Relationship], snapshot: SourceSnapshot, catalog: ScanCatalog
+    relationships: list[Relationship], snapshot: SourceSnapshot, catalog: ScanCatalog, model: ModelV1 | None = None
 ) -> PathValidationResult:
-    results = tuple(validate_relationship(relationship, snapshot, catalog) for relationship in relationships)
+    results = tuple(validate_relationship(relationship, snapshot, catalog, model) for relationship in relationships)
     findings = {finding.code: finding for result in results for finding in result.findings}
     fanout_edges = sum(
         result.from_rows_per_to > 1 or result.to_rows_per_from > 1 for result in results
@@ -82,8 +82,16 @@ def validate_path(
     )
 
 
-def _endpoint(endpoint: str, catalog: ScanCatalog) -> tuple[str, str]:
-    table_name, column_name = endpoint.split(".", maxsplit=1)
+def _endpoint(
+    endpoint: str, snapshot: SourceSnapshot, catalog: ScanCatalog, model: ModelV1 | None
+) -> tuple[str, str]:
+    entity_id, column_name = endpoint.split(".", maxsplit=1)
+    table_name = entity_id
+    if model is not None:
+        entity = model.entities.get(entity_id)
+        if entity is None or entity.source != snapshot.source_id:
+            raise JoinLintError("MODEL_REFERENCE_MISSING", "relationship entity is missing from source", 2)
+        table_name = entity_table_name(entity, snapshot.kind)
     try:
         catalog.table(table_name).column(column_name)
     except KeyError as exc:

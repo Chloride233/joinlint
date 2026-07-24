@@ -82,3 +82,16 @@ def model_digest(model: ModelV1) -> str:
 def write_model(project: Path | SafeProject, model: ModelV1) -> None:
     with _project_boundary(project) as boundary:
         write_yaml_atomically(boundary.root / ".joinlint" / "model.yaml", model)
+
+
+def entity_table_name(entity: Entity, source_kind: str) -> str:
+    if source_kind == "csv_directory":
+        return PurePosixPath(entity.object).with_suffix("").as_posix()
+    return entity.object
+
+
+def entity_id_for_table(model: ModelV1, source_id: str, table_name: str, source_kind: str) -> str | None:
+    for entity_id, entity in model.entities.items():
+        if entity.source == source_id and entity_table_name(entity, source_kind) == table_name:
+            return entity_id
+    return None

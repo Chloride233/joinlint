@@ -55,7 +55,7 @@ def scan_project(project: Path) -> Envelope:
                 for candidate in discover_candidates(snapshot, catalog, model)
             )
             validation_results.extend(
-                validate_relationship(relationship, snapshot, catalog)
+                validate_relationship(relationship, snapshot, catalog, model)
                 for relationship in relationships_by_source.get(source_id, [])
             )
     digest = model_digest(model)
@@ -142,7 +142,7 @@ def collect_current_evidence(project: Path) -> CurrentEvidence:
             schemas.append(_catalog_document(catalog))
             source_fingerprints.append(snapshot.fingerprint)
             results.extend(
-                validate_relationship(relationship, snapshot, catalog)
+                validate_relationship(relationship, snapshot, catalog, model)
                 for relationship in relationships_by_source.get(source_id, [])
             )
     findings = [finding for result in results for finding in result.findings]

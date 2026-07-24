@@ -20,13 +20,13 @@ def _write_model(project: Path) -> None:
     (project / ".joinlint" / "model.yaml").write_text(
         """version: 1
 entities:
-  orders:
+  purchase_orders:
     source: sales
     object: orders.csv
     grain:
       keys: [order_id]
       status: confirmed
-  order_items:
+  line_items:
     source: sales
     object: order_items.csv
     grain:
@@ -45,7 +45,7 @@ def _order_items_candidate(project: Path):
     return next(
         candidate
         for candidate in candidates
-        if candidate.from_endpoint == "order_items.order_id" and candidate.to_endpoint == "orders.order_id"
+        if candidate.from_endpoint == "line_items.order_id" and candidate.to_endpoint == "purchase_orders.order_id"
     )
 
 

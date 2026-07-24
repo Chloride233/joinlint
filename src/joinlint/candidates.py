@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from joinlint.contracts import canonical_json
 from joinlint.errors import JoinLintError
-from joinlint.model import ModelV1, Relationship, model_digest, write_model
+from joinlint.model import ModelV1, Relationship, entity_id_for_table, model_digest, write_model
 from joinlint.scanner import ColumnProfile, ScanCatalog, TableProfile
 from joinlint.snapshots import SourceSnapshot
 
@@ -186,8 +186,10 @@ def _candidate_for_columns(
         referenced_is_unique=parent_column.is_unique,
         cardinality=cardinality,
     )
-    from_endpoint = f"{child_table.name}.{child_column.name}"
-    to_endpoint = f"{parent_table.name}.{parent_column.name}"
+    child_entity = entity_id_for_table(model, snapshot.source_id, child_table.name, snapshot.kind)
+    parent_entity = entity_id_for_table(model, snapshot.source_id, parent_table.name, snapshot.kind)
+    from_endpoint = f"{child_entity or child_table.name}.{child_column.name}"
+    to_endpoint = f"{parent_entity or parent_table.name}.{parent_column.name}"
     identity = {"source": snapshot.source_id, "from": from_endpoint, "to": to_endpoint}
     candidate_id = "candidate_" + hashlib.sha256(canonical_json(identity)).hexdigest()[:16]
     return RelationshipCandidate(
