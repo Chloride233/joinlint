@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from joinlint.artifacts import load_fresh_manifest, write_generated_transaction
+from joinlint.artifacts import load_fresh_manifest, write_generated_transaction, write_report_atomically
 from joinlint.candidates import (
     POLICY_VERSION,
     RelationshipCandidate,
@@ -168,6 +168,22 @@ def run_check(project: Path) -> Envelope:
         data={"relationships": evidence.relationship_results},
         findings=findings,
     )
+
+
+def regenerate_report(project: Path) -> Envelope:
+    model = load_model(project)
+    _require_fresh_manifest(project, model)
+    try:
+        catalog = json.loads((project / ".joinlint" / "generated" / "catalog.json").read_text(encoding="utf-8"))
+        identifiers = [
+            f"{source['source_id']}.{table['name']}"
+            for source in catalog["sources"]
+            for table in source["tables"]
+        ]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise JoinLintError("EVIDENCE_STALE", "catalog evidence is unavailable", 3) from exc
+    write_report_atomically(project, {"identifiers": identifiers})
+    return Envelope(command="report", status="ok", data={"identifiers": sorted(identifiers)})
 
 
 def get_data_model(project: Path) -> Envelope:

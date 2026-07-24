@@ -65,6 +65,21 @@ def load_fresh_manifest(
     return manifest
 
 
+def write_report_atomically(project: Path, report_data: dict[str, Any]) -> None:
+    path = project / ".joinlint" / "generated" / "report.html"
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".report.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as destination:
+            destination.write(render_report(report_data).encode("utf-8"))
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def _relative_artifact_path(name: str) -> PurePosixPath:
     path = PurePosixPath(name)
     if path.is_absolute() or not path.parts or ".." in path.parts:

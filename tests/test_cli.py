@@ -182,3 +182,24 @@ def test_check_reports_missing_baseline_as_inconclusive(tmp_path: Path) -> None:
 
     assert result.exit_code == 3
     assert json.loads(result.output)["error"]["code"] == "BASELINE_MISSING"
+
+
+def test_report_requires_fresh_generated_evidence(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    data = project / "data"
+    data.mkdir()
+    (data / "records.csv").write_text("id\n1\n", encoding="utf-8")
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["source", "add", "sales", "data", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["scan", "--project", str(project)]).exit_code == 0
+
+    current = runner.invoke(app, ["report", "--project", str(project), "--json"])
+    with (data / "records.csv").open("a", encoding="utf-8") as source:
+        source.write("2\n")
+    stale = runner.invoke(app, ["report", "--project", str(project), "--json"])
+
+    assert current.exit_code == 0, current.output
+    assert (project / ".joinlint" / "generated" / "report.html").exists()
+    assert stale.exit_code == 3
+    assert json.loads(stale.output)["error"]["code"] == "EVIDENCE_STALE"

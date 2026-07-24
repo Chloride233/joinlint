@@ -19,6 +19,7 @@ from joinlint.services import (
     accept_candidate_by_id,
     list_candidates,
     reject_candidate_by_id,
+    regenerate_report,
     run_check,
     scan_project,
     validate_project,
@@ -213,6 +214,18 @@ def check(
         _emit(run_check(project), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("check", error, json_output=json_output)
+
+
+@app.command()
+def report(
+    project: Path = typer.Option(Path.cwd(), "--project"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Regenerate the static report from fresh generated evidence."""
+    try:
+        _emit(regenerate_report(project), json_output=json_output)
+    except JoinLintError as error:
+        _emit_service_error("report", error, json_output=json_output)
 
 
 @app.command("serve-mcp")
