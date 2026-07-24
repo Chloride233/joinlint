@@ -2,23 +2,48 @@
 
 **Stop AI agents from guessing database joins.**
 
-JoinLint is a local, Git-native data relationship linter that helps developers
-and AI agents build safer multi-table queries. It scans tabular data, proposes
-relationship candidates with evidence, validates cardinality and fan-out risk,
-and preserves human-confirmed semantics in a reviewable model file.
+JoinLint is a local, Git-native data relationship linter. It scans local CSV
+directories and SQLite files, proposes deterministic single-column join
+candidates, validates confirmed relationship cardinality and fan-out risk, and
+keeps reviewed semantics in `.joinlint/model.yaml`.
 
-JoinLint is currently in the design phase. Implementation has not started.
+## Quick start
 
-## v0 direction
+```bash
+python -m pip install -e '.[dev]'
+joinlint init --project .
+joinlint source add sales data --project .
+joinlint scan --project .
+joinlint candidates --project . --json
+```
 
-- CLI-first and local-only
-- deterministic scanning with no required LLM
-- human-confirmed relationship model stored in Git
-- Join and schema-drift validation for local use and CI
-- local STDIO MCP adapter for existing coding and data agents
-- no arbitrary SQL execution through MCP
+Confirm a candidate with `joinlint accept <candidate-id> --project .` after
+reviewing or editing `model.yaml`, then run:
 
-See the current [JoinLint v0 design](docs/superpowers/specs/2026-07-23-joinlint-v0-design.md).
+```bash
+joinlint validate --project .
+joinlint baseline update --project .
+joinlint check --project .
+```
+
+`joinlint serve-mcp --project .` starts a local STDIO MCP server with three
+read-only tools: `get_data_model`, `find_join_path`, and `validate_join`.
+
+## Scope
+
+- Local CSV directories and SQLite files on macOS and Linux.
+- Deterministic exact scans with no LLM or network requirement.
+- Git-tracked configuration, confirmed model, and sanitized baseline.
+- Candidate evidence, confirmed join validation, drift checks, static reports,
+  and bounded local MCP context.
+
+Parquet, DuckDB, remote databases, arbitrary SQL execution, automatic
+relationship confirmation, composite-key inference, Web UI, and remote MCP are
+not supported in v0.
+
+See the [v0 design](docs/superpowers/specs/2026-07-23-joinlint-v0-design.md),
+[benchmarking guide](docs/benchmarking.md), and
+[release checklist](docs/release-checklist.md).
 
 ## License
 
