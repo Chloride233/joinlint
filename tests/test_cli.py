@@ -203,3 +203,25 @@ def test_report_requires_fresh_generated_evidence(tmp_path: Path) -> None:
     assert (project / ".joinlint" / "generated" / "report.html").exists()
     assert stale.exit_code == 3
     assert json.loads(stale.output)["error"]["code"] == "EVIDENCE_STALE"
+
+
+def test_source_set_invalidates_generated_rejections_and_baseline(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    for name in ("data", "replacement"):
+        directory = project / name
+        directory.mkdir()
+        (directory / "records.csv").write_text("id\n1\n", encoding="utf-8")
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["source", "add", "sales", "data", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["scan", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["baseline", "update", "--project", str(project)]).exit_code == 0
+    rejections = project / ".joinlint" / "state" / "rejections.json"
+    rejections.write_text('{"version":1,"rejections":["old"]}', encoding="utf-8")
+
+    result = runner.invoke(app, ["source", "set", "sales", "replacement", "--project", str(project)])
+
+    assert result.exit_code == 0, result.output
+    assert not (project / ".joinlint" / "generated").exists()
+    assert not (project / ".joinlint" / "baseline.json").exists()
+    assert not rejections.exists()

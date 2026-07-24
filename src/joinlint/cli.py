@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Iterator
@@ -128,6 +129,13 @@ def _source_kind(project: Path, source_path: str) -> str:
             return "sqlite"
         finally:
             os.close(descriptor)
+
+
+def _invalidate_source_evidence(project: Path) -> None:
+    joinlint_directory = project / ".joinlint"
+    shutil.rmtree(joinlint_directory / "generated", ignore_errors=True)
+    (joinlint_directory / "state" / "rejections.json").unlink(missing_ok=True)
+    (joinlint_directory / "baseline.json").unlink(missing_ok=True)
 
 
 @app.command()
@@ -279,6 +287,7 @@ def source_set(
             if _source_kind(project, path) != existing.kind:
                 raise JoinLintError("SOURCE_KIND_MISMATCH", "source kind cannot change", 2)
             set_source_path(project, source_id, path)
+            _invalidate_source_evidence(project)
     except JoinLintError as error:
         _exit_for_error(error)
 
@@ -292,5 +301,6 @@ def source_remove(
     try:
         with _config_lock(project):
             remove_source(project, source_id)
+            _invalidate_source_evidence(project)
     except JoinLintError as error:
         _exit_for_error(error)
