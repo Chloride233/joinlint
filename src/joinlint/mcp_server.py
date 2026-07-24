@@ -53,6 +53,8 @@ def _response(command: str, action: Callable[[], Envelope]) -> dict[str, object]
     except JoinLintError as error:
         status = "inconclusive" if error.exit_code == 3 else "error"
         envelope = envelope_for(command=command, status=status, error_code=error.code)
+    except Exception:
+        envelope = envelope_for(command=command, status="error", error_code="INTERNAL_ERROR")
     if len(envelope.model_dump_json(exclude_none=False).encode("utf-8")) > 1_048_576:
         envelope = envelope_for(command=command, status="inconclusive", error_code="OUTPUT_LIMIT_EXCEEDED")
     return envelope.model_dump(mode="json")

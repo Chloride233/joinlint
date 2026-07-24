@@ -108,3 +108,16 @@ def test_fresh_manifest_requires_all_matching_digests(project: Path) -> None:
     with pytest.raises(JoinLintError) as captured:
         load_fresh_manifest(project, ["source-two"], "model-one")
     assert captured.value.code == "EVIDENCE_STALE"
+
+
+def test_manifest_symlink_is_treated_as_stale_evidence(project: Path) -> None:
+    outside = project.parent / "outside-manifest.json"
+    outside.write_text('{"schema_version":1,"scan_id":"outside"}', encoding="utf-8")
+    generated = project / ".joinlint" / "generated"
+    generated.mkdir()
+    (generated / "manifest.json").symlink_to(outside)
+
+    with pytest.raises(JoinLintError) as captured:
+        load_manifest(project)
+
+    assert captured.value.code == "EVIDENCE_STALE"

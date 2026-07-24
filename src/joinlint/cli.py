@@ -39,7 +39,7 @@ def _exit_for_error(error: JoinLintError) -> None:
     raise typer.Exit(error.exit_code)
 
 
-def _emit(envelope: Envelope, *, json_output: bool) -> None:
+def _emit(envelope: Envelope, *, json_output: bool, error_exit_code: int | None = None) -> None:
     if json_output:
         body = envelope.model_dump_json(exclude_none=False)
         if len(body.encode("utf-8")) > 1_048_576:
@@ -52,15 +52,29 @@ def _emit(envelope: Envelope, *, json_output: bool) -> None:
     if envelope.status == "findings":
         exit_code = 1 if any(finding.severity == "blocking" for finding in envelope.findings) else 0
     else:
-        exit_code = 0 if envelope.status == "ok" else 3 if envelope.status == "inconclusive" else 2
+        exit_code = (
+            0
+            if envelope.status == "ok"
+            else 3
+            if envelope.status == "inconclusive"
+            else error_exit_code or 2
+        )
     raise typer.Exit(exit_code)
 
 
 def _emit_service_error(command: str, error: JoinLintError, *, json_output: bool) -> None:
     if json_output:
         status = "inconclusive" if error.exit_code == 3 else "error"
-        _emit(envelope_for(command=command, status=status, error_code=error.code), json_output=True)
+        _emit(
+            envelope_for(command=command, status=status, error_code=error.code),
+            json_output=True,
+            error_exit_code=error.exit_code,
+        )
     _exit_for_error(error)
+
+
+def _internal_error() -> JoinLintError:
+    return JoinLintError("INTERNAL_ERROR", "unexpected internal failure", 4)
 
 
 def _init_project(project: Path, force: bool) -> None:
@@ -164,6 +178,8 @@ def init(
         _init_project(project or Path.cwd(), force)
     except JoinLintError as error:
         _exit_for_error(error)
+    except Exception:
+        _exit_for_error(_internal_error())
 
 
 @app.command()
@@ -176,6 +192,10 @@ def scan(
         _emit(scan_project(_command_project(project)), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("scan", error, json_output=json_output)
+    except typer.Exit:
+        raise
+    except Exception:
+        _emit_service_error("scan", _internal_error(), json_output=json_output)
 
 
 @app.command()
@@ -188,6 +208,10 @@ def candidates(
         _emit(list_candidates(_command_project(project)), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("candidates", error, json_output=json_output)
+    except typer.Exit:
+        raise
+    except Exception:
+        _emit_service_error("candidates", _internal_error(), json_output=json_output)
 
 
 @app.command()
@@ -201,6 +225,10 @@ def accept(
         _emit(accept_candidate_by_id(_command_project(project), candidate_id), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("accept", error, json_output=json_output)
+    except typer.Exit:
+        raise
+    except Exception:
+        _emit_service_error("accept", _internal_error(), json_output=json_output)
 
 
 @app.command()
@@ -214,6 +242,10 @@ def reject(
         _emit(reject_candidate_by_id(_command_project(project), candidate_id), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("reject", error, json_output=json_output)
+    except typer.Exit:
+        raise
+    except Exception:
+        _emit_service_error("reject", _internal_error(), json_output=json_output)
 
 
 @app.command()
@@ -226,6 +258,10 @@ def validate(
         _emit(validate_project(_command_project(project)), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("validate", error, json_output=json_output)
+    except typer.Exit:
+        raise
+    except Exception:
+        _emit_service_error("validate", _internal_error(), json_output=json_output)
 
 
 @app.command()
@@ -238,6 +274,10 @@ def check(
         _emit(run_check(_command_project(project)), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("check", error, json_output=json_output)
+    except typer.Exit:
+        raise
+    except Exception:
+        _emit_service_error("check", _internal_error(), json_output=json_output)
 
 
 @app.command()
@@ -250,6 +290,10 @@ def report(
         _emit(regenerate_report(_command_project(project)), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("report", error, json_output=json_output)
+    except typer.Exit:
+        raise
+    except Exception:
+        _emit_service_error("report", _internal_error(), json_output=json_output)
 
 
 @app.command("serve-mcp")
@@ -259,6 +303,8 @@ def serve_mcp(project: Path | None = typer.Option(None, "--project")) -> None:
         run_server(_command_project(project))
     except JoinLintError as error:
         _exit_for_error(error)
+    except Exception:
+        _exit_for_error(_internal_error())
 
 
 @baseline_app.command("update")
@@ -272,6 +318,10 @@ def baseline_update(
         _emit(Envelope(command="baseline update", status="ok", data=baseline), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("baseline update", error, json_output=json_output)
+    except typer.Exit:
+        raise
+    except Exception:
+        _emit_service_error("baseline update", _internal_error(), json_output=json_output)
 
 
 @source_app.command("add")
@@ -287,6 +337,8 @@ def source_add(
             add_source(root, source_id, path, _source_kind(root, path))
     except JoinLintError as error:
         _exit_for_error(error)
+    except Exception:
+        _exit_for_error(_internal_error())
 
 
 @source_app.command("set")
@@ -308,6 +360,8 @@ def source_set(
             _invalidate_source_evidence(root)
     except JoinLintError as error:
         _exit_for_error(error)
+    except Exception:
+        _exit_for_error(_internal_error())
 
 
 @source_app.command("remove")
@@ -323,3 +377,5 @@ def source_remove(
             _invalidate_source_evidence(root)
     except JoinLintError as error:
         _exit_for_error(error)
+    except Exception:
+        _exit_for_error(_internal_error())

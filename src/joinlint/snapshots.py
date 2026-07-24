@@ -237,6 +237,8 @@ def _snapshot_sqlite(
     try:
         deadline.check()
         parent_descriptor, leaf, expected_identity = project.open_parent_relative(source.path)
+        if expected_identity.st_size > source.limits.max_source_bytes:
+            raise JoinLintError("INCONCLUSIVE_SCAN", "source byte limit exceeded", 3)
         destination = root / "source.sqlite"
         _backup_sqlite(parent_descriptor, leaf, destination, deadline)
         deadline.check()
@@ -244,6 +246,8 @@ def _snapshot_sqlite(
         if _identity_tuple(actual_identity) != _identity_tuple(expected_identity):
             raise JoinLintError("SOURCE_CHANGED_DURING_SCAN", "source changed during backup", 3)
         copied_size, copied_hash = _hash_file(destination, deadline)
+        if copied_size > source.limits.max_source_bytes:
+            raise JoinLintError("INCONCLUSIVE_SCAN", "source byte limit exceeded", 3)
         files = (
             SnapshotFile(
                 relative_path=source.path,

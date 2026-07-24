@@ -88,3 +88,32 @@ def test_sqlite_snapshot_includes_committed_wal_rows(project: Path) -> None:
                 copied.close()
     finally:
         connection.close()
+
+
+def test_sqlite_snapshot_respects_source_byte_limit(project: Path) -> None:
+    directory = project / "data"
+    directory.mkdir()
+    database = directory / "app.sqlite"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("CREATE TABLE records (id INTEGER)")
+        connection.commit()
+    finally:
+        connection.close()
+    (project / ".joinlint" / "config.yaml").write_text(
+        """version: 1
+sources:
+  warehouse:
+    kind: sqlite
+    path: data/app.sqlite
+    limits:
+      max_source_bytes: 1
+      max_scan_seconds: 60
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        snapshot_source(project, "warehouse")
+
+    assert captured.value.code == "INCONCLUSIVE_SCAN"

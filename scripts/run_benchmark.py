@@ -12,7 +12,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from joinlint.config import add_source
-from joinlint.services import scan_project
+from joinlint.services import scan_project, validate_project
 
 
 def run_performance_fixture(rows: int, output: Path) -> dict[str, int | float]:
@@ -20,15 +20,37 @@ def run_performance_fixture(rows: int, output: Path) -> dict[str, int | float]:
         project = Path(temporary)
         data = project / "data"
         data.mkdir()
-        _write_rows(data / "records.csv", rows)
+        _write_rows(data, rows)
         (project / ".joinlint").mkdir()
         (project / ".joinlint" / "config.yaml").write_text("version: 1\nsources: {}\n", encoding="utf-8")
         (project / ".joinlint" / "model.yaml").write_text(
-            "version: 1\nentities: {}\nrelationships: []\n", encoding="utf-8"
+            """version: 1
+entities:
+  records:
+    source: performance
+    object: records.csv
+    grain:
+      keys: [record_id]
+      status: confirmed
+  groups:
+    source: performance
+    object: groups.csv
+    grain:
+      keys: [group_id]
+      status: confirmed
+relationships:
+  - id: record_to_group
+    from: records.group_id
+    to: groups.group_id
+    cardinality: many_to_one
+    status: confirmed
+""",
+            encoding="utf-8",
         )
         add_source(project, "performance", "data", "csv_directory")
         started = time.monotonic()
         scan_project(project)
+        validate_project(project)
         payload: dict[str, int | float] = {
             "rows": rows,
             "elapsed_seconds": time.monotonic() - started,
@@ -39,8 +61,12 @@ def run_performance_fixture(rows: int, output: Path) -> dict[str, int | float]:
     return payload
 
 
-def _write_rows(path: Path, rows: int) -> None:
-    with path.open("w", encoding="utf-8") as destination:
+def _write_rows(directory: Path, rows: int) -> None:
+    with (directory / "groups.csv").open("w", encoding="utf-8") as destination:
+        destination.write("group_id\n")
+        for index in range(1_000):
+            destination.write(f"{index}\n")
+    with (directory / "records.csv").open("w", encoding="utf-8") as destination:
         destination.write("record_id,group_id\n")
         for index in range(rows):
             destination.write(f"{index},{index % 1_000}\n")

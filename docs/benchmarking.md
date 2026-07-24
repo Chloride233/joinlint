@@ -43,8 +43,9 @@ process peak RSS. The Linux CI gate requires no more than 60 seconds and less
 than 1 GiB peak RSS for one million rows.
 
 The command above was run locally on 2026-07-24 with Python 3.12.13 on macOS
-Darwin 25.5.0 arm64. For one million rows it recorded 1.357457958161831 seconds
-and 340,377,600 peak RSS bytes. This hardware-specific measurement is a
+Darwin 25.5.0 arm64. For one million rows it recorded 4.338084083050489 seconds
+and 340,770,816 peak RSS bytes while scanning and validating one confirmed
+relationship. This hardware-specific measurement is a
 reproducible regression record, not a general performance or discovery claim.
 
 Together, the committed candidate, join-safety, drift, conformance, smoke, and

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from collections import Counter
 from dataclasses import dataclass
 
 from joinlint.candidates import normalize_value, snapshot_values
-from joinlint.contracts import Finding
+from joinlint.contracts import Finding, canonical_json
 from joinlint.errors import JoinLintError
 from joinlint.model import ModelV1, Relationship, entity_table_name
 from joinlint.scanner import ScanCatalog
@@ -14,6 +15,7 @@ from joinlint.snapshots import SourceSnapshot
 @dataclass(frozen=True)
 class ValidationResult:
     relationship_id: str
+    relationship_digest: str
     observed_cardinality: str
     from_rows_per_to: int
     to_rows_per_from: int
@@ -59,6 +61,7 @@ def validate_relationship(
         findings.append(_finding("MANY_TO_MANY_FANOUT", "blocking"))
     return ValidationResult(
         relationship_id=relationship.id,
+        relationship_digest=relationship_digest(relationship),
         observed_cardinality=observed,
         from_rows_per_to=from_rows_per_to,
         to_rows_per_from=to_rows_per_from,
@@ -111,3 +114,7 @@ def _cardinality(from_rows_per_to: int, to_rows_per_from: int) -> str:
 
 def _finding(code: str, severity: str) -> Finding:
     return Finding(code=code, severity=severity, message=code)
+
+
+def relationship_digest(relationship: Relationship) -> str:
+    return hashlib.sha256(canonical_json(relationship.model_dump(mode="json", by_alias=True))).hexdigest()

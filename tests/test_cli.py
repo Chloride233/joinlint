@@ -290,6 +290,22 @@ def test_report_rejects_generated_evidence_from_a_different_policy(tmp_path: Pat
     assert json.loads(result.output)["error"]["code"] == "EVIDENCE_STALE"
 
 
+def test_json_internal_errors_are_stable_and_use_exit_four(monkeypatch, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+
+    def fail(_project: Path):
+        raise RuntimeError("local path: /private/secret")
+
+    monkeypatch.setattr("joinlint.cli.scan_project", fail)
+    result = runner.invoke(app, ["scan", "--project", str(project), "--json"])
+
+    assert result.exit_code == 4
+    assert json.loads(result.output)["error"]["code"] == "INTERNAL_ERROR"
+    assert "private/secret" not in result.output
+
+
 def test_source_set_invalidates_generated_rejections_and_baseline(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

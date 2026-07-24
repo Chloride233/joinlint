@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from joinlint.errors import JoinLintError
+from joinlint.paths import SafeProject
 from joinlint.report import render_report
 
 
@@ -51,8 +52,13 @@ def write_file(path: Path, body: bytes) -> None:
 
 def load_manifest(project: Path) -> dict[str, Any]:
     try:
-        return _read_manifest(project / ".joinlint" / "generated" / "manifest.json")
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        with SafeProject(project) as safe_project:
+            descriptor = safe_project.open_relative(
+                PurePosixPath(".joinlint/generated/manifest.json"), os.O_RDONLY
+            )
+            with os.fdopen(descriptor, "r", encoding="utf-8") as source:
+                return _read_manifest_document(json.load(source))
+    except (JoinLintError, OSError, ValueError, json.JSONDecodeError) as exc:
         raise JoinLintError("EVIDENCE_STALE", "generated evidence is missing or invalid", 3) from exc
 
 
@@ -88,7 +94,10 @@ def _relative_artifact_path(name: str) -> PurePosixPath:
 
 
 def _read_manifest(path: Path) -> dict[str, Any]:
-    document: Any = json.loads(path.read_text(encoding="utf-8"))
+    return _read_manifest_document(json.loads(path.read_text(encoding="utf-8")))
+
+
+def _read_manifest_document(document: Any) -> dict[str, Any]:
     if not isinstance(document, dict) or document.get("schema_version") != 1:
         raise ValueError("manifest schema is invalid")
     return document

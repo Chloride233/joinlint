@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ from joinlint.config import add_source
 from joinlint.errors import JoinLintError
 from joinlint.contracts import Envelope
 from joinlint.mcp_server import _response, create_server
-from joinlint.services import find_join_path, scan_project
+from joinlint.services import find_join_path, scan_project, validate_cached_edges
 
 
 def test_mcp_exposes_exactly_three_tools(project: Path) -> None:
@@ -35,6 +36,7 @@ def test_find_join_path_rejects_unconfirmed_entities(project: Path) -> None:
 
 
 def test_find_join_path_refuses_to_silently_truncate(project: Path) -> None:
+    add_source(project, "sales", "data", "csv_directory")
     relationships = "\n".join(
         f"  - id: edge_{index:02d}\n    from: source.id\n    to: target.id\n    cardinality: one_to_one\n    status: confirmed"
         for index in range(21)
@@ -78,6 +80,80 @@ def test_mcp_response_limit_returns_inconclusive_envelope() -> None:
         "code": "OUTPUT_LIMIT_EXCEEDED",
         "message": "OUTPUT_LIMIT_EXCEEDED",
     }
+
+
+def test_mcp_internal_errors_are_stable() -> None:
+    response = _response("get_data_model", lambda: (_ for _ in ()).throw(RuntimeError("/private/secret")))
+
+    assert response["status"] == "error"
+    assert response["error"] == {"code": "INTERNAL_ERROR", "message": "INTERNAL_ERROR"}
+
+
+def test_cached_validation_rejects_duplicate_edge_ids(project: Path) -> None:
+    _prepare_mcp_project(project)
+
+    with pytest.raises(JoinLintError) as captured:
+        validate_cached_edges(project, ["child_to_parent", "child_to_parent"])
+
+    assert captured.value.code == "INVALID_ARGUMENT"
+
+
+def test_cached_validation_rejects_non_string_edge_ids(project: Path) -> None:
+    _prepare_mcp_project(project)
+
+    with pytest.raises(JoinLintError) as captured:
+        validate_cached_edges(project, [1])  # type: ignore[list-item]
+
+    assert captured.value.code == "INVALID_ARGUMENT"
+
+
+def test_cached_validation_refuses_symlinked_evidence(project: Path) -> None:
+    _prepare_mcp_project(project)
+    path = project / ".joinlint" / "generated" / "validation.json"
+    outside = project.parent / "outside-validation.json"
+    outside.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    path.unlink()
+    path.symlink_to(outside)
+
+    with pytest.raises(JoinLintError) as captured:
+        validate_cached_edges(project, ["child_to_parent"])
+
+    assert captured.value.code == "EVIDENCE_STALE"
+
+
+def test_cached_validation_rejects_a_mismatched_relationship_digest(project: Path) -> None:
+    _prepare_mcp_project(project)
+    path = project / ".joinlint" / "generated" / "validation.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["relationships"][0]["relationship_digest"] = "0" * 64
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(JoinLintError) as captured:
+        validate_cached_edges(project, ["child_to_parent"])
+
+    assert captured.value.code == "EVIDENCE_STALE"
+
+
+def test_cached_validation_rejects_untrusted_extra_artifact_fields(project: Path) -> None:
+    _prepare_mcp_project(project)
+    path = project / ".joinlint" / "generated" / "validation.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["relationships"][0]["raw_rows"] = ["sensitive-value"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(JoinLintError) as captured:
+        validate_cached_edges(project, ["child_to_parent"])
+
+    assert captured.value.code == "EVIDENCE_STALE"
+
+
+def test_stdio_mcp_rejects_sql_shaped_arguments(project: Path) -> None:
+    _prepare_mcp_project(project)
+
+    result = asyncio.run(_call_tools(project, [("validate_join", {"sql": "select * from children"})]))
+
+    assert result[0]["status"] == "error"
+    assert result[0]["error"]["code"] == "INVALID_ARGUMENT"
 
 
 def test_stdio_mcp_current_and_stale_evidence_never_mutates_project(project: Path) -> None:
