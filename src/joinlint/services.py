@@ -18,7 +18,7 @@ from joinlint.errors import JoinLintError
 from joinlint.config import load_config
 from joinlint.contracts import Envelope, Finding, canonical_json
 from joinlint.model import Relationship, load_model, model_digest
-from joinlint.scanner import ScanCatalog, scan_snapshot
+from joinlint.scanner import ScanCatalog, TableProfile, scan_snapshot
 from joinlint.snapshots import snapshot_source
 from joinlint.validation import ValidationResult, validate_relationship
 
@@ -294,7 +294,15 @@ def _fresh_candidates(project: Path, *, include_rejected: bool = False) -> list[
 
 
 def _catalog_document(catalog: ScanCatalog) -> dict[str, object]:
-    return {"source_id": catalog.source_id, "tables": [asdict(table) for table in catalog.tables]}
+    return {"source_id": catalog.source_id, "tables": [_table_document(table) for table in catalog.tables]}
+
+
+def _table_document(table: TableProfile) -> dict[str, object]:
+    return {
+        "name": table.name,
+        "row_count": table.row_count,
+        "columns": [asdict(column) for column in table.columns],
+    }
 
 
 def _candidate_document(candidate: RelationshipCandidate) -> dict[str, object]:
@@ -323,7 +331,7 @@ def _report_data(
             {
                 "source_id": catalog.source_id,
                 "kind": config.sources[catalog.source_id].kind,
-                "tables": [asdict(table) for table in catalog.tables],
+                "tables": [_table_document(table) for table in catalog.tables],
             }
             for catalog in catalogs
         ],
