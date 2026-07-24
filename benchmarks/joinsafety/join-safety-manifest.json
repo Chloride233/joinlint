@@ -1,0 +1,8 @@
+{"version":1,"cases":[
+{"id":"blocking-01","kind":"blocking","expected_code":"REFERENCED_KEY_NOT_UNIQUE"},{"id":"blocking-02","kind":"blocking","expected_code":"CHILD_KEY_NULL"},{"id":"blocking-03","kind":"blocking","expected_code":"ORPHAN_CHILD_ROW"},{"id":"blocking-04","kind":"blocking","expected_code":"CARDINALITY_DRIFT"},
+{"id":"blocking-05","kind":"blocking","expected_code":"MANY_TO_MANY_FANOUT"},{"id":"blocking-06","kind":"blocking","expected_code":"COMPOUND_FANOUT"},{"id":"blocking-07","kind":"blocking","expected_code":"SCHEMA_DRIFT"},{"id":"blocking-08","kind":"blocking","expected_code":"CARDINALITY_DRIFT"},
+{"id":"blocking-09","kind":"blocking","expected_code":"REFERENCED_KEY_NOT_UNIQUE"},{"id":"blocking-10","kind":"blocking","expected_code":"ORPHAN_CHILD_ROW"},{"id":"blocking-11","kind":"blocking","expected_code":"MANY_TO_MANY_FANOUT"},{"id":"blocking-12","kind":"blocking","expected_code":"COMPOUND_FANOUT"},
+{"id":"blocking-13","kind":"blocking","expected_code":"CARDINALITY_DRIFT"},{"id":"blocking-14","kind":"blocking","expected_code":"SCHEMA_DRIFT"},{"id":"blocking-15","kind":"blocking","expected_code":"REFERENCED_KEY_NOT_UNIQUE"},{"id":"blocking-16","kind":"blocking","expected_code":"ORPHAN_CHILD_ROW"},
+{"id":"benign-01","kind":"benign","expected_code":null},{"id":"benign-02","kind":"benign","expected_code":null},{"id":"benign-03","kind":"benign","expected_code":null},{"id":"benign-04","kind":"benign","expected_code":null},
+{"id":"benign-05","kind":"benign","expected_code":null},{"id":"benign-06","kind":"benign","expected_code":null},{"id":"benign-07","kind":"benign","expected_code":null},{"id":"benign-08","kind":"benign","expected_code":null}
+]}
