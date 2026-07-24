@@ -8,7 +8,7 @@ import sqlite3
 import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
@@ -269,7 +269,11 @@ def normalize_value(value: object) -> str:
         return str(value)
     if isinstance(value, float):
         return format(Decimal(str(value)).normalize(), "f")
-    return str(value)
+    text = str(value)
+    try:
+        return format(Decimal(text).normalize(), "f")
+    except InvalidOperation:
+        return text
 
 
 def _load_rejections(project: Path) -> set[str]:

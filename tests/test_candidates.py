@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from joinlint.candidates import accept_candidate, discover_candidates, reject_candidate, visible_candidates
+from joinlint.candidates import accept_candidate, discover_candidates, normalize_value, reject_candidate, visible_candidates
 from joinlint.config import add_source
 from joinlint.errors import JoinLintError
 from joinlint.model import load_model
@@ -118,3 +118,8 @@ def test_accept_rejects_candidate_when_model_has_changed(project: Path) -> None:
     with pytest.raises(JoinLintError) as captured:
         accept_candidate(project, candidate)
     assert captured.value.code == "CANDIDATE_STALE"
+
+
+def test_value_normalization_matches_csv_numeric_text_to_sqlite_values() -> None:
+    assert normalize_value("10.0") == normalize_value(10.0) == "10"
+    assert normalize_value("001") == normalize_value(1) == "1"
