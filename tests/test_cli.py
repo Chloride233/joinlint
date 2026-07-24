@@ -53,6 +53,31 @@ def test_source_add_rejects_symlink(tmp_path: Path) -> None:
     assert "SYMLINK_NOT_ALLOWED" in result.output
 
 
+def test_source_command_does_not_create_lock_through_project_symlink(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+    alias = tmp_path / "project-link"
+    alias.symlink_to(project, target_is_directory=True)
+
+    result = runner.invoke(app, ["source", "remove", "missing", "--project", str(alias)])
+
+    assert result.exit_code == 2
+    assert "SYMLINK_NOT_ALLOWED" in result.output
+    assert not (project / ".joinlint" / ".lock").exists()
+
+
+def test_source_add_reports_invalid_relative_path_as_user_error(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+
+    result = runner.invoke(app, ["source", "add", "sales", "../data", "--project", str(project)])
+
+    assert result.exit_code == 2
+    assert "INVALID_ARGUMENT" in result.output
+
+
 def test_scan_writes_generated_evidence_without_mutating_model(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

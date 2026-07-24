@@ -26,3 +26,36 @@ def test_find_join_path_rejects_unconfirmed_entities(project: Path) -> None:
         find_join_path(project, "orders", "items", max_depth=4)
 
     assert captured.value.code == "ENTITY_NOT_FOUND"
+
+
+def test_find_join_path_refuses_to_silently_truncate(project: Path) -> None:
+    relationships = "\n".join(
+        f"  - id: edge_{index:02d}\n    from: source.id\n    to: target.id\n    cardinality: one_to_one\n    status: confirmed"
+        for index in range(21)
+    )
+    (project / ".joinlint" / "model.yaml").write_text(
+        """version: 1
+entities:
+  source:
+    source: sales
+    object: source.csv
+    grain:
+      keys: [id]
+      status: confirmed
+  target:
+    source: sales
+    object: target.csv
+    grain:
+      keys: [id]
+      status: confirmed
+relationships:
+"""
+        + relationships
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        find_join_path(project, "source", "target", max_depth=1)
+
+    assert captured.value.code == "OUTPUT_LIMIT_EXCEEDED"

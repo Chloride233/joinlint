@@ -183,14 +183,16 @@ def find_join_path(project: Path, source_entity: str, target_entity: str, max_de
         raise JoinLintError("ENTITY_NOT_FOUND", "entity is not confirmed", 2)
     paths: list[list[dict[str, str]]] = []
     queue: list[tuple[str, list[dict[str, str]], set[str]]] = [(source_entity, [], {source_entity})]
-    while queue and len(paths) < 20:
+    while queue:
         entity, path, seen = queue.pop(0)
         if entity == target_entity and path:
             paths.append(path)
+            if len(paths) > 20:
+                raise JoinLintError("OUTPUT_LIMIT_EXCEEDED", "more than 20 confirmed paths exist", 3)
             continue
         if len(path) == max_depth:
             continue
-        for relationship in model.relationships:
+        for relationship in sorted(model.relationships, key=lambda item: item.id.encode("utf-8")):
             from_entity = relationship.from_.split(".", maxsplit=1)[0]
             to_entity = relationship.to.split(".", maxsplit=1)[0]
             if entity == from_entity and to_entity not in seen:
@@ -219,6 +221,12 @@ def validate_cached_edges(project: Path, edge_ids: list[str]) -> Envelope:
     ]
     findings.sort(key=lambda finding: finding.code.encode("utf-8"))
     return Envelope(command="validate_join", status="findings" if findings else "ok", data={"relationships": [results[item] for item in edge_ids]}, findings=findings)
+
+
+def validate_cached_path(project: Path, path: list[dict[str, str]]) -> Envelope:
+    if not path or len(path) > 16 or any(set(edge) != {"id", "direction", "cardinality"} for edge in path):
+        raise JoinLintError("INVALID_ARGUMENT", "path must be a returned path of at most 16 edges", 2)
+    return validate_cached_edges(project, [edge["id"] for edge in path])
 
 
 def _relationships_by_source(model: object) -> dict[str, list[Relationship]]:

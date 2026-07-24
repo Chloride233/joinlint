@@ -8,7 +8,7 @@ from mcp.server.fastmcp import FastMCP
 from joinlint.contracts import Envelope, envelope_for
 from joinlint.errors import JoinLintError
 from joinlint.paths import SafeProject
-from joinlint.services import get_data_model, find_join_path, validate_cached_edges
+from joinlint.services import get_data_model, find_join_path, validate_cached_edges, validate_cached_path
 
 
 def create_server(project: Path) -> FastMCP:
@@ -29,8 +29,16 @@ def create_server(project: Path) -> FastMCP:
         )
 
     @mcp.tool(name="validate_join")
-    def validate_join_tool(edge_ids: list[str]) -> dict[str, object]:
-        return _response("validate_join", lambda: validate_cached_edges(root, edge_ids))
+    def validate_join_tool(
+        edge_ids: list[str] | None = None, path: list[dict[str, str]] | None = None
+    ) -> dict[str, object]:
+        if (edge_ids is None) == (path is None):
+            return envelope_for(
+                command="validate_join", status="error", error_code="INVALID_ARGUMENT"
+            ).model_dump(mode="json")
+        if path is not None:
+            return _response("validate_join", lambda: validate_cached_path(root, path))
+        return _response("validate_join", lambda: validate_cached_edges(root, edge_ids or []))
 
     return mcp
 

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterator
 
 import typer
+from pydantic import ValidationError
 
 from joinlint.config import ConfigV1, SourceConfig, add_source, load_config, remove_source, set_source_path, write_yaml_atomically
 from joinlint.contracts import Envelope, envelope_for
@@ -85,17 +86,31 @@ def _init_project(project: Path, force: bool) -> None:
 def _config_lock(project: Path) -> Iterator[None]:
     import fcntl
 
-    lock_path = project / ".joinlint" / ".lock"
-    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
-    finally:
-        os.close(descriptor)
+    with SafeProject(project) as trusted_project:
+        directory_descriptor = trusted_project.open_relative(
+            PurePosixPath(".joinlint"), os.O_RDONLY | os.O_DIRECTORY
+        )
+        try:
+            descriptor = os.open(
+                ".lock",
+                os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_descriptor,
+            )
+        finally:
+            os.close(directory_descriptor)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(descriptor)
 
 
 def _source_kind(project: Path, source_path: str) -> str:
-    candidate = SourceConfig(kind="csv_directory", path=source_path).path
+    try:
+        candidate = SourceConfig(kind="csv_directory", path=source_path).path
+    except ValidationError as exc:
+        raise JoinLintError("INVALID_ARGUMENT", "source path is invalid", 2) from exc
     with SafeProject(project) as safe_project:
         try:
             descriptor = safe_project.open_relative(candidate, os.O_RDONLY | os.O_DIRECTORY)
