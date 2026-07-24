@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from benchmarks.joinsafety.generate import evaluate_candidate_manifest, load_manifest
+from benchmarks.joinsafety.generate import (
+    evaluate_candidate_manifest,
+    evaluate_join_safety_manifest,
+    load_manifest,
+)
 
 
 ROOT = Path(__file__).parents[1] / "benchmarks" / "joinsafety"
@@ -23,8 +27,13 @@ def test_candidate_gate_and_safety_cases_pass() -> None:
     safety = load_manifest(ROOT / "join-safety-manifest.json")
 
     metrics = evaluate_candidate_manifest(candidates)
+    safety_results = {result["id"]: result["codes"] for result in evaluate_join_safety_manifest(safety)}
 
     assert metrics["precision"] >= 0.85
     assert metrics["recall"] >= 0.80
-    assert all(case["expected_code"] for case in safety["cases"] if case["kind"] == "blocking")
-    assert all(case["expected_code"] is None for case in safety["cases"] if case["kind"] == "benign")
+    for case in safety["cases"]:
+        codes = safety_results[case["id"]]
+        if case["kind"] == "blocking":
+            assert case["expected_code"] in codes
+        else:
+            assert not {"REFERENCED_KEY_NOT_UNIQUE", "ORPHAN_CHILD_ROW", "CARDINALITY_DRIFT", "MANY_TO_MANY_FANOUT", "COMPOUND_FANOUT", "SCHEMA_DRIFT"} & set(codes)
