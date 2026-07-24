@@ -8,6 +8,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+if __package__ in {None, ""}:
+    sys_path = Path(__file__).parents[2] / "src"
+    import sys
+
+    sys.path.insert(0, str(sys_path))
+
 from joinlint.candidates import discover_candidates
 from joinlint.config import add_source
 from joinlint.model import ModelV1
