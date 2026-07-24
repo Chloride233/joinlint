@@ -78,6 +78,22 @@ def test_source_add_reports_invalid_relative_path_as_user_error(tmp_path: Path) 
     assert "INVALID_ARGUMENT" in result.output
 
 
+def test_commands_find_the_nearest_project_when_project_is_omitted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+    nested = project / "nested" / "directory"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+
+    result = runner.invoke(app, ["scan", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["command"] == "scan"
+
+
 def test_scan_writes_generated_evidence_without_mutating_model(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

@@ -64,6 +64,8 @@ def _emit_service_error(command: str, error: JoinLintError, *, json_output: bool
 
 
 def _init_project(project: Path, force: bool) -> None:
+    if project.is_symlink():
+        raise JoinLintError("SYMLINK_NOT_ALLOWED", "project directory cannot be a symlink", 2)
     try:
         root = project.resolve(strict=True)
     except OSError as exc:
@@ -82,6 +84,24 @@ def _init_project(project: Path, force: bool) -> None:
         (joinlint_directory / directory).mkdir(exist_ok=True)
     write_yaml_atomically(config_path, ConfigV1(version=1, sources={}))
     write_yaml_atomically(model_path, ModelV1(version=1, entities={}, relationships=[]))
+
+
+def _command_project(project: Path | None) -> Path:
+    if project is not None:
+        if project.is_symlink():
+            raise JoinLintError("SYMLINK_NOT_ALLOWED", "project directory cannot be a symlink", 2)
+        try:
+            root = project.resolve(strict=True)
+        except OSError as exc:
+            raise JoinLintError("PROJECT_NOT_FOUND", "project directory is unavailable", 2) from exc
+        if not root.is_dir():
+            raise JoinLintError("PROJECT_NOT_FOUND", "project must be a directory", 2)
+        return root
+    current = Path.cwd()
+    for root in (current, *current.parents):
+        if (root / ".joinlint" / "config.yaml").exists():
+            return root
+    raise JoinLintError("PROJECT_NOT_FOUND", "no JoinLint project exists in this directory tree", 2)
 
 
 @contextmanager
@@ -140,36 +160,36 @@ def _invalidate_source_evidence(project: Path) -> None:
 
 @app.command()
 def init(
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
     force: bool = typer.Option(False, "--force"),
 ) -> None:
     """Create the JoinLint project files without scanning data."""
     try:
-        _init_project(project, force)
+        _init_project(project or Path.cwd(), force)
     except JoinLintError as error:
         _exit_for_error(error)
 
 
 @app.command()
 def scan(
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Create one complete generated-evidence transaction for all sources."""
     try:
-        _emit(scan_project(project), json_output=json_output)
+        _emit(scan_project(_command_project(project)), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("scan", error, json_output=json_output)
 
 
 @app.command()
 def candidates(
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """List fresh, non-rejected relationship candidates."""
     try:
-        _emit(list_candidates(project), json_output=json_output)
+        _emit(list_candidates(_command_project(project)), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("candidates", error, json_output=json_output)
 
@@ -177,12 +197,12 @@ def candidates(
 @app.command()
 def accept(
     candidate_id: str,
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Confirm a fresh candidate in model.yaml."""
     try:
-        _emit(accept_candidate_by_id(project, candidate_id), json_output=json_output)
+        _emit(accept_candidate_by_id(_command_project(project), candidate_id), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("accept", error, json_output=json_output)
 
@@ -190,69 +210,69 @@ def accept(
 @app.command()
 def reject(
     candidate_id: str,
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Record a local rejection for a fresh candidate."""
     try:
-        _emit(reject_candidate_by_id(project, candidate_id), json_output=json_output)
+        _emit(reject_candidate_by_id(_command_project(project), candidate_id), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("reject", error, json_output=json_output)
 
 
 @app.command()
 def validate(
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Validate all confirmed single-source relationships against current data."""
     try:
-        _emit(validate_project(project), json_output=json_output)
+        _emit(validate_project(_command_project(project)), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("validate", error, json_output=json_output)
 
 
 @app.command()
 def check(
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Compare a fresh in-memory scan with the tracked baseline."""
     try:
-        _emit(run_check(project), json_output=json_output)
+        _emit(run_check(_command_project(project)), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("check", error, json_output=json_output)
 
 
 @app.command()
 def report(
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Regenerate the static report from fresh generated evidence."""
     try:
-        _emit(regenerate_report(project), json_output=json_output)
+        _emit(regenerate_report(_command_project(project)), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("report", error, json_output=json_output)
 
 
 @app.command("serve-mcp")
-def serve_mcp(project: Path = typer.Option(Path.cwd(), "--project")) -> None:
+def serve_mcp(project: Path | None = typer.Option(None, "--project")) -> None:
     """Start the local STDIO MCP server for one trusted project."""
     try:
-        run_server(project)
+        run_server(_command_project(project))
     except JoinLintError as error:
         _exit_for_error(error)
 
 
 @baseline_app.command("update")
 def baseline_update(
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Explicitly replace the tracked sanitized baseline."""
     try:
-        baseline = update_baseline(project)
+        baseline = update_baseline(_command_project(project))
         _emit(Envelope(command="baseline update", status="ok", data=baseline), json_output=json_output)
     except JoinLintError as error:
         _emit_service_error("baseline update", error, json_output=json_output)
@@ -262,12 +282,13 @@ def baseline_update(
 def source_add(
     source_id: str,
     path: str,
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
 ) -> None:
     """Register a safe local CSV-directory or SQLite source."""
     try:
-        with _config_lock(project):
-            add_source(project, source_id, path, _source_kind(project, path))
+        root = _command_project(project)
+        with _config_lock(root):
+            add_source(root, source_id, path, _source_kind(root, path))
     except JoinLintError as error:
         _exit_for_error(error)
 
@@ -276,18 +297,19 @@ def source_add(
 def source_set(
     source_id: str,
     path: str,
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
 ) -> None:
     """Replace a source path without changing its registered kind."""
     try:
-        with _config_lock(project):
-            existing = load_config(project).sources.get(source_id)
+        root = _command_project(project)
+        with _config_lock(root):
+            existing = load_config(root).sources.get(source_id)
             if existing is None:
                 raise JoinLintError("SOURCE_NOT_FOUND", "source ID does not exist", 2)
-            if _source_kind(project, path) != existing.kind:
+            if _source_kind(root, path) != existing.kind:
                 raise JoinLintError("SOURCE_KIND_MISMATCH", "source kind cannot change", 2)
-            set_source_path(project, source_id, path)
-            _invalidate_source_evidence(project)
+            set_source_path(root, source_id, path)
+            _invalidate_source_evidence(root)
     except JoinLintError as error:
         _exit_for_error(error)
 
@@ -295,12 +317,13 @@ def source_set(
 @source_app.command("remove")
 def source_remove(
     source_id: str,
-    project: Path = typer.Option(Path.cwd(), "--project"),
+    project: Path | None = typer.Option(None, "--project"),
 ) -> None:
     """Remove an unreferenced source from the project."""
     try:
-        with _config_lock(project):
-            remove_source(project, source_id)
-            _invalidate_source_evidence(project)
+        root = _command_project(project)
+        with _config_lock(root):
+            remove_source(root, source_id)
+            _invalidate_source_evidence(root)
     except JoinLintError as error:
         _exit_for_error(error)
