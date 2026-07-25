@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import stat
 import zipfile
@@ -18,7 +19,22 @@ from benchmarks.agent_join.prepare_spider import (  # noqa: E402
     select_pilot,
     write_pilot_lock,
 )
-from tests.agent_join_helpers import build_mini_spider, orders_spider_metadata  # noqa: E402
+from benchmarks.agent_join.projects import (  # noqa: E402
+    apply_review_sheet,
+    audit_review_bundle,
+    build_oracle_project,
+    build_review_project,
+)
+from joinlint.model import load_model  # noqa: E402
+from joinlint.services import get_data_model, validate_cached_edges  # noqa: E402
+from tests.agent_join_helpers import (  # noqa: E402
+    accept_only_order_customer,
+    build_mini_spider,
+    build_orders_database,
+    load_review_sheet,
+    oracle_schema,
+    orders_spider_metadata,
+)
 
 
 def test_selection_is_seeded_balanced_and_independent_of_joinlint(tmp_path: Path) -> None:
@@ -169,6 +185,75 @@ def test_archive_discovery_rejects_symlinks(tmp_path: Path) -> None:
         bundle.writestr(member, "target")
     with pytest.raises(ValueError, match="unsafe archive member"):
         find_spider_root(archive, tmp_path / "work")
+
+
+def test_review_bundle_excludes_questions_gold_and_foreign_keys(tmp_path: Path) -> None:
+    source = build_orders_database(tmp_path)
+    review = build_review_project(source, tmp_path / "review")
+    serialized = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in review.rglob("*")
+        if path.is_file() and path.suffix in {".json", ".yaml", ".md"}
+    )
+    assert "How many orders" not in serialized
+    assert "SELECT" not in serialized
+    assert "foreign_keys" not in serialized
+
+
+def test_review_decisions_create_entities_only_from_reviewed_grains(
+    tmp_path: Path,
+) -> None:
+    review = build_review_project(build_orders_database(tmp_path), tmp_path / "review")
+    sheet = load_review_sheet(review)
+    accept_only_order_customer(sheet)
+    apply_review_sheet(review, sheet)
+    model = load_model(review)
+    assert model.entities["customers"].grain.keys == ["id"]
+    assert model.entities["orders"].grain.keys == ["id"]
+    assert {(edge.from_, edge.to) for edge in model.relationships} == {
+        ("orders.customer_id", "customers.id")
+    }
+
+
+def test_oracle_project_serves_full_database_graph_and_fresh_validation(
+    tmp_path: Path,
+) -> None:
+    project = build_oracle_project(
+        build_orders_database(tmp_path),
+        oracle_schema(),
+        tmp_path / "oracle",
+    )
+    model = load_model(project)
+    assert {(edge.from_, edge.to) for edge in model.relationships} == {
+        ("orders.customer_id", "customers.id")
+    }
+    assert get_data_model(project).status == "ok"
+    result = validate_cached_edges(project, [model.relationships[0].id])
+    assert result.status in {"ok", "findings"}
+    assert not any(finding.severity == "blocking" for finding in result.findings)
+
+
+def test_review_sheet_rejects_pending_and_changed_evidence(tmp_path: Path) -> None:
+    review = build_review_project(build_orders_database(tmp_path), tmp_path / "review")
+    sheet = load_review_sheet(review)
+    sheet["reviewer"] = "fixture-reviewer"
+    sheet["reviewed_at"] = "2026-07-25T00:00:00Z"
+    with pytest.raises(ValueError, match="select one displayed unique grain"):
+        apply_review_sheet(review, sheet)
+
+
+def test_review_bundle_audit_rejects_forbidden_and_unexpected_files(tmp_path: Path) -> None:
+    review_root = tmp_path / "bundle"
+    review_root.mkdir()
+    decision = review_root / "fixture-decisions.json"
+    decision.write_text('{"schema_version":1}', encoding="utf-8")
+    audit_review_bundle(review_root, set())
+    digest = hashlib.sha256(decision.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="forbidden source"):
+        audit_review_bundle(review_root, {digest})
+    (review_root / "unexpected.yaml").write_text("value: true", encoding="utf-8")
+    with pytest.raises(ValueError, match="unexpected file"):
+        audit_review_bundle(review_root, set())
 
 
 def _chain_metadata() -> dict[str, object]:

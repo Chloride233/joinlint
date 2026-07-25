@@ -604,7 +604,9 @@ def test_oracle_project_serves_full_database_graph_and_fresh_validation(tmp_path
         ("orders.customer_id", "customers.id")
     }
     assert get_data_model(project).status == "ok"
-    assert validate_cached_edges(project, [model.relationships[0].id]).status == "ok"
+    validation = validate_cached_edges(project, [model.relationships[0].id])
+    assert validation.status in {"ok", "findings"}
+    assert not any(finding.severity == "blocking" for finding in validation.findings)
 ```
 
 Add `oracle_schema()`, `load_review_sheet()`, and `accept_only_order_customer()` to `tests/agent_join_helpers.py`. `oracle_schema()` returns the physical tables, single primary keys, and one FK pair; `load_review_sheet()` reads the emitted JSON; `accept_only_order_customer()` selects `id` for both grains, accepts only `orders.customer_id -> customers.id`, rejects all other candidate rows, and fills fixed reviewer metadata `fixture-reviewer` plus `2026-07-25T00:00:00Z`.

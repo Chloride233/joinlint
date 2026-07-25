@@ -88,3 +88,36 @@ def build_mini_spider(root: Path) -> Path:
     (spider / "tables.json").write_text(json.dumps(tables), encoding="utf-8")
     (spider / "dev.json").write_text(json.dumps(dev), encoding="utf-8")
     return spider
+
+
+def oracle_schema() -> dict[str, object]:
+    return orders_spider_metadata("orders")
+
+
+def load_review_sheet(review_project: Path) -> dict[str, object]:
+    document = json.loads((review_project / "review-decisions.json").read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    return document
+
+
+def accept_only_order_customer(sheet: dict[str, object]) -> None:
+    entities = sheet["entities"]
+    assert isinstance(entities, dict)
+    for table in ("customers", "orders"):
+        row = entities[table]
+        assert isinstance(row, dict)
+        row["decision"] = "id"
+
+    relationships = sheet["relationships"]
+    assert isinstance(relationships, list)
+    accepted = 0
+    for row in relationships:
+        assert isinstance(row, dict)
+        if row["from"] == "orders.customer_id" and row["to"] == "customers.id":
+            row["decision"] = "accept"
+            accepted += 1
+        else:
+            row["decision"] = "reject"
+    assert accepted == 1
+    sheet["reviewer"] = "fixture-reviewer"
+    sheet["reviewed_at"] = "2026-07-25T00:00:00Z"
