@@ -27,6 +27,11 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimi
 
 from benchmarks.agent_join.contracts import Arm, PilotSample, SelectedTask
 from benchmarks.agent_join.prepare_spider import seeded_rank
+from benchmarks.agent_join.scorers import (
+    execution_scorer,
+    join_outcome_scorer,
+    mcp_trace_scorer,
+)
 from joinlint.contracts import canonical_json
 from joinlint.model import load_model
 from joinlint.services import get_data_model, validate_cached_edges
@@ -330,6 +335,7 @@ def spider_pilot_task(inputs_root: Path, samples: Sequence[Sample] | None = None
     return Task(
         dataset=list(samples) if samples is not None else build_samples(inputs_root),
         solver=condition_solver(),
+        scorer=[join_outcome_scorer(), mcp_trace_scorer(), execution_scorer()],
         name="joinlint_spider_pilot",
     )
 

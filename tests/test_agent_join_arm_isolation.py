@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,11 @@ from benchmarks.agent_join.joinlint_eval import (  # noqa: E402
     run_eval,
     sanitized_mcp_environment,
 )
+from benchmarks.agent_join.scorers import (  # noqa: E402
+    execution_scorer,
+    join_outcome_scorer,
+    mcp_trace_scorer,
+)
 import httpx  # noqa: E402
 from inspect_ai.model import (  # noqa: E402
     ChatMessageAssistant,
@@ -24,6 +31,8 @@ from inspect_ai.model import (  # noqa: E402
     get_model,
 )
 from inspect_ai.tool import ToolCall  # noqa: E402
+from inspect_ai.scorer import Target  # noqa: E402
+from inspect_ai.solver import TaskState  # noqa: E402
 from openai import APIConnectionError, APIStatusError, APITimeoutError  # noqa: E402
 from tests.agent_join_helpers import build_frozen_inputs  # noqa: E402
 
@@ -200,3 +209,56 @@ def test_mock_model_dry_run_calls_mcp_then_submits(
     assert any(function.endswith("get_data_model") for function in functions)
     assert any(function.endswith("submit_sql") for function in functions)
     assert logs[0].samples[0].output.completion
+    assert set(logs[0].samples[0].scores or {}) == {
+        "join_outcome_scorer",
+        "mcp_trace_scorer",
+        "execution_scorer",
+    }
+
+
+def test_scorers_keep_invalid_output_in_the_denominator(frozen_inputs: Path) -> None:
+    samples = build_samples(frozen_inputs)
+    baseline = next(
+        sample
+        for sample in samples
+        if sample.metadata["suite"] == "primary" and sample.metadata["arm"] == "A"
+    )
+    valid_state = _task_state(
+        baseline,
+        json.dumps({"sql": baseline.target, "warning": ""}),
+    )
+    join_score = asyncio.run(join_outcome_scorer()(valid_state, Target(baseline.target)))
+    execution_score = asyncio.run(execution_scorer()(valid_state, Target(baseline.target)))
+    trace_score = asyncio.run(mcp_trace_scorer()(valid_state, Target(baseline.target)))
+    assert join_score.value == 1
+    assert execution_score.value == 1
+    assert trace_score.metadata == {"applicable": False}
+
+    mcp_sample = next(
+        sample
+        for sample in samples
+        if sample.metadata["suite"] == "primary" and sample.metadata["arm"] == "C"
+    )
+    invalid_state = _task_state(mcp_sample, "not-json")
+    assert asyncio.run(
+        join_outcome_scorer()(invalid_state, Target(mcp_sample.target))
+    ).value == 0
+    assert asyncio.run(
+        execution_scorer()(invalid_state, Target(mcp_sample.target))
+    ).value == 0
+    assert asyncio.run(
+        mcp_trace_scorer()(invalid_state, Target(mcp_sample.target))
+    ).value == 0
+
+
+def _task_state(sample: Any, completion: str) -> TaskState:
+    return TaskState(
+        model="mockllm/model",
+        sample_id=sample.id,
+        epoch=1,
+        input=sample.input,
+        messages=[],
+        target=Target(sample.target),
+        output=ModelOutput.from_content(model="mockllm/model", content=completion),
+        metadata=sample.metadata,
+    )
