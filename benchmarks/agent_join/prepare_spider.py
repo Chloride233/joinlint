@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 import sqlglot
+import yaml
 from sqlglot import exp
 
 from benchmarks.agent_join.contracts import Edge, SelectedTask
@@ -37,8 +38,12 @@ def find_spider_root(archive: Path, work_dir: Path) -> Path:
     source_root = work_dir / "source"
     if source_root.exists() and not source_root.is_dir():
         raise ValueError("work_dir/source must be a directory")
+    archive_digest = _sha256(archive)
+    marker = source_root / ".archive-sha256"
     if source_root.exists() and any(source_root.iterdir()):
-        raise ValueError("work_dir/source must be absent or empty")
+        if not marker.is_file() or marker.read_text(encoding="ascii").strip() != archive_digest:
+            raise ValueError("non-empty work_dir/source does not match the requested archive")
+        return _require_one_spider_root(source_root)
     source_root.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(archive) as bundle:
@@ -53,6 +58,11 @@ def find_spider_root(archive: Path, work_dir: Path) -> Path:
                 raise ValueError("archive expands beyond the total size limit")
         bundle.extractall(source_root)
 
+    marker.write_text(archive_digest + "\n", encoding="ascii")
+    return _require_one_spider_root(source_root)
+
+
+def _require_one_spider_root(source_root: Path) -> Path:
     candidates = {
         path.parent.resolve()
         for path in source_root.rglob("dev.json")
@@ -86,20 +96,22 @@ def select_pilot(
     seed: int,
     database_count: int,
     tasks_per_database: int,
+    split: str = "dev",
 ) -> list[SelectedTask]:
-    dev = _read_json_list(spider_root / "dev.json")
+    split_filename = _split_filename(split)
+    records = _read_json_list(spider_root / split_filename)
     tables = _read_json_list(spider_root / "tables.json")
     metadata_by_db = {str(document["db_id"]): document for document in tables}
     if len(metadata_by_db) != len(tables):
         raise ValueError("tables.json contains duplicate database IDs")
     eligible: dict[str, list[SelectedTask]] = defaultdict(list)
 
-    for source_index, record in enumerate(dev):
+    for source_index, record in enumerate(records):
         db_id = str(record.get("db_id", ""))
         metadata = metadata_by_db.get(db_id)
         if metadata is None:
             continue
-        task_id = f"spider-dev-{source_index:04d}"
+        task_id = f"spider-{split.replace('_', '-')}-{source_index:04d}"
         schema_map = physical_schema(metadata)
         query = str(record.get("query", ""))
         if classify_eligibility(query, metadata, schema_map) != "ELIGIBLE":
@@ -265,7 +277,9 @@ def write_pilot_lock(
     work_dir: Path,
     manifest_path: Path,
     hashes_path: Path,
+    split: str = "dev",
 ) -> None:
+    split_filename = _split_filename(split)
     sealed_path = work_dir / "sealed" / "spider-pilot.json"
     sealed_path.parent.mkdir(parents=True, exist_ok=True)
     sealed_path.write_bytes(
@@ -274,6 +288,7 @@ def write_pilot_lock(
 
     manifest = {
         "schema_version": 1,
+        "split": split,
         "tasks": [
             {
                 "task_id": task.task_id,
@@ -293,7 +308,7 @@ def write_pilot_lock(
     selected_databases = sorted({task.db_id for task in tasks}, key=_utf8_key)
     sources = {
         "archive": _sha256(archive),
-        "dev.json": _sha256(spider_root / "dev.json"),
+        split_filename: _sha256(spider_root / split_filename),
         "tables.json": _sha256(spider_root / "tables.json"),
         "databases": {
             db_id: _sha256(spider_root / "database" / db_id / f"{db_id}.sqlite")
@@ -358,6 +373,14 @@ def _read_json_list(path: Path) -> list[dict[str, object]]:
     return document
 
 
+def _split_filename(split: str) -> str:
+    filenames = {"dev": "dev.json", "train_spider": "train_spider.json"}
+    try:
+        return filenames[split]
+    except KeyError as error:
+        raise ValueError("unsupported Spider split") from error
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -382,11 +405,16 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     root = find_spider_root(args.archive, args.work_dir)
+    preregistration = yaml.safe_load(
+        (Path(__file__).with_name("preregistration.yaml")).read_text(encoding="utf-8")
+    )
+    split = str(preregistration["pilot"]["split"])
     tasks = select_pilot(
         root,
         seed=20260725,
         database_count=4,
         tasks_per_database=4,
+        split=split,
     )
     write_pilot_lock(
         tasks,
@@ -395,6 +423,7 @@ def main() -> None:
         work_dir=args.work_dir,
         manifest_path=args.manifest,
         hashes_path=args.hashes,
+        split=split,
     )
 
 

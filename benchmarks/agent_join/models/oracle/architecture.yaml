@@ -1,0 +1,34 @@
+entities:
+  architect:
+    grain:
+      keys:
+      - id
+      status: confirmed
+    object: architect
+    source: database
+  bridge:
+    grain:
+      keys:
+      - id
+      status: confirmed
+    object: bridge
+    source: database
+  mill:
+    grain:
+      keys:
+      - id
+      status: confirmed
+    object: mill
+    source: database
+relationships:
+- cardinality: many_to_one
+  from: mill.architect_id
+  id: oracle_643ceef75fd12cd0
+  status: confirmed
+  to: architect.id
+- cardinality: many_to_one
+  from: bridge.architect_id
+  id: oracle_cdb7c3bd4245a4cc
+  status: confirmed
+  to: architect.id
+version: 1

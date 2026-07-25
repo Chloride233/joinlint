@@ -6,10 +6,16 @@ from JoinSafetyBench and is not a marketing benchmark.
 
 ## Frozen pilot
 
-The Spider pilot contains 16 tasks from four databases. Each task is run in
-four arms with three repetitions, producing 192 primary runs. Four
+The exploratory Spider pilot uses the `train_spider` split and contains 16
+tasks from four databases. Each task is run in four arms with three
+repetitions, producing 192 primary runs. Four
 zero-configuration MCP diagnostics and four safety diagnostics bring the paid
 batch to exactly 200 runs.
+
+Training examples may have been memorized by the evaluated model. This pilot
+can validate the evaluation protocol but cannot support a product or marketing
+effect claim; a later formal evaluation requires a separately preregistered
+BIRD dataset.
 
 - A: FK-ablated schema, no MCP.
 - B: the same schema plus the database-level oracle graph inline.
@@ -36,6 +42,17 @@ No command requiring `DEEPSEEK_API_KEY` may run until the local selector,
 scorers, arm-isolation checks, fake-model dry run, relationship review, frozen
 hash verification, secret scan, and full test suite pass and the user gives
 separate approval for the paid batch.
+
+## Current checkpoint (2026-07-25)
+
+The official archive, deterministic 16-task manifest, source hashes, and four
+oracle models are frozen. Human relationship review was not completed, so no
+JoinLint D-arm models were frozen. The complete free dry run, independent
+review audit, and paid DeepSeek batch have not run. The ignored review sheets
+remain pending and must not be treated as evidence.
+
+Further architecture changes must regenerate and verify the harness and model
+hashes before this evaluation resumes.
 
 ## Free preparation workflow
 

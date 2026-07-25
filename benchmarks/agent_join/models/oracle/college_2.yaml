@@ -1,0 +1,180 @@
+entities:
+  advisor:
+    grain:
+      keys:
+      - s_ID
+      status: confirmed
+    object: advisor
+    source: database
+  classroom:
+    grain:
+      keys:
+      - building
+      status: confirmed
+    object: classroom
+    source: database
+  course:
+    grain:
+      keys:
+      - course_id
+      status: confirmed
+    object: course
+    source: database
+  department:
+    grain:
+      keys:
+      - dept_name
+      status: confirmed
+    object: department
+    source: database
+  instructor:
+    grain:
+      keys:
+      - ID
+      status: confirmed
+    object: instructor
+    source: database
+  prereq:
+    grain:
+      keys:
+      - course_id
+      status: confirmed
+    object: prereq
+    source: database
+  section:
+    grain:
+      keys:
+      - course_id
+      status: confirmed
+    object: section
+    source: database
+  student:
+    grain:
+      keys:
+      - ID
+      status: confirmed
+    object: student
+    source: database
+  takes:
+    grain:
+      keys:
+      - ID
+      status: confirmed
+    object: takes
+    source: database
+  teaches:
+    grain:
+      keys:
+      - ID
+      status: confirmed
+    object: teaches
+    source: database
+  time_slot:
+    grain:
+      keys:
+      - time_slot_id
+      status: confirmed
+    object: time_slot
+    source: database
+relationships:
+- cardinality: one_to_one
+  from: advisor.s_ID
+  id: oracle_09d0fd121497badd
+  status: confirmed
+  to: student.ID
+- cardinality: many_to_one
+  from: takes.course_id
+  id: oracle_09e481e914710769
+  status: confirmed
+  to: section.course_id
+- cardinality: many_to_one
+  from: teaches.sec_id
+  id: oracle_26c149115dc79e6c
+  status: confirmed
+  to: section.sec_id
+- cardinality: many_to_one
+  from: takes.year
+  id: oracle_37e07029b33faaa1
+  status: confirmed
+  to: section.year
+- cardinality: many_to_one
+  from: course.dept_name
+  id: oracle_46e0d47ca482d365
+  status: confirmed
+  to: department.dept_name
+- cardinality: many_to_one
+  from: advisor.i_ID
+  id: oracle_4ba2ab3ddf26688e
+  status: confirmed
+  to: instructor.ID
+- cardinality: many_to_one
+  from: teaches.year
+  id: oracle_613e365b68a66807
+  status: confirmed
+  to: section.year
+- cardinality: many_to_one
+  from: takes.semester
+  id: oracle_97fafaf70ada937b
+  status: confirmed
+  to: section.semester
+- cardinality: many_to_one
+  from: section.course_id
+  id: oracle_98cb23794537d95a
+  status: confirmed
+  to: course.course_id
+- cardinality: many_to_one
+  from: takes.ID
+  id: oracle_9be106331f5e5051
+  status: confirmed
+  to: student.ID
+- cardinality: many_to_one
+  from: takes.sec_id
+  id: oracle_a8133ea6e56a416a
+  status: confirmed
+  to: section.sec_id
+- cardinality: many_to_one
+  from: student.dept_name
+  id: oracle_ae63f90d41f5a31d
+  status: confirmed
+  to: department.dept_name
+- cardinality: many_to_one
+  from: teaches.semester
+  id: oracle_c4c64a2fab444be0
+  status: confirmed
+  to: section.semester
+- cardinality: many_to_one
+  from: section.room_number
+  id: oracle_c59cdc2241a6ade7
+  status: confirmed
+  to: classroom.room_number
+- cardinality: many_to_one
+  from: teaches.course_id
+  id: oracle_d4fbbe9408b643a7
+  status: confirmed
+  to: section.course_id
+- cardinality: many_to_one
+  from: prereq.course_id
+  id: oracle_d9429159bb1b1cec
+  status: confirmed
+  to: course.course_id
+- cardinality: many_to_one
+  from: section.building
+  id: oracle_dad9ddd1cadf6c04
+  status: confirmed
+  to: classroom.building
+- cardinality: many_to_one
+  from: instructor.dept_name
+  id: oracle_e058627fc28f75ba
+  status: confirmed
+  to: department.dept_name
+- cardinality: many_to_one
+  from: prereq.prereq_id
+  id: oracle_f4872de8fd179306
+  status: confirmed
+  to: course.course_id
+- cardinality: many_to_one
+  from: teaches.ID
+  id: oracle_fda39919cc55b791
+  status: confirmed
+  to: instructor.ID
+version: 1

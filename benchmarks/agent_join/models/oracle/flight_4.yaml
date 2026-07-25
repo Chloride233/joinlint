@@ -1,0 +1,39 @@
+entities:
+  airlines:
+    grain:
+      keys:
+      - alid
+      status: confirmed
+    object: airlines
+    source: database
+  airports:
+    grain:
+      keys:
+      - apid
+      status: confirmed
+    object: airports
+    source: database
+  routes:
+    grain:
+      keys:
+      - rid
+      status: confirmed
+    object: routes
+    source: database
+relationships:
+- cardinality: many_to_one
+  from: routes.alid
+  id: oracle_4c136ec185a7b8bb
+  status: confirmed
+  to: airlines.alid
+- cardinality: many_to_one
+  from: routes.src_apid
+  id: oracle_c49377d37251747a
+  status: confirmed
+  to: airports.apid
+- cardinality: many_to_one
+  from: routes.dst_apid
+  id: oracle_ffe4bfe0b6899bad
+  status: confirmed
+  to: airports.apid
+version: 1

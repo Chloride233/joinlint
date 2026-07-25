@@ -1,7 +1,7 @@
 schema_version: 1
 pilot:
   dataset: spider
-  split: dev
+  split: train_spider
   seed: 20260725
   database_count: 4
   tasks_per_database: 4

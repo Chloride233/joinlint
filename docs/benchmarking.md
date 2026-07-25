@@ -60,6 +60,12 @@ an SQL Agent retrieves and uses relationship context through JoinLint MCP. It
 is not part of JoinSafetyBench, and pilot effects are not product or marketing
 claims.
 
+The current checkpoint uses `train_spider` because the unchanged strict
+eligibility filter found only four `dev` tasks from one database. Training-set
+memorization is therefore an explicit limitation. Selection and oracle inputs
+are frozen, but human relationship review and all Agent runs remain pending as
+of 2026-07-25.
+
 Install the isolated evaluation dependencies and run the free gates:
 
 ```bash

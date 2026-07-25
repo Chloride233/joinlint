@@ -1,0 +1,34 @@
+entities:
+  airport:
+    grain:
+      keys:
+      - id
+      status: confirmed
+    object: airport
+    source: database
+  flight:
+    grain:
+      keys:
+      - id
+      status: confirmed
+    object: flight
+    source: database
+  operate_company:
+    grain:
+      keys:
+      - id
+      status: confirmed
+    object: operate_company
+    source: database
+relationships:
+- cardinality: many_to_one
+  from: flight.company_id
+  id: oracle_2ab432b1f7eccb16
+  status: confirmed
+  to: operate_company.id
+- cardinality: many_to_one
+  from: flight.airport_id
+  id: oracle_3ed62e35606e7873
+  status: confirmed
+  to: airport.id
+version: 1

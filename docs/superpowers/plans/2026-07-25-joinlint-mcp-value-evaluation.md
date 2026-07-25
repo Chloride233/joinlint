@@ -146,7 +146,7 @@ Create `benchmarks/agent_join/preregistration.yaml` with:
 schema_version: 1
 pilot:
   dataset: spider
-  split: dev
+  split: train_spider
   seed: 20260725
   database_count: 4
   tasks_per_database: 4
@@ -470,7 +470,7 @@ git commit -m "feat: add deterministic agent join scoring"
 - Create: `tests/test_agent_join_selection.py`
 
 **Interfaces:**
-- Consumes: an official Spider archive containing `dev.json`, `tables.json`, and `database/{db_id}/{db_id}.sqlite`.
+- Consumes: an official Spider archive containing `train_spider.json`, `dev.json`, `tables.json`, and `database/{db_id}/{db_id}.sqlite`.
 - Produces: `SelectedTask`, `find_spider_root()`, `select_pilot()`, `render_schema()`, `build_oracle_graph()`, a sealed local task file, a sanitized tracked manifest, and a complete hash lock.
 
 - [ ] **Step 1: Write failing selection and ablation tests**
@@ -1278,6 +1278,13 @@ git commit -m "feat: report paired MCP evaluation results"
 ---
 
 ### Task 10: Complete all free local gates and freeze the real pilot inputs
+
+**Checkpoint (2026-07-25):** Steps 1–3 completed after the approved
+`train_spider` amendment. Step 4 remains pending because no qualified human
+semantic review was completed. No D-arm model, independent review audit,
+complete dry run, paid API run, or result exists. Preserve the frozen public
+selection and oracle artifacts as a checkpoint; re-hash them after any later
+architecture change before resuming.
 
 **Files:**
 - Generate: `benchmarks/agent_join/tasks/spider-pilot-manifest.json`

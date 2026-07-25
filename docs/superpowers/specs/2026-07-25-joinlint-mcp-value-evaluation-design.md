@@ -126,6 +126,16 @@ with four tasks per database. Spider is pinned by release identifier and file
 SHA-256; upstream data is not committed unless its license explicitly permits
 redistribution.
 
+The exploratory protocol pilot uses `train_spider`, not `dev`. This is an
+approved preregistration amendment made before any model run after the pinned
+`dev` split produced only four eligible tasks from one database under the
+unchanged eligibility rule. The official `train_spider` split produced 200
+eligible tasks across 17 databases, including 15 databases with at least four.
+Because training examples may be memorized by the evaluated model, these
+results validate only the evaluation protocol and must not support a product or
+marketing effect claim. A later formal evaluation must use the separately
+preregistered BIRD dataset.
+
 An eligibility filter runs only on the pinned Spider metadata and gold SQL. A
 task is eligible when:
 

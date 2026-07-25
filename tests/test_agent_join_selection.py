@@ -66,6 +66,20 @@ def test_selection_is_seeded_balanced_and_independent_of_joinlint(tmp_path: Path
     assert set(Counter(task.db_id for task in first).values()) == {4}
 
 
+def test_selection_supports_the_approved_train_spider_split(tmp_path: Path) -> None:
+    spider = build_mini_spider(tmp_path)
+    (spider / "train_spider.json").write_bytes((spider / "dev.json").read_bytes())
+    tasks = select_pilot(
+        spider,
+        seed=20260725,
+        database_count=4,
+        tasks_per_database=4,
+        split="train_spider",
+    )
+    assert len(tasks) == 16
+    assert all(task.task_id.startswith("spider-train-spider-") for task in tasks)
+
+
 def test_rendered_schema_contains_primary_keys_but_no_foreign_keys(tmp_path: Path) -> None:
     spider = build_mini_spider(tmp_path)
     task = select_pilot(
@@ -172,6 +186,13 @@ def test_archive_discovery_accepts_one_safe_spider_root(tmp_path: Path) -> None:
     discovered = find_spider_root(archive, tmp_path / "extracted")
     assert discovered.name == "spider"
     assert (discovered / "dev.json").is_file()
+    assert find_spider_root(archive, tmp_path / "extracted") == discovered
+
+    changed_archive = tmp_path / "changed.zip"
+    with zipfile.ZipFile(changed_archive, "w") as bundle:
+        bundle.writestr("different/dev.json", "[]")
+    with pytest.raises(ValueError, match="does not match"):
+        find_spider_root(changed_archive, tmp_path / "extracted")
 
 
 @pytest.mark.parametrize("unsafe_name", ["../escape", "/absolute", "C:/windows"])
