@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from pathlib import Path
 
 
@@ -27,3 +28,63 @@ def build_orders_database(root: Path) -> Path:
     finally:
         connection.close()
     return database
+
+
+def orders_spider_metadata(db_id: str) -> dict[str, object]:
+    return {
+        "db_id": db_id,
+        "table_names": ["customers", "orders"],
+        "table_names_original": ["customers", "orders"],
+        "column_names": [
+            [-1, "*"],
+            [0, "id"],
+            [0, "name"],
+            [1, "id"],
+            [1, "customer_id"],
+            [1, "total"],
+        ],
+        "column_names_original": [
+            [-1, "*"],
+            [0, "id"],
+            [0, "name"],
+            [1, "id"],
+            [1, "customer_id"],
+            [1, "total"],
+        ],
+        "column_types": ["text", "number", "text", "number", "number", "number"],
+        "primary_keys": [1, 3],
+        "foreign_keys": [[4, 1]],
+    }
+
+
+def build_mini_spider(root: Path) -> Path:
+    spider = root / "spider"
+    database_root = spider / "database"
+    database_root.mkdir(parents=True)
+    tables: list[dict[str, object]] = []
+    dev: list[dict[str, object]] = []
+    queries = [
+        "SELECT c.name FROM customers c JOIN orders o ON c.id = o.customer_id",
+        "SELECT o.total FROM orders o JOIN customers c ON o.customer_id = c.id",
+        "SELECT count(*) FROM orders o, customers c WHERE c.id = o.customer_id",
+        "SELECT c.id FROM customers c JOIN orders o ON o.customer_id = c.id WHERE o.total > 0",
+    ]
+    for database_index in range(5):
+        db_id = f"mini_{database_index}"
+        db_dir = database_root / db_id
+        db_dir.mkdir()
+        source = build_orders_database(db_dir)
+        source.rename(db_dir / f"{db_id}.sqlite")
+        tables.append(orders_spider_metadata(db_id))
+        dev.extend(
+            {
+                "db_id": db_id,
+                "question": f"Question {db_id} {query_index}",
+                "query": query,
+            }
+            for query_index, query in enumerate(queries)
+        )
+
+    (spider / "tables.json").write_text(json.dumps(tables), encoding="utf-8")
+    (spider / "dev.json").write_text(json.dumps(dev), encoding="utf-8")
+    return spider
