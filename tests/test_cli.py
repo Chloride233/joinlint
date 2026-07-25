@@ -369,3 +369,31 @@ def test_source_set_invalidates_generated_rejections_and_baseline(tmp_path: Path
     assert not (project / ".joinlint" / "generated").exists()
     assert not (project / ".joinlint" / "baseline.json").exists()
     assert not rejections.exists()
+
+
+def test_source_set_preserves_rejections_for_other_sources(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    for name in ("sales", "sales_replacement", "inventory"):
+        directory = project / name
+        directory.mkdir()
+        (directory / "records.csv").write_text("id\n1\n", encoding="utf-8")
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["source", "add", "sales", "sales", "--project", str(project)]).exit_code == 0
+    assert runner.invoke(app, ["source", "add", "inventory", "inventory", "--project", str(project)]).exit_code == 0
+    rejections = project / ".joinlint" / "state" / "rejections.json"
+    rejections.write_text(
+        """{"version":1,"rejections":[
+{"source_id":"sales","key":"sales-rejection"},
+{"source_id":"inventory","key":"inventory-rejection"}
+]}""",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["source", "set", "sales", "sales_replacement", "--project", str(project)])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(rejections.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "rejections": [{"source_id": "inventory", "key": "inventory-rejection"}],
+    }

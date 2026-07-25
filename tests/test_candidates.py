@@ -123,5 +123,5 @@ def test_accept_rejects_candidate_when_model_has_changed(project: Path) -> None:
 
 
 def test_value_normalization_matches_csv_numeric_text_to_sqlite_values() -> None:
-    assert normalize_value("10.0") == normalize_value(10.0) == "10"
-    assert normalize_value("001") == normalize_value(1) == "1"
+    assert normalize_value("10.0", "number") == normalize_value(10.0, "number") == "10"
+    assert normalize_value("001", "text") != normalize_value("1", "text")

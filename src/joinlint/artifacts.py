@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import tempfile
+import secrets
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -16,38 +15,49 @@ def write_generated_transaction(
     project: Path, files: dict[str, bytes], report_data: dict[str, Any]
 ) -> dict[str, Any]:
     """Atomically publish a complete generated-evidence directory."""
-    generated = project / ".joinlint" / "generated"
-    generated.parent.mkdir(parents=True, exist_ok=True)
-    temporary = Path(tempfile.mkdtemp(prefix=".generated-", dir=generated.parent))
-    backup = generated.parent / ".generated-previous"
+    generated = PurePosixPath(".joinlint/generated")
+    temporary = PurePosixPath(f".joinlint/.generated-{secrets.token_hex(12)}")
+    backup = PurePosixPath(".joinlint/.generated-previous")
     replaced_previous = False
     try:
         complete_files = {**files, "report.html": render_report(report_data).encode("utf-8")}
-        for name, body in complete_files.items():
-            target = temporary / _relative_artifact_path(name)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            write_file(target, body)
-        manifest = _read_manifest(temporary / "manifest.json")
-        if backup.exists():
-            shutil.rmtree(backup)
-        if generated.exists():
-            os.replace(generated, backup)
-            replaced_previous = True
-        os.replace(temporary, generated)
-        if replaced_previous:
-            shutil.rmtree(backup)
+        manifest = _read_manifest_document(json.loads(complete_files["manifest.json"]))
+        with SafeProject(project) as safe_project:
+            safe_project.ensure_directory_relative(PurePosixPath(".joinlint"))
+            safe_project.create_directory_relative(temporary)
+            for name, body in complete_files.items():
+                target = _relative_artifact_path(name)
+                if len(target.parts) > 1:
+                    safe_project.ensure_directory_relative(temporary / PurePosixPath(*target.parts[:-1]))
+                write_file(safe_project, temporary / target, body)
+            if safe_project.exists_relative(backup):
+                safe_project.remove_tree_relative(backup)
+            if safe_project.exists_relative(generated):
+                safe_project.replace_relative(generated, backup)
+                replaced_previous = True
+            safe_project.replace_relative(temporary, generated)
+            if replaced_previous:
+                safe_project.remove_tree_relative(backup)
         return manifest
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        if replaced_previous and backup.exists() and not generated.exists():
-            os.replace(backup, generated)
+    except (JoinLintError, OSError, ValueError, json.JSONDecodeError) as exc:
+        if replaced_previous:
+            try:
+                with SafeProject(project) as safe_project:
+                    if safe_project.exists_relative(backup) and not safe_project.exists_relative(generated):
+                        safe_project.replace_relative(backup, generated)
+            except JoinLintError:
+                pass
         raise JoinLintError("GENERATED_WRITE_FAILED", "generated evidence could not be written", 3) from exc
     finally:
-        if temporary.exists():
-            shutil.rmtree(temporary, ignore_errors=True)
+        try:
+            with SafeProject(project) as safe_project:
+                safe_project.remove_tree_relative(temporary, missing_ok=True)
+        except JoinLintError:
+            pass
 
 
-def write_file(path: Path, body: bytes) -> None:
-    path.write_bytes(body)
+def write_file(project: SafeProject, relative_path: PurePosixPath, body: bytes) -> None:
+    project.write_relative_atomically(relative_path, body)
 
 
 def load_manifest(project: Path) -> dict[str, Any]:
@@ -72,18 +82,10 @@ def load_fresh_manifest(
 
 
 def write_report_atomically(project: Path, report_data: dict[str, Any]) -> None:
-    path = project / ".joinlint" / "generated" / "report.html"
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".report.", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as destination:
-            destination.write(render_report(report_data).encode("utf-8"))
-            destination.flush()
-            os.fsync(destination.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+    with SafeProject(project) as safe_project:
+        safe_project.write_relative_atomically(
+            PurePosixPath(".joinlint/generated/report.html"), render_report(report_data).encode("utf-8")
+        )
 
 
 def _relative_artifact_path(name: str) -> PurePosixPath:
@@ -91,10 +93,6 @@ def _relative_artifact_path(name: str) -> PurePosixPath:
     if path.is_absolute() or not path.parts or ".." in path.parts:
         raise ValueError("artifact name must be relative")
     return path
-
-
-def _read_manifest(path: Path) -> dict[str, Any]:
-    return _read_manifest_document(json.loads(path.read_text(encoding="utf-8")))
 
 
 def _read_manifest_document(document: Any) -> dict[str, Any]:

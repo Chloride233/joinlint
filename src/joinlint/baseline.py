@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from joinlint.contracts import Finding
 from joinlint.errors import JoinLintError
+from joinlint.paths import SafeProject
 
 
 class BaselineValidationError(JoinLintError):
@@ -17,14 +17,18 @@ class BaselineValidationError(JoinLintError):
 
 
 def load_baseline(project: Path) -> dict[str, Any]:
-    path = project / ".joinlint" / "baseline.json"
-    if not path.exists():
-        raise JoinLintError("BASELINE_MISSING", "baseline.json has not been created", 3)
     try:
-        baseline: Any = json.loads(path.read_text(encoding="utf-8"))
+        with SafeProject(project) as safe_project:
+            descriptor = safe_project.open_relative(PurePosixPath(".joinlint/baseline.json"), os.O_RDONLY)
+            with os.fdopen(descriptor, "r", encoding="utf-8") as source:
+                baseline: Any = json.load(source)
+    except JoinLintError as exc:
+        if exc.code == "SAFE_PATH_OPEN_FAILED":
+            raise JoinLintError("BASELINE_MISSING", "baseline.json has not been created", 3) from exc
+        raise JoinLintError("MALFORMED_BASELINE", "baseline.json is invalid", 2) from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise JoinLintError("MALFORMED_BASELINE", "baseline.json is invalid", 2) from exc
-    if not isinstance(baseline, dict) or baseline.get("version") != 1:
+    if not _is_valid_baseline(baseline):
         raise JoinLintError("MALFORMED_BASELINE", "baseline.json has an unsupported schema", 2)
     return baseline
 
@@ -36,7 +40,7 @@ def update_baseline(project: Path) -> dict[str, Any]:
     if any(finding.severity == "blocking" for finding in evidence.findings):
         raise BaselineValidationError(evidence.findings)
     baseline = make_baseline(evidence)
-    _write_baseline(project / ".joinlint" / "baseline.json", baseline)
+    _write_baseline(project, baseline)
     return baseline
 
 
@@ -62,14 +66,24 @@ def compare_baseline(baseline: dict[str, Any], evidence: Any) -> list[Finding]:
     return findings
 
 
-def _write_baseline(path: Path, baseline: dict[str, Any]) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".baseline.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as destination:
-            json.dump(baseline, destination, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-            destination.flush()
-            os.fsync(destination.fileno())
-        os.replace(temporary_name, path)
-    except BaseException:
-        Path(temporary_name).unlink(missing_ok=True)
-        raise
+def _is_valid_baseline(baseline: Any) -> bool:
+    if not isinstance(baseline, dict) or baseline.get("version") != 1:
+        return False
+    source_fingerprints = baseline.get("source_fingerprints")
+    schemas = baseline.get("schemas")
+    results = baseline.get("relationship_results")
+    return (
+        isinstance(source_fingerprints, list)
+        and all(isinstance(value, str) for value in source_fingerprints)
+        and isinstance(schemas, list)
+        and all(isinstance(schema, dict) for schema in schemas)
+        and isinstance(results, list)
+        and all(isinstance(result, dict) and isinstance(result.get("relationship_id"), str) for result in results)
+        and len({result["relationship_id"] for result in results}) == len(results)
+    )
+
+
+def _write_baseline(project: Path, baseline: dict[str, Any]) -> None:
+    payload = json.dumps(baseline, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    with SafeProject(project) as safe_project:
+        safe_project.write_relative_atomically(PurePosixPath(".joinlint/baseline.json"), payload)

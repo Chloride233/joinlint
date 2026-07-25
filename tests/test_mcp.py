@@ -14,7 +14,7 @@ from joinlint.config import add_source
 from joinlint.errors import JoinLintError
 from joinlint.contracts import Envelope
 from joinlint.mcp_server import _response, create_server
-from joinlint.services import find_join_path, scan_project, validate_cached_edges
+from joinlint.services import find_join_path, scan_project, validate_cached_edges, validate_cached_path
 
 
 def test_mcp_exposes_exactly_three_tools(project: Path) -> None:
@@ -104,6 +104,64 @@ def test_cached_validation_rejects_non_string_edge_ids(project: Path) -> None:
     with pytest.raises(JoinLintError) as captured:
         validate_cached_edges(project, [1])  # type: ignore[list-item]
 
+    assert captured.value.code == "INVALID_ARGUMENT"
+
+
+def test_cached_path_requires_model_shape_and_reports_compound_fanout(project: Path) -> None:
+    (project / "data").mkdir()
+    (project / "data" / "children.csv").write_text(
+        "id,parent_id\n1,a\n2,a\n3,b\n", encoding="utf-8"
+    )
+    (project / "data" / "parents.csv").write_text("id,grand_id\na,g1\nb,g1\n", encoding="utf-8")
+    (project / "data" / "grands.csv").write_text("id\ng1\n", encoding="utf-8")
+    add_source(project, "sales", "data", "csv_directory")
+    (project / ".joinlint" / "model.yaml").write_text(
+        """version: 1
+entities:
+  children:
+    source: sales
+    object: children.csv
+    grain:
+      keys: [id]
+      status: confirmed
+  parents:
+    source: sales
+    object: parents.csv
+    grain:
+      keys: [id]
+      status: confirmed
+  grands:
+    source: sales
+    object: grands.csv
+    grain:
+      keys: [id]
+      status: confirmed
+relationships:
+  - id: child_to_parent
+    from: children.parent_id
+    to: parents.id
+    cardinality: many_to_one
+    status: confirmed
+  - id: parent_to_grand
+    from: parents.grand_id
+    to: grands.id
+    cardinality: many_to_one
+    status: confirmed
+""",
+        encoding="utf-8",
+    )
+    scan_project(project)
+    path = [
+        {"id": "child_to_parent", "direction": "forward", "cardinality": "many_to_one"},
+        {"id": "parent_to_grand", "direction": "forward", "cardinality": "many_to_one"},
+    ]
+
+    result = validate_cached_path(project, path)
+
+    assert "COMPOUND_FANOUT" in {finding.code for finding in result.findings}
+    path[0]["direction"] = "reverse"
+    with pytest.raises(JoinLintError) as captured:
+        validate_cached_path(project, path)
     assert captured.value.code == "INVALID_ARGUMENT"
 
 

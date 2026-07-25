@@ -93,6 +93,25 @@ def test_null_and_orphan_child_keys_have_distinct_findings(project: Path) -> Non
     assert {"CHILD_KEY_NULL", "ORPHAN_CHILD_ROW"} <= {finding.code for finding in result.findings}
 
 
+def test_text_keys_do_not_collapse_numeric_lexemes(project: Path) -> None:
+    (project / "data").mkdir()
+    (project / "data" / "children.csv").write_text("id,parent_code\n1,001\n2,a\n", encoding="utf-8")
+    (project / "data" / "parents.csv").write_text("code\n1\na\n", encoding="utf-8")
+    add_source(project, "sales", "data", "csv_directory")
+    edge = Relationship(
+        id="child_to_parent",
+        from_="children.parent_code",
+        to="parents.code",
+        cardinality="one_to_one",
+        status="confirmed",
+    )
+
+    with snapshot_source(project, "sales") as snapshot:
+        result = validate_relationship(edge, snapshot, scan_snapshot(snapshot))
+
+    assert "ORPHAN_CHILD_ROW" in {finding.code for finding in result.findings}
+
+
 def test_path_with_two_grain_changes_reports_compound_fanout(project: Path) -> None:
     (project / "data").mkdir()
     (project / "data" / "children.csv").write_text(

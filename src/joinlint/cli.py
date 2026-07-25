@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Iterator
@@ -10,6 +9,7 @@ import typer
 from pydantic import ValidationError
 
 from joinlint.config import ConfigV1, SourceConfig, add_source, load_config, remove_source, set_source_path, write_yaml_atomically
+from joinlint.candidates import invalidate_rejections_for_source
 from joinlint.contracts import Envelope, envelope_for
 from joinlint.errors import JoinLintError
 from joinlint.baseline import BaselineValidationError, update_baseline
@@ -86,18 +86,16 @@ def _init_project(project: Path, force: bool) -> None:
         raise JoinLintError("PROJECT_NOT_FOUND", "project directory is unavailable", 2) from exc
     if not root.is_dir() or root.is_symlink():
         raise JoinLintError("PROJECT_NOT_FOUND", "project must be a non-symlink directory", 2)
-    joinlint_directory = root / ".joinlint"
-    config_path = joinlint_directory / "config.yaml"
-    model_path = joinlint_directory / "model.yaml"
-    if (config_path.exists() or model_path.exists()) and not force:
-        raise JoinLintError("ALREADY_INITIALIZED", "JoinLint files already exist; use --force to replace", 2)
-    joinlint_directory.mkdir(exist_ok=True)
-    if joinlint_directory.is_symlink():
-        raise JoinLintError("SYMLINK_NOT_ALLOWED", "JoinLint directory cannot be a symlink", 2)
-    for directory in ("state", "analyses", "generated"):
-        (joinlint_directory / directory).mkdir(exist_ok=True)
-    write_yaml_atomically(config_path, ConfigV1(version=1, sources={}))
-    write_yaml_atomically(model_path, ModelV1(version=1, entities={}, relationships=[]))
+    with SafeProject(root) as safe_project:
+        config_relative = PurePosixPath(".joinlint/config.yaml")
+        model_relative = PurePosixPath(".joinlint/model.yaml")
+        safe_project.ensure_directory_relative(PurePosixPath(".joinlint"))
+        if (safe_project.exists_relative(config_relative) or safe_project.exists_relative(model_relative)) and not force:
+            raise JoinLintError("ALREADY_INITIALIZED", "JoinLint files already exist; use --force to replace", 2)
+        for directory in (".joinlint/state", ".joinlint/analyses", ".joinlint/generated"):
+            safe_project.ensure_directory_relative(PurePosixPath(directory))
+        write_yaml_atomically(safe_project, config_relative, ConfigV1(version=1, sources={}))
+        write_yaml_atomically(safe_project, model_relative, ModelV1(version=1, entities={}, relationships=[]))
 
 
 def _command_project(project: Path | None) -> Path:
@@ -161,11 +159,11 @@ def _source_kind(project: Path, source_path: str) -> str:
             os.close(descriptor)
 
 
-def _invalidate_source_evidence(project: Path) -> None:
-    joinlint_directory = project / ".joinlint"
-    shutil.rmtree(joinlint_directory / "generated", ignore_errors=True)
-    (joinlint_directory / "state" / "rejections.json").unlink(missing_ok=True)
-    (joinlint_directory / "baseline.json").unlink(missing_ok=True)
+def _invalidate_source_evidence(project: Path, source_id: str) -> None:
+    with SafeProject(project) as safe_project:
+        safe_project.remove_tree_relative(PurePosixPath(".joinlint/generated"), missing_ok=True)
+        safe_project.unlink_relative(PurePosixPath(".joinlint/baseline.json"), missing_ok=True)
+    invalidate_rejections_for_source(project, source_id)
 
 
 @app.command()
@@ -367,7 +365,7 @@ def source_set(
             if _source_kind(root, path) != existing.kind:
                 raise JoinLintError("SOURCE_KIND_MISMATCH", "source kind cannot change", 2)
             set_source_path(root, source_id, path)
-            _invalidate_source_evidence(root)
+            _invalidate_source_evidence(root, source_id)
     except JoinLintError as error:
         _exit_for_error(error)
     except Exception:
@@ -384,7 +382,7 @@ def source_remove(
         root = _command_project(project)
         with _config_lock(root):
             remove_source(root, source_id)
-            _invalidate_source_evidence(root)
+            _invalidate_source_evidence(root, source_id)
     except JoinLintError as error:
         _exit_for_error(error)
     except Exception:

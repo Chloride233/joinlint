@@ -5,16 +5,16 @@ import hashlib
 import json
 import os
 import sqlite3
-import tempfile
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from joinlint.contracts import canonical_json
 from joinlint.errors import JoinLintError
 from joinlint.model import ModelV1, Relationship, entity_id_for_table, model_digest, write_model
+from joinlint.paths import SafeProject
 from joinlint.scanner import ColumnProfile, ScanCatalog, TableProfile
 from joinlint.snapshots import SourceSnapshot
 
@@ -62,6 +62,12 @@ class RelationshipCandidate:
         return {"source": self.source_id, "from": self.from_endpoint, "to": self.to_endpoint}
 
 
+@dataclass
+class RejectionState:
+    by_source: dict[str, set[str]] = field(default_factory=dict)
+    legacy: set[str] = field(default_factory=set)
+
+
 def discover_candidates(
     snapshot: SourceSnapshot, catalog: ScanCatalog, model: ModelV1
 ) -> list[RelationshipCandidate]:
@@ -102,7 +108,8 @@ def visible_candidates(
     return [
         candidate
         for candidate in discover_candidates(snapshot, catalog, model)
-        if rejection_key(candidate) not in rejected
+        if rejection_key(candidate) not in rejected.legacy
+        and rejection_key(candidate) not in rejected.by_source.get(candidate.source_id, set())
     ]
 
 
@@ -119,8 +126,20 @@ def rejection_key(candidate: RelationshipCandidate) -> str:
 
 def reject_candidate(project: Path, candidate: RelationshipCandidate) -> None:
     rejections = _load_rejections(project)
-    rejections.add(rejection_key(candidate))
+    rejections.by_source.setdefault(candidate.source_id, set()).add(rejection_key(candidate))
     _write_rejections(project, rejections)
+
+
+def invalidate_rejections_for_source(project: Path, source_id: str) -> None:
+    rejections = _load_rejections(project)
+    rejections.by_source.pop(source_id, None)
+    # Legacy v1 entries predate source metadata, so they cannot be selectively retained.
+    rejections.legacy.clear()
+    if rejections.by_source:
+        _write_rejections(project, rejections)
+        return
+    with SafeProject(project) as safe_project:
+        safe_project.unlink_relative(PurePosixPath(".joinlint/state/rejections.json"), missing_ok=True)
 
 
 def accept_candidate(project: Path, candidate: RelationshipCandidate) -> None:
@@ -164,8 +183,12 @@ def _candidate_for_columns(
     parent_column: ColumnProfile,
     parent_values: Iterable[object],
 ) -> RelationshipCandidate | None:
-    normalized_parent_values = {normalize_value(value) for value in parent_values if value not in (None, "")}
-    normalized_child_values = [normalize_value(value) for value in child_values if value not in (None, "")]
+    normalized_parent_values = {
+        normalize_value(value, parent_column.physical_type) for value in parent_values if value not in (None, "")
+    }
+    normalized_child_values = [
+        normalize_value(value, child_column.physical_type) for value in child_values if value not in (None, "")
+    ]
     if not normalized_child_values:
         return None
     inclusion_numerator = sum(value in normalized_parent_values for value in normalized_child_values)
@@ -262,47 +285,58 @@ def _quote_identifier(identifier: str) -> str:
     return f'"{identifier.replace('"', '""')}"'
 
 
-def normalize_value(value: object) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
-        return format(Decimal(str(value)).normalize(), "f")
+def normalize_value(value: object, physical_type: str) -> str:
     text = str(value)
-    try:
-        return format(Decimal(text).normalize(), "f")
-    except InvalidOperation:
-        return text
+    if physical_type in {"integer", "number"}:
+        try:
+            return format(Decimal(text).normalize(), "f")
+        except InvalidOperation:
+            return text
+    if physical_type == "boolean":
+        return "true" if text.lower() == "true" else "false" if text.lower() == "false" else text
+    return text
 
 
-def _load_rejections(project: Path) -> set[str]:
-    path = project / ".joinlint" / "state" / "rejections.json"
-    if not path.exists():
-        return set()
+def _load_rejections(project: Path) -> RejectionState:
     try:
-        document: Any = json.loads(path.read_text(encoding="utf-8"))
+        with SafeProject(project) as safe_project:
+            descriptor = safe_project.open_relative(PurePosixPath(".joinlint/state/rejections.json"), os.O_RDONLY)
+            with os.fdopen(descriptor, "r", encoding="utf-8") as source:
+                document: Any = json.load(source)
         values = document["rejections"]
-        if document["version"] != 1 or not isinstance(values, list) or not all(
-            isinstance(value, str) for value in values
-        ):
+        if document["version"] != 1 or not isinstance(values, list):
             raise ValueError("invalid rejection state")
-        return set(values)
+        state = RejectionState()
+        for value in values:
+            if isinstance(value, str):
+                state.legacy.add(value)
+                continue
+            if (
+                not isinstance(value, dict)
+                or set(value) != {"source_id", "key"}
+                or not isinstance(value["source_id"], str)
+                or not value["source_id"]
+                or not isinstance(value["key"], str)
+            ):
+                raise ValueError("invalid rejection state")
+            state.by_source.setdefault(value["source_id"], set()).add(value["key"])
+        return state
+    except JoinLintError as exc:
+        if exc.code == "SAFE_PATH_OPEN_FAILED":
+            return RejectionState()
+        raise JoinLintError("MALFORMED_REJECTIONS", "local rejection state is malformed", 2) from exc
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         raise JoinLintError("MALFORMED_REJECTIONS", "local rejection state is malformed", 2) from exc
 
 
-def _write_rejections(project: Path, rejections: set[str]) -> None:
-    state_directory = project / ".joinlint" / "state"
-    state_directory.mkdir(parents=True, exist_ok=True)
-    path = state_directory / "rejections.json"
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".rejections.", dir=state_directory)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as destination:
-            json.dump({"version": 1, "rejections": sorted(rejections)}, destination, separators=(",", ":"))
-            destination.flush()
-            os.fsync(destination.fileno())
-        os.replace(temporary_name, path)
-    except BaseException:
-        Path(temporary_name).unlink(missing_ok=True)
-        raise
+def _write_rejections(project: Path, rejections: RejectionState) -> None:
+    values: list[object] = sorted(rejections.legacy)
+    values.extend(
+        {"source_id": source_id, "key": key}
+        for source_id in sorted(rejections.by_source, key=lambda value: value.encode("utf-8"))
+        for key in sorted(rejections.by_source[source_id])
+    )
+    payload = json.dumps({"version": 1, "rejections": values}, separators=(",", ":")).encode("utf-8")
+    with SafeProject(project) as safe_project:
+        safe_project.ensure_directory_relative(PurePosixPath(".joinlint/state"))
+        safe_project.write_relative_atomically(PurePosixPath(".joinlint/state/rejections.json"), payload)

@@ -7,7 +7,7 @@ from pathlib import Path
 from joinlint.candidates import discover_candidates
 from joinlint.config import add_source
 from joinlint.model import Entity, Grain, ModelV1, Relationship, write_model
-from joinlint.scanner import scan_snapshot
+from joinlint.scanner import _profile_column, scan_snapshot
 from joinlint.snapshots import snapshot_source
 from joinlint.validation import validate_relationship
 from tests.fixtures.build_conformance_sqlite import build_conformance_sqlite
@@ -26,6 +26,14 @@ def test_profile_records_exact_counts_without_samples(project: Path) -> None:
     order_id = catalog.table("orders").column("order_id")
     assert (order_id.null_count, order_id.distinct_count, order_id.is_unique) == (0, 3, True)
     assert not hasattr(order_id, "values")
+
+
+def test_numeric_csv_lexemes_profile_like_sqlite_numbers() -> None:
+    csv_profile = _profile_column("id", ["1", "1.0"])
+    sqlite_profile = _profile_column("id", [1, 1.0])
+
+    assert csv_profile == sqlite_profile
+    assert not csv_profile.is_unique
 
 
 def test_csv_and_sqlite_profiles_are_equal_for_conformance_fixture(tmp_path: Path) -> None:

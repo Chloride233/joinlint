@@ -36,8 +36,10 @@ def validate_relationship(
     values = snapshot_values(snapshot)
     from_values = values[from_table][from_column]
     to_values = values[to_table][to_column]
-    normalized_from = [normalize_value(value) for value in from_values if value not in (None, "")]
-    normalized_to = [normalize_value(value) for value in to_values if value not in (None, "")]
+    from_type = catalog.table(from_table).column(from_column).physical_type
+    to_type = catalog.table(to_table).column(to_column).physical_type
+    normalized_from = [normalize_value(value, from_type) for value in from_values if value not in (None, "")]
+    normalized_to = [normalize_value(value, to_type) for value in to_values if value not in (None, "")]
     from_counts = Counter(normalized_from)
     to_counts = Counter(normalized_to)
     matched_values = from_counts.keys() & to_counts.keys()

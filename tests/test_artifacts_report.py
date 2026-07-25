@@ -30,7 +30,7 @@ def test_failed_transaction_preserves_previous_generated_manifest(
 ) -> None:
     write_generated_transaction(project, _files("first"), {"identifiers": ["orders"]})
 
-    def raise_disk_error(_path: Path, _body: bytes) -> None:
+    def raise_disk_error(_project: object, _path: object, _body: bytes) -> None:
         raise OSError("disk full")
 
     monkeypatch.setattr(artifacts, "write_file", raise_disk_error)

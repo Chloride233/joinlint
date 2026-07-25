@@ -75,3 +75,14 @@ def test_check_detects_cardinality_drift_without_writing_generated_state(project
     assert (project / ".joinlint" / "baseline.json").read_bytes() == baseline_before
     assert not generated.exists()
     assert load_baseline(project)["version"] == 1
+
+
+def test_malformed_baseline_structure_returns_a_stable_error(project: Path) -> None:
+    (project / ".joinlint" / "baseline.json").write_text(
+        '{"version":1,"source_fingerprints":[],"schemas":[],"relationship_results":{}}', encoding="utf-8"
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        load_baseline(project)
+
+    assert captured.value.code == "MALFORMED_BASELINE"

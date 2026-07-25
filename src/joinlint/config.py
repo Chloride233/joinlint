@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -116,28 +115,13 @@ def load_config(project: Path | SafeProject) -> ConfigV1:
         return _validate_config(_read_yaml(boundary, PurePosixPath(".joinlint/config.yaml"), "MALFORMED_CONFIG"))
 
 
-def write_yaml_atomically(path: Path, document: BaseModel) -> None:
+def write_yaml_atomically(project: SafeProject, relative_path: PurePosixPath, document: BaseModel) -> None:
     payload = yaml.safe_dump(
         document.model_dump(mode="json", by_alias=True),
         allow_unicode=True,
         sort_keys=True,
     ).encode("utf-8")
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as destination:
-            destination.write(payload)
-            destination.flush()
-            os.fsync(destination.fileno())
-        os.replace(temporary, path)
-        parent_descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        try:
-            os.fsync(parent_descriptor)
-        finally:
-            os.close(parent_descriptor)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+    project.write_relative_atomically(relative_path, payload)
 
 
 def _source_kind_for_path(path: PurePosixPath) -> SourceKind:
@@ -164,7 +148,7 @@ def add_source(project: Path | SafeProject, source_id: str, path: str, kind: Sou
             raise JoinLintError("DUPLICATE_SOURCE_ID", "source ID already exists", 2)
         source = _validate_source_argument(kind, path)
         updated = ConfigV1(version=1, sources={**config.sources, source_id: source})
-        write_yaml_atomically(boundary.root / ".joinlint" / "config.yaml", updated)
+        write_yaml_atomically(boundary, PurePosixPath(".joinlint/config.yaml"), updated)
 
 
 def set_source_path(project: Path | SafeProject, source_id: str, path: str) -> None:
@@ -178,7 +162,11 @@ def set_source_path(project: Path | SafeProject, source_id: str, path: str) -> N
         if _source_kind_for_path(parsed_path) != existing.kind:
             raise JoinLintError("SOURCE_KIND_MISMATCH", "source kind cannot change", 2)
         updated_sources = {**config.sources, source_id: existing.model_copy(update={"path": parsed_path})}
-        write_yaml_atomically(boundary.root / ".joinlint" / "config.yaml", ConfigV1(version=1, sources=updated_sources))
+        write_yaml_atomically(
+            boundary,
+            PurePosixPath(".joinlint/config.yaml"),
+            ConfigV1(version=1, sources=updated_sources),
+        )
 
 
 def remove_source(project: Path | SafeProject, source_id: str) -> None:
@@ -194,4 +182,8 @@ def remove_source(project: Path | SafeProject, source_id: str) -> None:
         if dependents:
             raise JoinLintError("SOURCE_IN_USE", f"source is used by {', '.join(dependents[:20])}", 2)
         updated_sources = {key: value for key, value in config.sources.items() if key != source_id}
-        write_yaml_atomically(boundary.root / ".joinlint" / "config.yaml", ConfigV1(version=1, sources=updated_sources))
+        write_yaml_atomically(
+            boundary,
+            PurePosixPath(".joinlint/config.yaml"),
+            ConfigV1(version=1, sources=updated_sources),
+        )

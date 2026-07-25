@@ -292,7 +292,26 @@ def validate_cached_path(project: Path, path: list[dict[str, str]]) -> Envelope:
         )
     ):
         raise JoinLintError("INVALID_ARGUMENT", "path must be a returned path of at most 16 edges", 2)
-    return validate_cached_edges(project, [edge["id"] for edge in path])
+    model = load_model(project)
+    relationships = {relationship.id: relationship for relationship in model.relationships}
+    ordered_relationships = _validate_path_shape(path, relationships)
+    cached = validate_cached_edges(project, [relationship.id for relationship in ordered_relationships])
+    results = {str(result["relationship_id"]): result for result in cached.data["relationships"]}
+    fanout_edges = sum(
+        int(results[relationship.id]["from_rows_per_to"]) > 1
+        or int(results[relationship.id]["to_rows_per_from"]) > 1
+        for relationship in ordered_relationships
+    )
+    findings = list(cached.findings)
+    if fanout_edges > 1:
+        findings.append(Finding(code="COMPOUND_FANOUT", severity="blocking", message="COMPOUND_FANOUT"))
+    findings.sort(key=lambda finding: finding.code.encode("utf-8"))
+    return Envelope(
+        command="validate_join",
+        status="findings" if findings else "ok",
+        data=cached.data,
+        findings=findings,
+    )
 
 
 def _relationships_by_source(model: ModelV1) -> dict[str, list[Relationship]]:
@@ -344,6 +363,31 @@ def _require_fresh_manifest(project: Path, model: ModelV1) -> None:
 
 def _path_edge(relationship: Relationship, direction: str) -> dict[str, str]:
     return {"id": relationship.id, "direction": direction, "cardinality": relationship.cardinality}
+
+
+def _validate_path_shape(path: list[dict[str, str]], relationships: dict[str, Relationship]) -> list[Relationship]:
+    ordered: list[Relationship] = []
+    previous_target: str | None = None
+    seen_entities: set[str] = set()
+    for edge in path:
+        relationship = relationships.get(edge["id"])
+        if relationship is None or edge["direction"] not in {"forward", "reverse"}:
+            raise JoinLintError("INVALID_ARGUMENT", "path must contain current relationship edges", 2)
+        if edge["cardinality"] != relationship.cardinality:
+            raise JoinLintError("INVALID_ARGUMENT", "path cardinality does not match the model", 2)
+        from_entity = relationship.from_.split(".", maxsplit=1)[0]
+        to_entity = relationship.to.split(".", maxsplit=1)[0]
+        source, target = (from_entity, to_entity) if edge["direction"] == "forward" else (to_entity, from_entity)
+        if previous_target is None:
+            seen_entities.add(source)
+        elif source != previous_target:
+            raise JoinLintError("INVALID_ARGUMENT", "path edges are not contiguous", 2)
+        if target in seen_entities:
+            raise JoinLintError("INVALID_ARGUMENT", "path must not contain a cycle", 2)
+        seen_entities.add(target)
+        previous_target = target
+        ordered.append(relationship)
+    return ordered
 
 
 def _candidate_by_id(project: Path, candidate_id: str, *, include_rejected: bool) -> RelationshipCandidate:

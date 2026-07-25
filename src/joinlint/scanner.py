@@ -125,24 +125,27 @@ def _profile_table(name: str, headers: Sequence[str], rows: Iterable[Sequence[ob
 
 def _profile_column(name: str, values: Sequence[object]) -> ColumnProfile:
     non_null = [value for value in values if value not in (None, "")]
-    normalized = {_normalize_scalar(value) for value in non_null}
+    physical_type = _infer_type(non_null)
+    normalized = {_normalize_scalar(value, physical_type) for value in non_null}
     return ColumnProfile(
         name=name,
-        physical_type=_infer_type(non_null),
+        physical_type=physical_type,
         null_count=len(values) - len(non_null),
         distinct_count=len(normalized),
         is_unique=len(non_null) == len(normalized),
     )
 
 
-def _normalize_scalar(value: object) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
-        return format(Decimal(str(value)).normalize(), "f")
-    return str(value)
+def _normalize_scalar(value: object, physical_type: PhysicalType) -> str:
+    text = str(value)
+    if physical_type in {"integer", "number"}:
+        try:
+            return format(Decimal(text).normalize(), "f")
+        except InvalidOperation:
+            return text
+    if physical_type == "boolean":
+        return "true" if text.lower() == "true" else "false" if text.lower() == "false" else text
+    return text
 
 
 def _infer_type(values: Sequence[object]) -> PhysicalType:

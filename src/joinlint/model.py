@@ -81,7 +81,7 @@ def model_digest(model: ModelV1) -> str:
 
 def write_model(project: Path | SafeProject, model: ModelV1) -> None:
     with _project_boundary(project) as boundary:
-        write_yaml_atomically(boundary.root / ".joinlint" / "model.yaml", model)
+        write_yaml_atomically(boundary, PurePosixPath(".joinlint/model.yaml"), model)
 
 
 def entity_table_name(entity: Entity, source_kind: str) -> str:

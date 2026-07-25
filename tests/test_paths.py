@@ -95,3 +95,19 @@ def test_open_parent_relative_keeps_verified_parent_and_leaf_identity(project: P
             assert os.stat(leaf, dir_fd=parent_descriptor, follow_symlinks=False).st_ino == identity.st_ino
         finally:
             os.close(parent_descriptor)
+
+
+def test_atomic_project_write_never_follows_a_symlinked_parent(project: Path) -> None:
+    outside = project.parent / "outside"
+    outside.mkdir()
+    state = project / ".joinlint" / "state"
+    state.mkdir()
+    state.rmdir()
+    state.symlink_to(outside, target_is_directory=True)
+
+    with SafeProject(project) as safe_project:
+        with pytest.raises(JoinLintError) as captured:
+            safe_project.write_relative_atomically(PurePosixPath(".joinlint/state/rejections.json"), b"{}")
+
+    assert captured.value.code == "SYMLINK_NOT_ALLOWED"
+    assert not (outside / "rejections.json").exists()
