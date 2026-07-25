@@ -15,6 +15,7 @@ from benchmarks.agent_join.joinlint_eval import (  # noqa: E402
     AUTHORITATIVE_ORACLE,
     _deepseek_should_retry,
     build_samples,
+    run_dry_eval,
     run_eval,
     sanitized_mcp_environment,
 )
@@ -214,6 +215,31 @@ def test_mock_model_dry_run_calls_mcp_then_submits(
         "mcp_trace_scorer",
         "execution_scorer",
     }
+
+
+def test_free_dry_run_covers_all_four_arms_without_provider_credentials(
+    frozen_inputs: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    all_samples = build_samples(frozen_inputs)
+    task_id = next(
+        sample.metadata["task_id"]
+        for sample in all_samples
+        if sample.metadata["suite"] == "primary"
+    )
+    samples = [
+        sample
+        for sample in all_samples
+        if sample.metadata["suite"] == "primary"
+        and sample.metadata["task_id"] == task_id
+        and sample.metadata["repetition"] == 0
+    ]
+    logs = run_dry_eval(frozen_inputs, tmp_path / "dry-logs", samples=samples)
+    logged = [sample for log in logs for sample in log.samples or []]
+    assert {sample.metadata["arm"] for sample in logged} == {"A", "B", "C", "D"}
+    assert all(sample.error is None for sample in logged)
 
 
 def test_scorers_keep_invalid_output_in_the_denominator(frozen_inputs: Path) -> None:

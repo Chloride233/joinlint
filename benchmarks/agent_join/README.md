@@ -36,3 +36,40 @@ No command requiring `DEEPSEEK_API_KEY` may run until the local selector,
 scorers, arm-isolation checks, fake-model dry run, relationship review, frozen
 hash verification, secret scan, and full test suite pass and the user gives
 separate approval for the paid batch.
+
+## Free preparation workflow
+
+Save the archive from the official URL above as `/tmp/spider.zip`, then run:
+
+```bash
+python -m benchmarks.agent_join.prepare_spider \
+  --archive /tmp/spider.zip \
+  --work-dir benchmarks/agent_join/.work \
+  --manifest benchmarks/agent_join/tasks/spider-pilot-manifest.json \
+  --hashes benchmarks/agent_join/tasks/spider-pilot-hashes.json
+python -m benchmarks.agent_join.projects prepare \
+  --work-dir benchmarks/agent_join/.work \
+  --hashes benchmarks/agent_join/tasks/spider-pilot-hashes.json \
+  --oracle-models benchmarks/agent_join/models/oracle \
+  --review-dir benchmarks/agent_join/review
+```
+
+Complete every pending entity and relationship decision in the ignored review
+directory without consulting sealed tasks or oracle models. After the required
+independent process audit creates `review/audit.txt`, freeze the reviewed
+models:
+
+```bash
+python -m benchmarks.agent_join.projects apply \
+  --work-dir benchmarks/agent_join/.work \
+  --review-dir benchmarks/agent_join/review \
+  --joinlint-models benchmarks/agent_join/models/joinlint \
+  --hashes benchmarks/agent_join/tasks/spider-pilot-hashes.json
+python -m benchmarks.agent_join.joinlint_eval dry-run \
+  --work-dir benchmarks/agent_join/.work \
+  --log-dir benchmarks/agent_join/logs/dry-run
+```
+
+The tracked manifests contain hashes and relative identifiers, never questions
+or SQL. Review sheets, extracted Spider data, local MCP projects, and raw logs
+remain ignored.

@@ -6,6 +6,7 @@ import json
 import stat
 import zipfile
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 import sqlglot
@@ -19,6 +20,10 @@ from joinlint.contracts import canonical_json
 MAX_ARCHIVE_MEMBER_BYTES = 1 << 30
 MAX_ARCHIVE_TOTAL_BYTES = 8 << 30
 MAX_ARCHIVE_MEMBERS = 100_000
+OFFICIAL_SPIDER_URL = (
+    "https://drive.google.com/file/d/1403EGqzIDoHMdQF4c9Bkyl7dZLZ5Wt6J/"
+    "view?usp=sharing"
+)
 
 
 def seeded_rank(seed: int, *parts: str) -> bytes:
@@ -296,7 +301,24 @@ def write_pilot_lock(
         },
     }
     hashes_path.parent.mkdir(parents=True, exist_ok=True)
-    hashes_path.write_bytes(canonical_json({"schema_version": 1, "sources": sources}))
+    downloaded_at = datetime.fromtimestamp(
+        archive.stat().st_mtime,
+        tz=timezone.utc,
+    ).replace(microsecond=0)
+    hashes_path.write_bytes(
+        canonical_json(
+            {
+                "schema_version": 1,
+                "acquisition": {
+                    "url": OFFICIAL_SPIDER_URL,
+                    "downloaded_at": downloaded_at.isoformat().replace("+00:00", "Z"),
+                    "archive_sha256": sources["archive"],
+                    "digest_provenance": "computed_locally_not_published_by_spider",
+                },
+                "sources": sources,
+            }
+        )
+    )
 
 
 def _primary_key_counts(metadata: dict[str, object]) -> Counter[str]:

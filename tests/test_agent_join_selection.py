@@ -20,13 +20,20 @@ from benchmarks.agent_join.prepare_spider import (  # noqa: E402
     write_pilot_lock,
 )
 from benchmarks.agent_join.projects import (  # noqa: E402
+    apply_evaluation_reviews,
     apply_review_sheet,
     audit_review_bundle,
     build_oracle_project,
     build_review_project,
+    prepare_evaluation_projects,
 )
 from joinlint.model import load_model  # noqa: E402
-from joinlint.services import get_data_model, validate_cached_edges  # noqa: E402
+from joinlint.errors import JoinLintError  # noqa: E402
+from joinlint.services import (  # noqa: E402
+    get_data_model,
+    validate_cached_edges,
+    validate_cached_path,
+)
 from tests.agent_join_helpers import (  # noqa: E402
     accept_only_order_customer,
     build_mini_spider,
@@ -254,6 +261,81 @@ def test_review_bundle_audit_rejects_forbidden_and_unexpected_files(tmp_path: Pa
     (review_root / "unexpected.yaml").write_text("value: true", encoding="utf-8")
     with pytest.raises(ValueError, match="unexpected file"):
         audit_review_bundle(review_root, set())
+
+
+def test_prepare_and_apply_freeze_four_models_and_safety_projects(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "evaluation"
+    spider = build_mini_spider(work / "source")
+    tasks = select_pilot(
+        spider,
+        seed=20260725,
+        database_count=4,
+        tasks_per_database=4,
+    )
+    archive = tmp_path / "spider.zip"
+    archive.write_bytes(b"fixture archive identity")
+    hashes = tmp_path / "tracked" / "hashes.json"
+    write_pilot_lock(
+        tasks,
+        spider_root=spider,
+        archive=archive,
+        work_dir=work,
+        manifest_path=tmp_path / "tracked" / "manifest.json",
+        hashes_path=hashes,
+    )
+    oracle_models = tmp_path / "tracked" / "oracle"
+    review_dir = tmp_path / "review"
+    prepare_evaluation_projects(work, hashes, oracle_models, review_dir)
+    assert len(list(oracle_models.glob("*.yaml"))) == 4
+    decisions = sorted(review_dir.glob("*-decisions.json"))
+    assert len(decisions) == 4
+
+    for path in decisions:
+        sheet = json.loads(path.read_text(encoding="utf-8"))
+        accept_only_order_customer(sheet)
+        path.write_text(json.dumps(sheet), encoding="utf-8")
+    (review_dir / "audit.txt").write_text("complete and allowlisted\n", encoding="utf-8")
+    joinlint_models = tmp_path / "tracked" / "joinlint"
+    apply_evaluation_reviews(work, review_dir, joinlint_models, hashes)
+    assert len(list(joinlint_models.glob("*.yaml"))) == 4
+    lock = json.loads(hashes.read_text(encoding="utf-8"))
+    assert len(lock["models"]["oracle"]) == 4
+    assert len(lock["models"]["joinlint"]) == 4
+    assert lock["acquisition"]["digest_provenance"] == (
+        "computed_locally_not_published_by_spider"
+    )
+
+    safe = get_data_model(work / "projects" / "safety" / "safe_direct")
+    mismatch = validate_cached_edges(
+        work / "projects" / "safety" / "cardinality_mismatch",
+        ["left_to_right"],
+    )
+    with pytest.raises(JoinLintError) as stale_error:
+        validate_cached_edges(
+            work / "projects" / "safety" / "stale_evidence",
+            ["left_to_right"],
+        )
+    compound = validate_cached_path(
+        work / "projects" / "safety" / "compound_fanout",
+        [
+            {
+                "id": "child_to_parent",
+                "direction": "forward",
+                "cardinality": "many_to_one",
+            },
+            {
+                "id": "parent_to_grand",
+                "direction": "forward",
+                "cardinality": "many_to_one",
+            },
+        ],
+    )
+    assert not any(finding.severity == "blocking" for finding in safe.findings)
+    assert "CARDINALITY_DRIFT" in {finding.code for finding in mismatch.findings}
+    assert stale_error.value.code == "EVIDENCE_STALE"
+    assert "COMPOUND_FANOUT" in {finding.code for finding in compound.findings}
 
 
 def _chain_metadata() -> dict[str, object]:

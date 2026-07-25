@@ -52,3 +52,32 @@ Together, the committed candidate, join-safety, drift, conformance, smoke, and
 performance commands provide the v0 relationship-fixture, safety, drift,
 runtime, and memory evidence. They test implementation regression only; they
 do not establish discovery generalization.
+
+## Exploratory downstream MCP evaluation
+
+`benchmarks/agent_join` contains a separate Spider pilot for measuring whether
+an SQL Agent retrieves and uses relationship context through JoinLint MCP. It
+is not part of JoinSafetyBench, and pilot effects are not product or marketing
+claims.
+
+Install the isolated evaluation dependencies and run the free gates:
+
+```bash
+python -m pip install -e '.[dev,eval]'
+python -m pytest \
+  tests/test_agent_join_selection.py \
+  tests/test_agent_join_scorers.py \
+  tests/test_agent_join_arm_isolation.py \
+  tests/test_agent_join_reporting.py -q
+python -m benchmarks.agent_join.joinlint_eval dry-run \
+  --work-dir benchmarks/agent_join/.work \
+  --log-dir benchmarks/agent_join/logs/dry-run
+```
+
+The focused pytest summary must contain no skips. The dry run uses Inspect's
+local mock model, starts the real STDIO MCP server, covers all four arms plus
+the zero-configuration and safety diagnostics, and makes no provider request.
+Normal CI installs only `dev`; it neither installs the evaluation extra nor
+calls DeepSeek. The paid 200-run batch requires a separately recorded approval
+after the official Spider inputs, human relationship review, hashes, and all
+free gates are frozen.

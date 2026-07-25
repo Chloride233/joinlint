@@ -12,7 +12,13 @@ from typing import Any
 from inspect_ai import Task, eval
 from inspect_ai.agent import AgentSubmit, as_solver, react
 from inspect_ai.dataset import Sample
-from inspect_ai.model import Model, get_model
+from inspect_ai.model import (
+    ChatMessageAssistant,
+    ChatMessageTool,
+    Model,
+    ModelOutput,
+    get_model,
+)
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 from inspect_ai.tool import (
     MCPServer,
@@ -20,6 +26,7 @@ from inspect_ai.tool import (
     ToolDef,
     ToolParams,
     ToolSource,
+    ToolCall,
     mcp_server_stdio,
     tool,
 )
@@ -54,6 +61,11 @@ TOOL_DESCRIPTIONS = {
     "get_data_model": "Return confirmed entities, grains, and relationships from the JoinLint model.",
     "find_join_path": "Find confirmed relationship paths between two named entities.",
     "validate_join": "Return cached validation evidence and findings for a returned path or edge IDs.",
+}
+SCORER_NAMES = {
+    "join_outcome_scorer",
+    "mcp_trace_scorer",
+    "execution_scorer",
 }
 
 
@@ -390,6 +402,120 @@ def run_eval(
             os.environ["INSPECT_TRACE_FILE"] = prior_trace_file
 
 
+def run_dry_eval(
+    inputs_root: Path,
+    log_dir: Path,
+    *,
+    samples: Sequence[Sample] | None = None,
+) -> list[Any]:
+    selected = list(samples) if samples is not None else build_samples(inputs_root)
+
+    def outputs(
+        messages: list[Any],
+        tools: list[Any],
+        tool_choice: object,
+        config: object,
+    ) -> ModelOutput:
+        del tool_choice, config
+        names = {candidate.name for candidate in tools}
+        tool_messages = [
+            message for message in messages if isinstance(message, ChatMessageTool)
+        ]
+        called = {message.function or "" for message in tool_messages}
+        visible_text = "\n".join(str(message.content) for message in messages)
+        if not any(name.endswith("get_data_model") for name in called) and any(
+            name.endswith("get_data_model") for name in names
+        ):
+            function = next(name for name in names if name.endswith("get_data_model"))
+            arguments: dict[str, object] = {}
+        elif "compound_fanout" in visible_text and not any(
+            name.endswith("find_join_path") for name in called
+        ):
+            function = next(name for name in names if name.endswith("find_join_path"))
+            arguments = {
+                "source_entity": "children",
+                "target_entity": "grands",
+                "max_depth": 4,
+            }
+        elif any(name.endswith("get_data_model") for name in called) and not any(
+            name.endswith("validate_join") for name in called
+        ):
+            function = next(name for name in names if name.endswith("validate_join"))
+            arguments = _dry_validation_arguments(tool_messages, visible_text)
+        else:
+            function = next(name for name in names if name.endswith("submit_sql"))
+            arguments = {"sql": "SELECT 1", "warning": ""}
+        message = ChatMessageAssistant(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id=f"dry-run-{len(messages)}",
+                    function=function,
+                    arguments=arguments,
+                )
+            ],
+        )
+        return ModelOutput.from_message(message, stop_reason="tool_calls")
+
+    logs = run_eval(
+        inputs_root,
+        log_dir,
+        model=get_model(
+            "mockllm/model",
+            custom_outputs=outputs,
+            memoize=False,
+        ),
+        samples=selected,
+    )
+    logged_samples = [sample for log in logs for sample in log.samples or []]
+    if len(logged_samples) != len(selected) or {
+        str(sample.id) for sample in logged_samples
+    } != {str(sample.id) for sample in selected}:
+        raise RuntimeError("dry run did not produce every planned sample exactly once")
+    if any(
+        sample.error is not None or set(sample.scores or {}) != set(SCORER_NAMES)
+        for sample in logged_samples
+    ):
+        raise RuntimeError("dry run produced an error or missing scorer artifact")
+    return logs
+
+
+def _dry_validation_arguments(
+    messages: Sequence[ChatMessageTool],
+    visible_text: str,
+) -> dict[str, object]:
+    if "compound_fanout" in visible_text:
+        payload = _last_tool_payload(messages, "find_join_path")
+        data = payload.get("data")
+        paths = data.get("paths", []) if isinstance(data, dict) else []
+        if not isinstance(paths, list) or not paths or not isinstance(paths[0], list):
+            return {"edge_ids": ["missing"]}
+        return {"path": paths[0]}
+    payload = _last_tool_payload(messages, "get_data_model")
+    data = payload.get("data")
+    relationships = data.get("relationships", []) if isinstance(data, dict) else []
+    edge_ids = [
+        str(relationship["id"])
+        for relationship in relationships
+        if isinstance(relationship, dict) and isinstance(relationship.get("id"), str)
+    ]
+    return {"edge_ids": edge_ids[:1] or ["missing"]}
+
+
+def _last_tool_payload(
+    messages: Sequence[ChatMessageTool],
+    suffix: str,
+) -> dict[str, Any]:
+    for message in reversed(messages):
+        if (message.function or "").endswith(suffix) and isinstance(message.content, str):
+            try:
+                payload = json.loads(message.content)
+            except json.JSONDecodeError:
+                return {}
+            return payload if isinstance(payload, dict) else {}
+    return {}
+
+
 def _deepseek_should_retry(error: BaseException) -> bool:
     if isinstance(error, APITimeoutError):
         return False
@@ -446,7 +572,7 @@ def _utf8_key(value: str) -> bytes:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the frozen JoinLint Inspect evaluation")
-    parser.add_argument("command", choices=("run",))
+    parser.add_argument("command", choices=("run", "dry-run"))
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--log-dir", type=Path, required=True)
     return parser.parse_args()
@@ -454,7 +580,10 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    run_eval(args.work_dir, args.log_dir)
+    if args.command == "dry-run":
+        run_dry_eval(args.work_dir, args.log_dir)
+    else:
+        run_eval(args.work_dir, args.log_dir)
 
 
 if __name__ == "__main__":

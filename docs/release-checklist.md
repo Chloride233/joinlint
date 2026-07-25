@@ -13,3 +13,11 @@
 - Verify the real STDIO protocol regression in `tests/test_mcp.py` passes current,
   stale-source, stale-model, bounded-output, and no-mutation cases.
 - Verify generated artifacts and `.joinlint/state/` are not staged, while config, model, and baseline are reviewable.
+- Install the downstream evaluation environment with
+  `python -m pip install -e '.[dev,eval]'` outside normal CI.
+- Run `python -m pytest tests/test_agent_join_selection.py tests/test_agent_join_scorers.py tests/test_agent_join_arm_isolation.py tests/test_agent_join_reporting.py -q`
+  and verify the summary contains no skips.
+- Run `python -m benchmarks.agent_join.joinlint_eval dry-run --work-dir benchmarks/agent_join/.work --log-dir benchmarks/agent_join/logs/dry-run`
+  and verify all 200 planned samples have complete scorer artifacts.
+- Verify normal CI installs only `dev` and never calls DeepSeek; do not run the
+  paid Spider batch without the separate approval recorded after all free gates.
