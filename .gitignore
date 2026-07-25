@@ -27,3 +27,9 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# Agent-join evaluation data, review state, and raw logs
+benchmarks/agent_join/.work/
+benchmarks/agent_join/logs/
+benchmarks/agent_join/results/raw/
+benchmarks/agent_join/review/

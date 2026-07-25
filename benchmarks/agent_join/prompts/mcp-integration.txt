@@ -1,0 +1,1 @@
+Before generating multi-table SQL, consult JoinLint for confirmed relationships and validate the selected join path. Base join conditions only on confirmed edges returned during this run. If validation returns a blocking finding, do not silently use that path.

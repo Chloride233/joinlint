@@ -1,0 +1,35 @@
+schema_version: 1
+pilot:
+  dataset: spider
+  split: dev
+  seed: 20260725
+  database_count: 4
+  tasks_per_database: 4
+  arms: [A, B, C, D]
+  repetitions: 3
+model:
+  id: openai-api/deepseek/deepseek-v4-flash
+  base_url: https://api.deepseek.com
+  thinking: disabled
+  temperature: 0
+  max_output_tokens: 4096
+  max_mcp_calls: 4
+  time_limit_seconds: 120
+  transient_retries: 2
+execution:
+  dialect: sqlite
+  statement_deadline_seconds: 5
+  max_result_rows: 10000
+report:
+  bootstrap_draws: 10000
+  bootstrap_seed: 20260725
+  manual_review_size: 40
+  pilot_artifact_completion_min: 0.95
+  manual_scorer_agreement_min: 0.95
+  formal_wrong_join_drop_min_points: 10
+  formal_execution_drop_max_points: 5
+pricing:
+  observed_at: 2026-07-25
+  input_cache_hit_per_million_usd: 0.0028
+  input_cache_miss_per_million_usd: 0.14
+  output_per_million_usd: 0.28
