@@ -318,7 +318,13 @@ Edge = tuple[str, str]
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        populate_by_name=True,
+        serialize_by_alias=True,
+        strict=True,
+    )
 
 
 class SelectedTask(StrictModel):
@@ -326,7 +332,7 @@ class SelectedTask(StrictModel):
     db_id: str
     question: str
     schema_text: str
-    schema: dict[str, dict[str, str]]
+    schema_map: dict[str, dict[str, str]] = Field(alias="schema")
     gold_sql: str
     allowed_graphs: list[list[Edge]]
     oracle_relationships: list[dict[str, object]]
@@ -342,7 +348,7 @@ class PilotSample(StrictModel):
     repetition: int = Field(ge=0, le=2)
     question: str
     schema_text: str
-    schema: dict[str, dict[str, str]]
+    schema_map: dict[str, dict[str, str]] = Field(alias="schema")
     gold_sql: str
     allowed_graphs: list[list[Edge]]
     oracle_relationships: list[dict[str, object]]
@@ -1115,7 +1121,7 @@ def join_outcome_scorer() -> Scorer:
         sample = PilotSample.model_validate(state.metadata)
         try:
             submission = extract_submission(state.output.completion)
-            predicted = extract_join_edges(submission.sql, sample.schema)
+            predicted = extract_join_edges(submission.sql, sample.schema_map)
             outcome = score_join_graph(predicted, sample.allowed_graphs)
         except (ValueError, sqlglot.errors.SqlglotError) as error:
             outcome = JoinScore(
