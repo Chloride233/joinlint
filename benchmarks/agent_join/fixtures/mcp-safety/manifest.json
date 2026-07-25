@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id": "safe_direct", "recipe": "safe_many_to_one", "expected_status": "ok"},
+    {"id": "cardinality_mismatch", "recipe": "cardinality_drift", "expected_code": "CARDINALITY_DRIFT"},
+    {"id": "compound_fanout", "recipe": "compound_fanout", "expected_code": "COMPOUND_FANOUT"},
+    {"id": "stale_evidence", "recipe": "safe_many_to_one", "mutation": "rescan_after_model_change", "expected_code": "EVIDENCE_STALE"}
+  ]
+}

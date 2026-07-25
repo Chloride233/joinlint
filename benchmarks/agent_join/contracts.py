@@ -79,3 +79,16 @@ class ValidatedSQL(StrictModel):
 class Submission(StrictModel):
     sql: str
     warning: str
+
+
+class TraceScore(StrictModel):
+    tool_called: bool
+    successful_tool_call: bool
+    correct_tool_use: bool
+    grounded: bool
+    validated: bool
+    blocking_compliant: bool | None
+    bypassed: bool
+    tool_error: bool
+    returned_edges: list[Edge]
+    called_tools: list[str]
