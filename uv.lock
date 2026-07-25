@@ -353,7 +353,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "rfc8785", specifier = ">=0.1.4" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.22" },
     { name = "typer", specifier = ">=0.15" },
 ]
 provides-extras = ["dev"]
