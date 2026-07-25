@@ -906,13 +906,13 @@ Pass it through `AgentSubmit(tool=submit_sql(), name="submit_sql")`; do not use 
 
 - [ ] **Step 4: Implement one metadata-dispatched solver**
 
-Use one Inspect `Task` so randomization occurs across arms rather than as four sequential task batches:
+Use one Inspect `Task` so randomization occurs across arms rather than as four sequential task batches. In Inspect AI 0.3.249, import `as_solver` from `inspect_ai.agent`:
 
 ```python
 @solver
 def condition_solver() -> Solver:
     async def solve(state: TaskState, generate: Generate) -> TaskState:
-        sample = PilotSample.model_validate(state.metadata)
+        sample = PilotSample.model_validate_json(json.dumps(state.metadata, ensure_ascii=False))
         tools: list[ToolSource] = []
         prompt = BASE_PROMPT
         if sample.arm in {"C", "D"}:
@@ -935,7 +935,7 @@ def condition_solver() -> Solver:
     return solve
 ```
 
-`sanitized_mcp_environment()` must construct a new allowlisted mapping containing only `HOME`, `PATH`, `LANG`, `LC_ALL`, and `TMPDIR` when present. It must reject any allowlisted value containing the exact DeepSeek key value and must never include `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `GITHUB_TOKEN`, or arbitrary inherited variables. Test this with sentinel values before starting any MCP process. JoinLint requires no provider credential.
+`sanitized_mcp_environment()` must construct a new mapping containing only `HOME`, `PATH`, `LANG`, `LC_ALL`, and `TMPDIR` when present plus a controlled `PYTHONPATH` equal to the repository's `src` directory. It must reject any value containing the exact DeepSeek key value and must never inherit `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `GITHUB_TOKEN`, or arbitrary variables. Test this with sentinel values before starting any MCP process. JoinLint requires no provider credential.
 
 - [ ] **Step 5: Build and deterministically order explicit repetitions**
 
@@ -971,7 +971,7 @@ eval(
 )
 ```
 
-Before the call, require `DEEPSEEK_BASE_URL` to equal `https://api.deepseek.com`; require but never print `DEEPSEEK_API_KEY`. Configure the `openai-api` provider from those two values without placing the key in `model_args`, task metadata, or logs: temporarily map them to the provider's `OPENAI_BASE_URL` and `OPENAI_API_KEY` environment variables only for the duration of `eval()`, then restore the prior environment in `finally`. The explicit MCP subprocess environment above prevents either provider variable from crossing into JoinLint. For `--model mockllm/model`, skip both environment checks and provider-variable mapping so local dry runs remain free.
+Before the call, require `DEEPSEEK_BASE_URL` to equal `https://api.deepseek.com`; require but never print `DEEPSEEK_API_KEY`. Inspect AI 0.3.249 derives those exact environment-variable names from the `deepseek` service segment in `openai-api/deepseek/deepseek-v4-flash`, so do not copy the key into `OPENAI_API_KEY`, `model_args`, task metadata, or logs. Override the model instance's retry classifier so only connection failures plus HTTP 429, 500, 502, 503, and 504 are retried; an API timeout and all other statuses are completed failures. The explicit MCP subprocess environment above prevents provider variables from crossing into JoinLint. For `--model mockllm/model`, skip both environment checks so local dry runs remain free.
 
 `parallel_tool_calls=False` limits each model turn to one call. With `turn_limit=5` and a required final `submit_sql` call, a sample can make at most four MCP calls. A turn-limit stop is a completed failed sample and is not retried.
 
@@ -1120,7 +1120,7 @@ Use Inspect's decorator and numeric error value:
 @scorer(metrics=[mean()])
 def join_outcome_scorer() -> Scorer:
     async def score(state: TaskState, target: Target) -> Score:
-        sample = PilotSample.model_validate(state.metadata)
+        sample = PilotSample.model_validate_json(json.dumps(state.metadata, ensure_ascii=False))
         try:
             submission = extract_submission(state.output.completion)
             predicted = extract_join_edges(submission.sql, sample.schema_map)

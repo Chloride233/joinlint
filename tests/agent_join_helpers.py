@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import shutil
 from pathlib import Path
+
+from benchmarks.agent_join.projects import (
+    apply_review_sheet,
+    build_oracle_project,
+    build_review_project,
+)
+from benchmarks.agent_join.prepare_spider import select_pilot
+from joinlint.contracts import canonical_json
 
 
 def build_orders_database(root: Path) -> Path:
@@ -121,3 +130,45 @@ def accept_only_order_customer(sheet: dict[str, object]) -> None:
     assert accepted == 1
     sheet["reviewer"] = "fixture-reviewer"
     sheet["reviewed_at"] = "2026-07-25T00:00:00Z"
+
+
+def build_frozen_inputs(root: Path) -> Path:
+    spider = build_mini_spider(root / "source")
+    tasks = select_pilot(
+        spider,
+        seed=20260725,
+        database_count=4,
+        tasks_per_database=4,
+    )
+    evaluation = root / "evaluation"
+    sealed = evaluation / "sealed" / "spider-pilot.json"
+    sealed.parent.mkdir(parents=True)
+    sealed.write_bytes(
+        canonical_json([task.model_dump(mode="json", by_alias=True) for task in tasks])
+    )
+    metadata_by_db = {
+        str(document["db_id"]): document
+        for document in json.loads((spider / "tables.json").read_text(encoding="utf-8"))
+    }
+    for db_id in sorted({task.db_id for task in tasks}):
+        source = spider / "database" / db_id / f"{db_id}.sqlite"
+        build_oracle_project(
+            source,
+            metadata_by_db[db_id],
+            evaluation / "projects" / "oracle" / db_id,
+        )
+        review = build_review_project(
+            source,
+            evaluation / "projects" / "joinlint" / db_id,
+        )
+        sheet = load_review_sheet(review)
+        accept_only_order_customer(sheet)
+        apply_review_sheet(review, sheet)
+
+    first_db = sorted({task.db_id for task in tasks})[0]
+    for case_id in ("safe_direct", "cardinality_mismatch", "compound_fanout", "stale_evidence"):
+        shutil.copytree(
+            evaluation / "projects" / "joinlint" / first_db,
+            evaluation / "projects" / "safety" / case_id,
+        )
+    return evaluation
