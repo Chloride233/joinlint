@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("inspect_ai")
+
 from benchmarks.formal_eval.inspect_smoke import run_inspect_smoke
 
 

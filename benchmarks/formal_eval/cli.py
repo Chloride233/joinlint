@@ -18,7 +18,6 @@ from benchmarks.formal_eval.contracts import (
     SealedAgentTask,
 )
 from benchmarks.formal_eval.fake import write_fake_evaluation
-from benchmarks.formal_eval.inspect_smoke import run_inspect_smoke
 from benchmarks.formal_eval.export import export_agent_rows
 from benchmarks.formal_eval.gates import (
     agent_product_gate,
@@ -51,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
         write_fake_evaluation(arguments.output)
         return 0
     if arguments.command == "inspect-smoke":
+        from benchmarks.formal_eval.inspect_smoke import run_inspect_smoke
+
         run_inspect_smoke(arguments.project, arguments.output)
         return 0
     if arguments.command == "preflight":

@@ -1,6 +1,7 @@
 name: formal-evaluation
 
 on:
+  pull_request:
   workflow_dispatch:
     inputs:
       stage:
@@ -99,7 +100,7 @@ jobs:
           if-no-files-found: error
 
   formal:
-    if: inputs.stage == 'formal'
+    if: github.event_name == 'workflow_dispatch' && inputs.stage == 'formal'
     needs: deterministic
     runs-on: ubuntu-latest
     environment: formal-evaluation
