@@ -193,14 +193,7 @@ def prepare_bird_subset(
     expected_databases_member_size: int | None = None,
     expected_databases_member_crc32: int | None = None,
 ) -> dict[str, Any]:
-    """Produce one sealed candidate subset without reading JoinLint output."""
-    selected_ids = _validate_database_ids(database_ids)
-    if min_tasks_per_database < 1:
-        raise ValueError("minimum task count must be positive")
-    if max_database_bytes < 1:
-        raise ValueError("database size limit must be positive")
-    if destination.exists() or destination.is_symlink():
-        raise ValueError("destination already exists")
+    """Produce one sealed candidate subset from a complete outer archive."""
     if not archive_path.is_file() or archive_path.is_symlink():
         raise ValueError("BIRD archive must be one regular file")
     actual_size, actual_digest = _file_identity(archive_path)
@@ -208,9 +201,9 @@ def prepare_bird_subset(
         raise ValueError("BIRD archive does not match its source record")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    staging = destination.with_name(f".{destination.name}.staging-{uuid.uuid4().hex}")
-    staging.mkdir()
-    nested_path = staging / ".train_databases.zip"
+    source_staging = destination.parent / f".bird-source-{uuid.uuid4().hex}"
+    source_staging.mkdir()
+    nested_path = source_staging / "train_databases.zip"
     try:
         with zipfile.ZipFile(archive_path) as outer:
             outer_infos = _validated_infos(outer)
@@ -230,9 +223,48 @@ def prepare_bird_subset(
             _copy_zip_member(outer, nested_info, nested_path, nested_info.file_size)
             tasks = _read_json_member(outer, outer_infos, "train/train.json")
             tables = _read_json_member(outer, outer_infos, "train/train_tables.json")
+        return prepare_bird_subset_from_components(
+            nested_path,
+            destination,
+            tasks=tasks,
+            tables=tables,
+            database_ids=database_ids,
+            source=source,
+            min_tasks_per_database=min_tasks_per_database,
+            max_database_bytes=max_database_bytes,
+        )
+    finally:
+        shutil.rmtree(source_staging, ignore_errors=True)
 
-        if not isinstance(tasks, list) or not isinstance(tables, list):
-            raise ValueError("BIRD metadata members must contain JSON arrays")
+
+def prepare_bird_subset_from_components(
+    nested_archive_path: Path,
+    destination: Path,
+    *,
+    tasks: Any,
+    tables: Any,
+    database_ids: tuple[str, ...],
+    source: BirdArchiveSource,
+    min_tasks_per_database: int = 5,
+    max_database_bytes: int = _MAX_DATABASE_BYTES,
+) -> dict[str, Any]:
+    """Produce one sealed subset from a verified nested archive and metadata."""
+    selected_ids = _validate_database_ids(database_ids)
+    if min_tasks_per_database < 1:
+        raise ValueError("minimum task count must be positive")
+    if max_database_bytes < 1:
+        raise ValueError("database size limit must be positive")
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("destination already exists")
+    if not nested_archive_path.is_file() or nested_archive_path.is_symlink():
+        raise ValueError("nested database archive must be one regular file")
+    if not isinstance(tasks, list) or not isinstance(tables, list):
+        raise ValueError("BIRD metadata members must contain JSON arrays")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = destination.with_name(f".{destination.name}.staging-{uuid.uuid4().hex}")
+    staging.mkdir()
+    try:
         candidates = select_eligible_tasks(tasks, tuple(sorted(selected_ids)))
         counts = {database_id: 0 for database_id in selected_ids}
         for candidate in candidates:
@@ -249,12 +281,11 @@ def prepare_bird_subset(
         database_dir = staging / "databases"
         database_dir.mkdir()
         database_records = _extract_selected_databases(
-            nested_path,
+            nested_archive_path,
             database_dir,
             selected_ids,
             max_database_bytes=max_database_bytes,
         )
-        nested_path.unlink()
 
         candidate_path = staging / "candidate-tasks.json"
         tables_path = staging / "selected-tables.json"
