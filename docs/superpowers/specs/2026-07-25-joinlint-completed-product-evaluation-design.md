@@ -30,11 +30,21 @@ metric definitions, filters, causal meaning, or complete answer correctness.
 
 ## 2. Frozen contracts
 
-The schema-v2 preregistration freezes exactly two returned model snapshots, one
-high-capability and one cost-efficient family; Codex CLI and Claude Code with
-exact versions; JoinLint commit, Harness version, inference policy, image
+The schema-v2 preregistration freezes exactly two returned model identities from
+one provider family: DeepSeek V4 Pro as the high-capability tier and DeepSeek V4
+Flash as the cost-efficient tier, both with thinking disabled. This is a
+single-provider, two-tier replication and does not test cross-family
+generalization. The preregistration also freezes the official CNY cache-hit,
+cache-miss, and output-token prices observed on 2026-07-26; Codex CLI and Claude
+Code with exact versions; JoinLint commit, Harness version, inference policy, image
 reference and digest, dataset release, seed, repetitions, bootstrap draws, and publication
 thresholds; and GitHub Actions plus Modal as the execution environment.
+
+DeepSeek model names are provider aliases unless the response exposes a more
+specific immutable identity. All runs record and enforce the returned identity;
+an observable identity change invalidates the batch. Silent provider updates
+remain a disclosed validity limitation. Formal exports retain cache-read and
+cache-write token counts and recompute CNY cost from the frozen prices.
 
 The tracked manifest contains only identifiers and hashes. Raw questions,
 schema text, gold SQL, database paths, and allowed graphs live in an ignored

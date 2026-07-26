@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,8 +13,10 @@ import pytest
 from benchmarks.formal_eval.export import (
     _row,
     _runtime_failure_code,
+    calculate_cost_cny,
     require_expected_model_identity,
 )
+from benchmarks.formal_eval.contracts import ModelPricingCNY
 from benchmarks.formal_eval.fake import fake_preregistration
 
 
@@ -104,6 +107,8 @@ def test_exported_row_drops_sealed_inputs_and_transcripts() -> None:
         model_usage={
             "model": SimpleNamespace(
                 input_tokens=120,
+                input_tokens_cache_read=20,
+                input_tokens_cache_write=10,
                 output_tokens=30,
                 total_cost=0.01,
             )
@@ -112,11 +117,24 @@ def test_exported_row_drops_sealed_inputs_and_transcripts() -> None:
     )
     log = SimpleNamespace(eval=SimpleNamespace(model="fake/high-capability-v1"))
 
-    payload = _row(log, sample).model_dump(mode="json")
+    pricing = ModelPricingCNY(
+        observed_at=date(2026, 7, 26),
+        input_cache_hit_per_million_cny=0.025,
+        input_cache_miss_per_million_cny=3.0,
+        output_per_million_cny=6.0,
+    )
+    payload = _row(
+        log,
+        sample,
+        model_pricing={"fake/high-capability-v1": pricing},
+    ).model_dump(mode="json")
     serialized = json.dumps(payload)
 
     assert payload["join_correct_task_completion"] is True
     assert payload["input_tokens"] == 120
+    assert payload["input_cache_read_tokens"] == 20
+    assert payload["input_cache_write_tokens"] == 10
+    assert payload["calculated_cost_cny"] == pytest.approx(0.0004805)
     assert "SECRET" not in serialized
     assert "gold_sql" not in payload
     assert "database_path" not in payload
@@ -128,6 +146,22 @@ def test_export_rejects_changed_returned_model_identity() -> None:
 
     with pytest.raises(ValueError, match="unexpected returned model identity"):
         require_expected_model_identity("model/latest", {"model/snapshot-1"})
+
+
+def test_deepseek_pricing_uses_cache_hit_and_miss_rates() -> None:
+    pricing = ModelPricingCNY(
+        observed_at=date(2026, 7, 26),
+        input_cache_hit_per_million_cny=0.02,
+        input_cache_miss_per_million_cny=1.0,
+        output_per_million_cny=2.0,
+    )
+
+    assert calculate_cost_cny(
+        input_tokens=20_000,
+        input_cache_read_tokens=12_000,
+        output_tokens=2_000,
+        pricing=pricing,
+    ) == pytest.approx(0.01224)
 
 
 def test_export_distinguishes_model_timeout_from_infrastructure_failure() -> None:
@@ -148,6 +182,7 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
     assert "actions/download-artifact@v4" in text
     assert "diagnostic-canary" in text
     assert "--phase confirmatory" in text
+    assert "DEEPSEEK_BASE_URL: https://api.deepseek.com" in text
     assert "--preregistration" in text
     assert "--summary formal-artifacts/cleaning.json" in text
 
@@ -177,8 +212,16 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
         "Run diagnostic-canary in Modal",
         "Run confirmatory batch in Modal",
     }
-    assert all("OPENAI_API_KEY" in step["env"] for step in dispatch_steps.values())
-    assert all("MODAL_TOKEN_SECRET" in step["env"] for step in dispatch_steps.values())
+    assert all(
+        set(step["env"])
+        == {
+            "MODAL_TOKEN_ID",
+            "MODAL_TOKEN_SECRET",
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
+        }
+        for step in dispatch_steps.values()
+    )
 
 
 def test_docker_context_excludes_all_sealed_and_raw_result_boundaries() -> None:

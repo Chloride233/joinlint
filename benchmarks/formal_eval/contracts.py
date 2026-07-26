@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import date
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -100,11 +101,33 @@ def _validate_digest(value: str) -> str:
     return value
 
 
+class ModelPricingCNY(StrictModel):
+    observed_at: date
+    input_cache_hit_per_million_cny: float = Field(ge=0)
+    input_cache_miss_per_million_cny: float = Field(ge=0)
+    output_per_million_cny: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def require_finite_prices(self) -> ModelPricingCNY:
+        prices = (
+            self.input_cache_hit_per_million_cny,
+            self.input_cache_miss_per_million_cny,
+            self.output_per_million_cny,
+        )
+        if not all(math.isfinite(value) for value in prices):
+            raise ValueError("model prices must be finite")
+        if self.input_cache_hit_per_million_cny > self.input_cache_miss_per_million_cny:
+            raise ValueError("cache-hit input price cannot exceed cache-miss input price")
+        return self
+
+
 class FrozenModel(StrictModel):
     id: str
     returned_id: str
     family: str
     tier: ModelTier
+    thinking: Literal["disabled"]
+    pricing_cny: ModelPricingCNY
 
     @field_validator("id", "returned_id", "family")
     @classmethod
@@ -182,10 +205,12 @@ class PreregistrationV2(StrictModel):
     def require_distinct_models(self) -> PreregistrationV2:
         if len({model.id for model in self.models}) != 2:
             raise ValueError("formal evaluation requires two distinct model IDs")
+        if len({model.returned_id for model in self.models}) != 2:
+            raise ValueError("formal evaluation requires two distinct returned model identities")
         if {model.tier for model in self.models} != {"high_capability", "cost_efficient"}:
             raise ValueError("formal evaluation requires one model from each tier")
-        if len({model.family for model in self.models}) != 2:
-            raise ValueError("formal evaluation requires two distinct model families")
+        if len({model.family for model in self.models}) != 1:
+            raise ValueError("formal evaluation is frozen to one provider family with two tiers")
         if set(self.host_versions) != set(self.hosts) or any(
             not value or len(value) > 64 for value in self.host_versions.values()
         ):
@@ -479,8 +504,11 @@ class AgentResultRow(StrictModel):
     tool_error: bool | None
     total_time_seconds: float = Field(ge=0)
     input_tokens: int = Field(ge=0)
+    input_cache_read_tokens: int = Field(ge=0)
+    input_cache_write_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
-    cost_usd: float = Field(ge=0)
+    calculated_cost_cny: float = Field(ge=0)
+    provider_reported_cost_usd: float | None = Field(default=None, ge=0)
     failure_code: FailureCode | None = None
 
     @field_validator("sample_id", "task_id", "database_id", "domain")
@@ -542,7 +570,17 @@ class AgentResultRow(StrictModel):
             raise ValueError("dangerous submission requires submitted SQL")
         if not self.artifact_complete and self.failure_code != "INFRASTRUCTURE_FAILURE":
             raise ValueError("missing artifacts require INFRASTRUCTURE_FAILURE")
-        for value in (self.total_time_seconds, self.cost_usd):
+        if self.input_cache_read_tokens > self.input_tokens:
+            raise ValueError("cache-read tokens cannot exceed input tokens")
+        if self.input_cache_write_tokens > self.input_tokens:
+            raise ValueError("cache-write tokens cannot exceed input tokens")
+        for value in (
+            self.total_time_seconds,
+            self.calculated_cost_cny,
+            self.provider_reported_cost_usd,
+        ):
+            if value is None:
+                continue
             if not math.isfinite(value):
                 raise ValueError("time and cost must be finite")
         return self

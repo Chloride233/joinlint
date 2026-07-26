@@ -24,15 +24,25 @@ def test_preregistration_requires_two_model_tiers() -> None:
         PreregistrationV2.model_validate(payload)
 
 
-def test_preregistration_requires_two_model_families() -> None:
+def test_preregistration_allows_two_tiers_from_one_declared_family() -> None:
+    preregistration = fake_preregistration()
+
+    assert {model.family for model in preregistration.models} == {"fake-series"}
+    assert {model.tier for model in preregistration.models} == {
+        "high_capability",
+        "cost_efficient",
+    }
+
+
+def test_preregistration_rejects_cross_family_substitution() -> None:
     preregistration = fake_preregistration()
     payload = preregistration.model_dump(mode="python")
-    second = preregistration.models[1].model_copy(
-        update={"family": preregistration.models[0].family}
+    payload["models"] = (
+        preregistration.models[0],
+        preregistration.models[1].model_copy(update={"family": "another-family"}),
     )
-    payload["models"] = (preregistration.models[0], second)
 
-    with pytest.raises(ValidationError, match="two distinct model families"):
+    with pytest.raises(ValidationError, match="one provider family with two tiers"):
         PreregistrationV2.model_validate(payload)
 
 

@@ -767,11 +767,20 @@ def _bool_rate(
 
 def _resource_summary(rows: Sequence[AgentResultRow]) -> dict[str, float | int]:
     times = sorted(row.total_time_seconds for row in rows)
+    provider_costs = [
+        row.provider_reported_cost_usd
+        for row in rows
+        if row.provider_reported_cost_usd is not None
+    ]
     return {
         "run_count": len(rows),
         "input_tokens": sum(row.input_tokens for row in rows),
+        "input_cache_read_tokens": sum(row.input_cache_read_tokens for row in rows),
+        "input_cache_write_tokens": sum(row.input_cache_write_tokens for row in rows),
         "output_tokens": sum(row.output_tokens for row in rows),
-        "cost_usd": sum(row.cost_usd for row in rows),
+        "calculated_cost_cny": sum(row.calculated_cost_cny for row in rows),
+        "provider_reported_cost_usd": sum(provider_costs),
+        "provider_cost_available_runs": len(provider_costs),
         "latency_mean_seconds": fmean(times) if times else 0.0,
         "latency_p95_seconds": _nearest_rank(times, 0.95) if times else 0.0,
     }

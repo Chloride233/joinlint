@@ -6,7 +6,7 @@ from typing import Any
 
 from inspect_ai import Task, task
 from inspect_ai.dataset import Sample
-from inspect_ai.model import ChatMessageAssistant, ChatMessageTool
+from inspect_ai.model import ChatMessageAssistant, ChatMessageTool, GenerateConfig
 from inspect_ai.scorer import Score, Scorer, Target, mean, scorer
 from inspect_ai.solver import TaskState
 from inspect_ai.tool import MCPServerConfigStdio
@@ -48,6 +48,13 @@ def formal_agent_eval(
         dataset=samples,
         solver=solver,
         scorer=[formal_join_scorer(), formal_execution_scorer()],
+        config=GenerateConfig(
+            temperature=0,
+            max_tokens=4096,
+            parallel_tool_calls=False,
+            cache=False,
+            extra_body={"thinking": {"type": "disabled"}},
+        ),
         sandbox=(
             "modal",
             ComposeConfig(

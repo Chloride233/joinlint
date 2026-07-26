@@ -8,6 +8,7 @@ from benchmarks.formal_eval.contracts import (
     AgentResultBundle,
     AgentResultRow,
     FailureCode,
+    ModelPricingCNY,
     StrictModel,
 )
 from benchmarks.formal_eval.lineage import digest_value
@@ -28,6 +29,7 @@ def export_agent_rows(
     output: Path,
     *,
     expected_model_ids: set[str],
+    model_pricing: dict[str, ModelPricingCNY],
     lineage_id: str,
     run_plan: RunPlanV2,
     phase: Literal["all", "confirmatory", "diagnostic"] = "all",
@@ -48,7 +50,13 @@ def export_agent_rows(
                 raise ValueError(
                     f"unexpected provider-returned model identity: {sorted(unexpected_usage)}"
                 )
-        rows.extend(_rows_from_log(log, expected_lineage_id=lineage_id))
+        rows.extend(
+            _rows_from_log(
+                log,
+                expected_lineage_id=lineage_id,
+                model_pricing=model_pricing,
+            )
+        )
     sample_ids = [row.sample_id for row in rows]
     if len(sample_ids) != len(set(sample_ids)):
         raise ValueError("formal logs contain duplicate run identities")
@@ -88,18 +96,28 @@ def require_expected_model_identity(actual: str, expected: set[str]) -> None:
         raise ValueError(f"unexpected returned model identity: {actual}")
 
 
-def _rows_from_log(log: Any, *, expected_lineage_id: str) -> list[AgentResultRow]:
+def _rows_from_log(
+    log: Any,
+    *,
+    expected_lineage_id: str,
+    model_pricing: dict[str, ModelPricingCNY],
+) -> list[AgentResultRow]:
     if log.samples is None:
         return []
     rows: list[AgentResultRow] = []
     for sample in log.samples:
         if sample.metadata.get("lineage_id") != expected_lineage_id:
             raise ValueError("Inspect sample lineage mismatch")
-        rows.append(_row(log, sample))
+        rows.append(_row(log, sample, model_pricing=model_pricing))
     return rows
 
 
-def _row(log: Any, sample: Any) -> AgentResultRow:
+def _row(
+    log: Any,
+    sample: Any,
+    *,
+    model_pricing: dict[str, ModelPricingCNY],
+) -> AgentResultRow:
     metadata = sample.metadata
     condition = str(metadata["condition"])
     host = str(metadata["host"])
@@ -133,8 +151,22 @@ def _row(log: Any, sample: Any) -> AgentResultRow:
     )
     usage = list(sample.model_usage.values())
     input_tokens = sum(value.input_tokens for value in usage)
+    input_cache_read_tokens = sum(value.input_tokens_cache_read or 0 for value in usage)
+    input_cache_write_tokens = sum(value.input_tokens_cache_write or 0 for value in usage)
     output_tokens = sum(value.output_tokens for value in usage)
-    cost = sum(value.total_cost or 0.0 for value in usage)
+    if input_cache_read_tokens > input_tokens:
+        raise ValueError("Inspect cache-read usage exceeds total input usage")
+    pricing = model_pricing.get(model_id)
+    if pricing is None:
+        raise ValueError(f"missing frozen pricing for returned model identity: {model_id}")
+    calculated_cost_cny = calculate_cost_cny(
+        input_tokens=input_tokens,
+        input_cache_read_tokens=input_cache_read_tokens,
+        output_tokens=output_tokens,
+        pricing=pricing,
+    )
+    reported_costs = [value.total_cost for value in usage if value.total_cost is not None]
+    provider_reported_cost_usd = sum(reported_costs) if reported_costs else None
     return AgentResultRow(
         sample_id=sample_id_for(
             task_id=str(metadata["task_id"]),
@@ -185,10 +217,30 @@ def _row(log: Any, sample: Any) -> AgentResultRow:
         tool_error=bool(trace.get("tool_error")) if mcp_condition else None,
         total_time_seconds=sample.total_time or 0.0,
         input_tokens=input_tokens,
+        input_cache_read_tokens=input_cache_read_tokens,
+        input_cache_write_tokens=input_cache_write_tokens,
         output_tokens=output_tokens,
-        cost_usd=cost,
+        calculated_cost_cny=calculated_cost_cny,
+        provider_reported_cost_usd=provider_reported_cost_usd,
         failure_code=failure_code,
     )
+
+
+def calculate_cost_cny(
+    *,
+    input_tokens: int,
+    input_cache_read_tokens: int,
+    output_tokens: int,
+    pricing: ModelPricingCNY,
+) -> float:
+    if input_cache_read_tokens > input_tokens:
+        raise ValueError("cache-read tokens cannot exceed input tokens")
+    uncached_input_tokens = input_tokens - input_cache_read_tokens
+    return (
+        input_cache_read_tokens * pricing.input_cache_hit_per_million_cny
+        + uncached_input_tokens * pricing.input_cache_miss_per_million_cny
+        + output_tokens * pricing.output_per_million_cny
+    ) / 1_000_000
 
 
 def _runtime_failure_code(error: object) -> FailureCode | None:

@@ -142,8 +142,9 @@ def main(argv: list[str] | None = None) -> int:
                 input_lock_sha256=lineage.input_lock_sha256,
                 deterministic_suite_sha256=evidence.deterministic_suite_sha256,
                 run_plan_sha256=run_plan_sha256,
-                model_snapshots=tuple(model.returned_id for model in preregistration.models),
+                model_identities=tuple(model.returned_id for model in preregistration.models),
                 model_families=tuple(model.family for model in preregistration.models),
+                model_comparison_scope="single_provider_two_tier",
                 host_versions=dict(preregistration.host_versions),
             ),
             relationship_gate(
@@ -206,6 +207,9 @@ def main(argv: list[str] | None = None) -> int:
             arguments.log_dir,
             arguments.output,
             expected_model_ids={model.returned_id for model in preregistration.models},
+            model_pricing={
+                model.returned_id: model.pricing_cny for model in preregistration.models
+            },
             lineage_id=lineage.lineage_id,
             run_plan=run_plan,
             phase=arguments.phase,

@@ -37,9 +37,11 @@
   and require `passed: true` while retaining its synthetic, non-evidentiary label.
 - Verify fake-model output is labelled synthetic and is not used in any product
   or marketing claim.
-- Freeze two exact returned model snapshots, pinned Codex CLI and Claude Code
-  versions, JoinLint commit, Harness and policy versions, image digest, seed,
-  sample size, and dataset release in schema-v2 preregistration.
+- Freeze DeepSeek V4 Pro and V4 Flash returned identities, non-thinking mode,
+  official CNY cache-hit/cache-miss/output prices, pinned Codex CLI and Claude
+  Code versions, JoinLint commit, Harness and policy versions, image digest,
+  seed, sample size, and dataset release in schema-v2 preregistration. Disclose
+  that this is one provider family with two tiers, not cross-family replication.
 - Verify the input lock covers every sealed corpus, SQL label, task payload,
   database, independent pilot row, and raw deterministic performance fixture.
 - Verify preflight reports at least 12 confirmatory databases, 60 natural tasks,

@@ -222,7 +222,7 @@ def test_fake_model_cli_writes_rebuildable_reports(tmp_path: Path) -> None:
 
     report = json.loads((output / "formal-evaluation.json").read_text(encoding="utf-8"))
     assert report["evaluation_id"] == "synthetic-pipeline-smoke"
-    assert report["provenance"]["model_snapshots"] == [
+    assert report["provenance"]["model_identities"] == [
         "fake/high-capability-v1",
         "fake/cost-efficient-v1",
     ]

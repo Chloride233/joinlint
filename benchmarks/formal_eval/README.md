@@ -44,7 +44,7 @@ The protected workflow:
 
 1. runs all deterministic tests and the fake pipeline;
 2. verifies the input lock, content-derived near-duplicate fingerprints, split
-   isolation, sample floor, model snapshots, host versions, policy version,
+   isolation, sample floor, returned model identities, host versions, policy version,
    commit, and image digest, then creates one evaluation lineage;
 3. requires the Stage 1 runtime to expose exactly `get_join_plan` and
    `validate_sql`, and rejects the hidden historical-pilot server;

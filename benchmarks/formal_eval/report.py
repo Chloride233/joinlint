@@ -22,8 +22,9 @@ class ReportProvenance(StrictModel):
     input_lock_sha256: str
     deterministic_suite_sha256: str
     run_plan_sha256: str
-    model_snapshots: tuple[str, str]
+    model_identities: tuple[str, str]
     model_families: tuple[str, str]
+    model_comparison_scope: Literal["single_provider_two_tier"]
     host_versions: dict[str, str]
 
 
@@ -124,8 +125,10 @@ def render_markdown(report: FormalEvaluationReport) -> str:
 - Harness: `{provenance.harness_version}`
 - Inference policy: `{provenance.inference_policy_version}`
 - Relationship scope: `{provenance.relationship_scope}`
-- Models: `{provenance.model_snapshots}`
+- Models: `{provenance.model_identities}`
 - Model families: `{provenance.model_families}`
+- Model comparison scope: `{provenance.model_comparison_scope}`
+- Cross-family generalization: `not evaluated`
 - Host versions: `{provenance.host_versions}`
 - Preregistration SHA-256: `{provenance.preregistration_sha256}`
 - Manifest SHA-256: `{provenance.manifest_sha256}`

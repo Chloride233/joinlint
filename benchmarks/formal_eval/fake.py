@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import date
 from pathlib import Path
 
 from benchmarks.formal_eval.contracts import (
@@ -12,6 +13,7 @@ from benchmarks.formal_eval.contracts import (
     FormalManifestV2,
     FormalTask,
     FrozenModel,
+    ModelPricingCNY,
     PerformanceMeasurement,
     PreregistrationV2,
     RelationshipResultRow,
@@ -76,8 +78,9 @@ def write_fake_evaluation(output_directory: Path) -> None:
             input_lock_sha256="6" * 64,
             deterministic_suite_sha256=evidence.deterministic_suite_sha256,
             run_plan_sha256=digest_value(run_plan.model_dump(mode="json")),
-            model_snapshots=tuple(model.returned_id for model in preregistration.models),
+            model_identities=tuple(model.returned_id for model in preregistration.models),
             model_families=tuple(model.family for model in preregistration.models),
+            model_comparison_scope="single_provider_two_tier",
             host_versions=dict(preregistration.host_versions),
         ),
         relationship,
@@ -111,14 +114,28 @@ def fake_preregistration() -> PreregistrationV2:
             FrozenModel(
                 id="fake/high-capability-v1",
                 returned_id="fake/high-capability-v1",
-                family="fake-high",
+                family="fake-series",
                 tier="high_capability",
+                thinking="disabled",
+                pricing_cny=ModelPricingCNY(
+                    observed_at=date(2026, 7, 26),
+                    input_cache_hit_per_million_cny=0.025,
+                    input_cache_miss_per_million_cny=3.0,
+                    output_per_million_cny=6.0,
+                ),
             ),
             FrozenModel(
                 id="fake/cost-efficient-v1",
                 returned_id="fake/cost-efficient-v1",
-                family="fake-efficient",
+                family="fake-series",
                 tier="cost_efficient",
+                thinking="disabled",
+                pricing_cny=ModelPricingCNY(
+                    observed_at=date(2026, 7, 26),
+                    input_cache_hit_per_million_cny=0.02,
+                    input_cache_miss_per_million_cny=1.0,
+                    output_per_million_cny=2.0,
+                ),
             ),
         ),
         host_versions={"codex": "fake-codex-v1", "claude_code": "fake-claude-v1"},
@@ -490,8 +507,11 @@ def fake_agent_rows() -> list[AgentResultRow]:
                             tool_error=False if mcp else None,
                             total_time_seconds=1.0,
                             input_tokens=100,
+                            input_cache_read_tokens=25,
+                            input_cache_write_tokens=0,
                             output_tokens=50,
-                            cost_usd=0.0,
+                            calculated_cost_cny=0.0001,
+                            provider_reported_cost_usd=None,
                         )
                     )
     return rows
@@ -560,8 +580,11 @@ def _agent_row(
         tool_error=False if mcp else None,
         total_time_seconds=1.0,
         input_tokens=100,
+        input_cache_read_tokens=25,
+        input_cache_write_tokens=0,
         output_tokens=50,
-        cost_usd=0.0,
+        calculated_cost_cny=0.0001,
+        provider_reported_cost_usd=None,
         failure_code=None if completion else "WRONG_PLAN",
     )
 
