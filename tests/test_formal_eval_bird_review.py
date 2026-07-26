@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
-from benchmarks.formal_eval.bird_review import select_review_candidates
+from benchmarks.formal_eval.bird_review import reviewer_template, select_review_candidates
 
 
 def test_review_selection_is_deterministic_and_does_not_prefer_fk_support() -> None:
@@ -62,6 +62,37 @@ def test_review_builder_never_imports_joinlint_runtime_or_outputs() -> None:
     assert "joinlint.runtime" not in source
     assert '"uses_joinlint_output": False' in source
     assert '"status": "pending_independent_review"' in source
+
+
+def test_reviewer_template_omits_machine_graphs_and_fk_support() -> None:
+    task = {
+        **_task("alpha", 1, depth=1),
+        "source_split": "dev",
+        "question": "Which parents have children?",
+        "gold_sql": "SELECT * FROM child JOIN parent ON child.parent_id = parent.id",
+        "schema_text": "TABLE child; TABLE parent",
+        "schema": {"child": {"parent_id": "integer"}, "parent": {"id": "integer"}},
+        "physical_join_graph": [["child.parent_id", "parent.id"]],
+        "proposed_allowed_graphs": [[[["child.parent_id", "parent.id"]]]],
+        "declared_fk_edges": [["child.parent_id", "parent.id"]],
+        "curation_required_edges": [],
+    }
+
+    assignment = reviewer_template([task])
+    serialized_task = assignment["tasks"][0]
+
+    assert set(serialized_task) == {
+        "task_id",
+        "database_id",
+        "source_split",
+        "source_index",
+        "question",
+        "gold_sql",
+        "schema_text",
+        "schema",
+        "annotation",
+    }
+    assert serialized_task["annotation"]["physical_join_graph"] == []
 
 
 def _task(database_id: str, index: int, *, depth: int) -> dict[str, object]:

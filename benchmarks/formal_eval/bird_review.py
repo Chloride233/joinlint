@@ -160,6 +160,8 @@ def build_review_bundle(
         }
         packet_path = staging / "review-packet.json"
         _write_canonical(packet_path, packet)
+        reviewer_template_path = staging / "reviewer-template.json"
+        _write_canonical(reviewer_template_path, reviewer_template(selected))
         sources = {
             "schema_version": 1,
             "dev_source": {
@@ -170,6 +172,7 @@ def build_review_bundle(
             "train_source": train_manifest["source"],
             "databases": sorted(database_records, key=lambda row: row["database_id"]),
             "review_packet": _file_record(packet_path),
+            "reviewer_template": _file_record(reviewer_template_path),
         }
         _write_canonical(staging / "source-manifest.json", sources)
         os.replace(staging, output)
@@ -215,6 +218,38 @@ def select_review_candidates(
             raise ValueError(f"insufficient unique review candidates: {database_id}")
         selected.extend(sorted(chosen, key=lambda task: task["task_id"]))
     return sorted(selected, key=lambda task: task["task_id"])
+
+
+def reviewer_template(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "status": "unreviewed",
+        "instructions": {
+            "work_independently": True,
+            "do_not_use_joinlint_output": True,
+            "derive_graph_from_gold_sql_and_schema": True,
+            "record_ambiguity_instead_of_guessing": True,
+        },
+        "tasks": [
+            {
+                "task_id": task["task_id"],
+                "database_id": task["database_id"],
+                "source_split": task["source_split"],
+                "source_index": task["source_index"],
+                "question": task["question"],
+                "gold_sql": task["gold_sql"],
+                "schema_text": task["schema_text"],
+                "schema": task["schema"],
+                "annotation": {
+                    "decision": None,
+                    "physical_join_graph": [],
+                    "equivalent_allowed_graphs": [],
+                    "ambiguous_reason": None,
+                },
+            }
+            for task in tasks
+        ],
+    }
 
 
 def _selection_rank(task_id: str) -> str:
