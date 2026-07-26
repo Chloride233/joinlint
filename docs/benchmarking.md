@@ -87,3 +87,57 @@ Normal CI installs only `dev`; it neither installs the evaluation extra nor
 calls DeepSeek. The paid 200-run batch requires a separately recorded approval
 after the official Spider inputs, human relationship review, hashes, and all
 free gates are frozen.
+
+## Completed-product formal evaluation
+
+`benchmarks/formal_eval` is the schema-v2 release framework for the completed
+two-tool product contract: `get_join_plan` and `validate_sql`. It keeps the
+relationship-evidence, SQL-validation, and Agent-product questions separate;
+its only confirmatory product endpoint is Join-Correct Task Completion Rate.
+Join correctness is not evidence that a metric definition, filter, business
+interpretation, or complete answer is correct.
+
+Run the free, non-evidentiary checks with:
+
+```bash
+python -m pip install -e '.[dev,eval]'
+python -m pytest tests/test_formal_eval_*.py -q
+python -m benchmarks.formal_eval.cli fake-model \
+  --output /tmp/joinlint-formal-smoke
+python -m benchmarks.formal_eval.cli inspect-smoke \
+  --project tests/fixtures/chinook \
+  --output /tmp/joinlint-inspect-smoke
+```
+
+The fake rows exercise all gates and the minimum 1,440-run confirmatory matrix,
+but must never be quoted as product evidence. The legacy Spider pilot remains
+read-only history and is not pooled with schema-v2 results.
+
+The Inspect smoke uses `mockllm/model`, the real two-tool STDIO MCP, Chinook,
+and the formal trace scorer. It proves only that Inspect can carry a plan ID
+through `get_join_plan -> validate_sql`; it is not the Modal diagnostic canary
+and cannot support an Agent-effect claim.
+
+Paid execution is only through `.github/workflows/formal-evaluation.yml`. The
+protected `formal-evaluation` environment requires explicit approval, verifies
+the input lock and content-derived duplicate fingerprints, freezes one lineage,
+checks the pilot-derived power requirement against the exact run plan, and
+generates deterministic evidence from the raw locked suite. It runs the
+diagnostic canary before the confirmatory batch in Modal and uploads private
+Inspect logs separately from sanitized report inputs. Formal runs must not be
+launched from a developer machine.
+
+Every deterministic bundle carries the raw-suite digest and fixed runner ID.
+Every Agent bundle must contain exactly the sample IDs in the frozen run plan.
+The final report remains publication-ineligible until the exact preregistered
+sample has per-output, arm-blinded human decisions bound to the result and run
+plan digests.
+
+The full preregistration contract, thresholds, failure taxonomy, and evidence
+boundary are frozen in
+[`docs/superpowers/specs/2026-07-25-joinlint-completed-product-evaluation-design.md`](superpowers/specs/2026-07-25-joinlint-completed-product-evaluation-design.md).
+The strict two-tool Stage 1 MCP now exists as a Developer Preview. Until the
+sealed corpora, independent pilot, exact model and host versions, image digest,
+and confirmatory remote runs are complete, only deterministic capability-gate
+results may be reported. Join-correct completion must not be described as
+query or answer correctness.

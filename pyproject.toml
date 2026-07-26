@@ -5,13 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "joinlint"
 version = "0.1.0"
-description = "Local, Git-native data relationship linter"
+description = "Local, read-only Join Safety MCP for AI SQL agents"
 requires-python = ">=3.12"
 dependencies = [
   "mcp>=1.0",
   "pydantic>=2.10",
   "PyYAML>=6.0.2",
   "rfc8785>=0.1.4",
+  "sqlglot==30.13.0",
   "typer>=0.15",
 ]
 
@@ -25,7 +26,11 @@ eval = [
   "inspect-ai==0.3.249",
   "mcp==1.28.1",
   "openai==2.48.0",
-  "sqlglot==30.13.0",
+]
+remote = [
+  "inspect-sandboxes==0.4.0",
+  "inspect-swe==0.2.66",
+  "modal==1.5.3",
 ]
 
 [project.scripts]

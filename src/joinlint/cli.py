@@ -14,6 +14,7 @@ from joinlint.contracts import Envelope, envelope_for
 from joinlint.errors import JoinLintError
 from joinlint.baseline import BaselineValidationError, update_baseline
 from joinlint.model import ModelV1
+from joinlint.legacy_mcp_server import run_legacy_server
 from joinlint.mcp_server import run_server
 from joinlint.paths import SafeProject, resolve_project_root
 from joinlint.services import (
@@ -295,10 +296,28 @@ def report(
 
 
 @app.command("serve-mcp")
-def serve_mcp(project: Path | None = typer.Option(None, "--project")) -> None:
-    """Start the local STDIO MCP server for one trusted project."""
+def serve_mcp(
+    project: Path | None = typer.Option(None, "--project"),
+    source: list[str] | None = typer.Option(None, "--source"),
+    auto: bool = typer.Option(True, "--auto/--no-auto"),
+) -> None:
+    """Start the strict two-tool SQLite STDIO MCP Developer Preview."""
     try:
-        run_server(_command_project(project))
+        root = project or Path.cwd()
+        with SafeProject(root) as boundary:
+            trusted_root = boundary.root
+        run_server(trusted_root, tuple(source or ()), auto=auto)
+    except JoinLintError as error:
+        _exit_for_error(error)
+    except Exception:
+        _exit_for_error(_internal_error())
+
+
+@app.command("serve-mcp-legacy", hidden=True)
+def serve_mcp_legacy(project: Path = typer.Option(..., "--project")) -> None:
+    """Run the frozen schema-v1 server for the historical Spider pilot only."""
+    try:
+        run_legacy_server(_command_project(project))
     except JoinLintError as error:
         _exit_for_error(error)
     except Exception:

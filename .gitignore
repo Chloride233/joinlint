@@ -33,3 +33,9 @@ benchmarks/agent_join/.work/
 benchmarks/agent_join/logs/
 benchmarks/agent_join/results/raw/
 benchmarks/agent_join/review/
+
+# Formal evaluation sealed inputs, remote logs, and private results
+benchmarks/formal_eval/sealed/*
+!benchmarks/formal_eval/sealed/README.md
+benchmarks/formal_eval/logs/
+benchmarks/formal_eval/results/

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "joinlint": {
+      "command": "joinlint",
+      "args": [
+        "serve-mcp",
+        "--project",
+        "/trusted/project",
+        "--source",
+        "data/app.sqlite"
+      ]
+    }
+  }
+}

@@ -1,60 +1,194 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
+from pydantic import ValidationError
 
-from joinlint.contracts import Envelope, envelope_for
 from joinlint.errors import JoinLintError
-from joinlint.paths import SafeProject
-from joinlint.services import get_data_model, find_join_path, validate_cached_edges, validate_cached_path
+from joinlint.mcp_contracts import (
+    GetJoinPlanRequest,
+    GetJoinPlanResponse,
+    ValidateSQLRequest,
+    ValidateSQLResponse,
+    error_response,
+)
+from joinlint.runtime.cache import RuntimeCache
+from joinlint.runtime.domain import EntityRef, RuntimeFinding
+from joinlint.runtime.service import RuntimeService
+from joinlint.runtime.sql import SQLValidationError
 
 
-def create_server(project: Path) -> FastMCP:
-    """Create a local STDIO-only MCP adapter for one trusted project."""
-    with SafeProject(project) as trusted_project:
-        root = trusted_project.root
-    mcp = FastMCP("JoinLint")
+MAX_RESPONSE_BYTES = 1_048_576
+_ALLOWED_ENVIRONMENT_KEYS = {
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "PATH",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "TMPDIR",
+    "XDG_CACHE_HOME",
+}
 
-    @mcp.tool(name="get_data_model")
-    def get_data_model_tool() -> dict[str, object]:
-        return _response("get_data_model", lambda: get_data_model(root))
 
-    @mcp.tool(name="find_join_path")
-    def find_join_path_tool(source_entity: str, target_entity: str, max_depth: int = 4) -> dict[str, object]:
+def create_server(
+    project: Path,
+    sources: tuple[str, ...] = (),
+    *,
+    auto: bool = True,
+    cache_root: Path | None = None,
+) -> FastMCP:
+    """Create the strict SQLite-only, STDIO-only Stage 1 MCP server."""
+    service: RuntimeService | None = None
+
+    def runtime_service() -> RuntimeService:
+        nonlocal service
+        if service is None:
+            service = RuntimeService(
+                project,
+                sources,
+                auto=auto,
+                cache=RuntimeCache(cache_root) if cache_root is not None else None,
+            )
+        return service
+    mcp = FastMCP(
+        "JoinLint",
+        instructions=(
+            "Use get_join_plan before generating multi-table SQL, then call validate_sql "
+            "with the final SQL and plan_id. JoinLint validates physical joins only. "
+            "JoinLint proof != query correctness."
+        ),
+    )
+
+    @mcp.tool(name="get_join_plan")
+    def get_join_plan_tool(
+        entity_refs: list[dict[str, str]],
+        start_ref: str,
+        expected_grain_ref: str | None = None,
+        max_depth: int = 4,
+        include_alternatives: bool = False,
+    ) -> dict[str, object]:
+        """Return an exact physical Join Proof; this does not prove query correctness."""
         return _response(
-            "find_join_path",
-            lambda: find_join_path(root, source_entity, target_entity, max_depth),
+            "get_join_plan",
+            lambda: runtime_service().get_join_plan(
+                GetJoinPlanRequest(
+                    entity_refs=tuple(EntityRef.model_validate(item) for item in entity_refs),
+                    start_ref=start_ref,
+                    expected_grain_ref=expected_grain_ref,
+                    max_depth=max_depth,
+                    include_alternatives=include_alternatives,
+                )
+            ),
         )
 
-    @mcp.tool(name="validate_join")
-    def validate_join_tool(
-        edge_ids: list[str] | None = None, path: list[dict[str, str]] | None = None
+    @mcp.tool(name="validate_sql")
+    def validate_sql_tool(
+        sql: str,
+        dialect: str = "sqlite",
+        source_id: str | None = None,
+        plan_id: str | None = None,
+        expected_grain_ref: str | None = None,
     ) -> dict[str, object]:
-        if (edge_ids is None) == (path is None):
-            return envelope_for(
-                command="validate_join", status="error", error_code="INVALID_ARGUMENT"
-            ).model_dump(mode="json")
-        if path is not None:
-            return _response("validate_join", lambda: validate_cached_path(root, path))
-        return _response("validate_join", lambda: validate_cached_edges(root, edge_ids or []))
+        """Validate a SQL join graph without executing SQL or judging answer correctness."""
+        return _response(
+            "validate_sql",
+            lambda: runtime_service().validate_sql(
+                ValidateSQLRequest(
+                    sql=sql,
+                    dialect=dialect,
+                    source_id=source_id,
+                    plan_id=plan_id,
+                    expected_grain_ref=expected_grain_ref,
+                )
+            ),
+        )
 
+    _forbid_unknown_arguments(mcp, "get_join_plan")
+    _forbid_unknown_arguments(mcp, "validate_sql")
+    _install_strict_argument_dispatch(mcp)
     return mcp
 
 
-def run_server(project: Path) -> None:
-    create_server(project).run(transport="stdio")
+def run_server(
+    project: Path,
+    sources: tuple[str, ...] = (),
+    *,
+    auto: bool = True,
+) -> None:
+    allowed_environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key in _ALLOWED_ENVIRONMENT_KEYS
+    }
+    os.environ.clear()
+    os.environ.update(allowed_environment)
+    create_server(project, sources, auto=auto).run(transport="stdio")
 
 
-def _response(command: str, action: Callable[[], Envelope]) -> dict[str, object]:
+def _response(
+    command: Literal["get_join_plan", "validate_sql"],
+    action: Callable[[], GetJoinPlanResponse | ValidateSQLResponse],
+) -> dict[str, object]:
     try:
-        envelope = action()
+        response = action()
+    except SQLValidationError as error:
+        if error.blocking:
+            response = ValidateSQLResponse(
+                status="findings",
+                findings=(
+                    RuntimeFinding(code=error.code, severity="blocking", message=error.code),
+                ),
+            )
+        else:
+            response = error_response("validate_sql", error.code, inconclusive=False)
+    except ValidationError:
+        response = error_response(command, "INVALID_ARGUMENT", inconclusive=False)
     except JoinLintError as error:
-        status = "inconclusive" if error.exit_code == 3 else "error"
-        envelope = envelope_for(command=command, status=status, error_code=error.code)
+        response = error_response(command, error.code, inconclusive=error.exit_code == 3)
     except Exception:
-        envelope = envelope_for(command=command, status="error", error_code="INTERNAL_ERROR")
-    if len(envelope.model_dump_json(exclude_none=False).encode("utf-8")) > 1_048_576:
-        envelope = envelope_for(command=command, status="inconclusive", error_code="OUTPUT_LIMIT_EXCEEDED")
-    return envelope.model_dump(mode="json")
+        response = error_response(command, "INTERNAL_ERROR", inconclusive=False)
+    if len(response.model_dump_json(exclude_none=False).encode("utf-8")) > MAX_RESPONSE_BYTES:
+        response = error_response(command, "OUTPUT_LIMIT_EXCEEDED", inconclusive=True)
+    return response.model_dump(mode="json")
+
+
+def _forbid_unknown_arguments(mcp: FastMCP, tool_name: str) -> None:
+    tool = mcp._tool_manager.get_tool(tool_name)  # type: ignore[attr-defined]
+    if tool is None:
+        raise RuntimeError(f"tool registration failed: {tool_name}")
+    tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
+    tool.fn_metadata.arg_model.model_rebuild(force=True)
+    tool.parameters = tool.fn_metadata.arg_model.model_json_schema(by_alias=True)
+
+
+def _install_strict_argument_dispatch(mcp: FastMCP) -> None:
+    manager = mcp._tool_manager  # type: ignore[attr-defined]
+    original = manager.call_tool
+    allowed = {
+        name: frozenset(tool.fn_metadata.arg_model.model_fields)
+        for name in ("get_join_plan", "validate_sql")
+        if (tool := manager.get_tool(name)) is not None
+    }
+
+    async def strict_call_tool(
+        name: str,
+        arguments: dict[str, object],
+        context: object | None = None,
+        convert_result: bool = False,
+    ):  # type: ignore[no-untyped-def]
+        expected = allowed.get(name)
+        if expected is not None and not set(arguments) <= expected:
+            raise ToolError("INVALID_ARGUMENT")
+        return await original(
+            name,
+            arguments,
+            context=context,
+            convert_result=convert_result,
+        )
+
+    manager.call_tool = strict_call_tool

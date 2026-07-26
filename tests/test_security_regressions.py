@@ -11,8 +11,8 @@ def test_mcp_has_no_sql_or_mutation_tool(project: Path) -> None:
 
     tools = asyncio.run(create_server(project).list_tools())
 
-    assert {tool.name for tool in tools} == {"get_data_model", "find_join_path", "validate_join"}
-    assert all("sql" not in tool.inputSchema["properties"] for tool in tools)
+    assert {tool.name for tool in tools} == {"get_join_plan", "validate_sql"}
+    assert all("execute" not in tool.name and "mutate" not in tool.name for tool in tools)
 
 
 def test_report_never_embeds_raw_identifier_as_markup() -> None:

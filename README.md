@@ -2,66 +2,129 @@
 
 **Stop AI agents from guessing database joins.**
 
-JoinLint is a local, Git-native data relationship linter. It scans local CSV
-directories and SQLite files, proposes deterministic single-column join
-candidates, validates confirmed relationship cardinality and fan-out risk, and
-keeps reviewed semantics in `.joinlint/model.yaml`.
+JoinLint Stage 1 is a local, read-only **AI SQL Join Safety MCP Developer
+Preview**. It produces evidence-backed physical Join Proofs and validates the
+join graph in final SQL before a separate database tool executes it.
+
+> **JoinLint proof != query correctness.**
+
+JoinLint validates physical join endpoints, exact relationship evidence,
+cardinality, grain, fan-out, and—when supplied—the binding between SQL and one
+Join Proof. It does not validate selected columns, filters, aggregations,
+metric definitions, business semantics, or answer correctness.
+
+## Stage 1 scope
+
+The default MCP runtime:
+
+- supports SQLite only;
+- uses current, exact `declared` foreign keys and matching read-only `curated`
+  relationships from an existing JoinLint model;
+- never auto-uses inferred or legacy `strong` candidates;
+- exposes exactly `get_join_plan` and `validate_sql` over local STDIO;
+- never provides schema lookup or SQL execution;
+- never sends user SQL to SQLite for execution;
+- writes no project files and stores only sanitized evidence/proofs in a
+  private user cache.
+
+Parquet, DuckDB, remote databases, cross-source relationships, arbitrary SQL
+execution, inferred relationships, metric semantics, and answer validation are
+not supported by the Stage 1 MCP.
 
 ## Quick start
 
+Install the Developer Preview:
+
 ```bash
 python -m pip install -e '.[dev]'
+```
+
+Start it against one trusted project-relative SQLite source. No `joinlint init`
+or scan is required for declared foreign keys:
+
+```bash
+joinlint serve-mcp --project /trusted/project --source data/app.sqlite
+```
+
+When `--source` is omitted, JoinLint performs bounded discovery at the project
+root and under `data/` or `datasets/`. An explicit source always overrides
+auto-discovery. Use `--no-auto` to require explicit sources.
+
+JoinLint is designed to run beside a third-party database MCP:
+
+```text
+database MCP: inspect schema
+JoinLint: get_join_plan(entity_refs, start_ref, expected_grain_ref)
+agent: generate final SQL from the proof
+JoinLint: validate_sql(sql, plan_id)
+database MCP: execute only after validation passes
+```
+
+`ref` values such as `orders` and `manager` are request-local instance names.
+They are not entity identity and are not reused across requests.
+
+### MCP configuration and Harness
+
+Copy the relevant template and replace the project/source paths:
+
+- [Codex configuration](examples/mcp/codex-config.toml)
+- [Claude Code configuration](examples/mcp/claude-code.json)
+- [Cursor compatibility smoke configuration](examples/mcp/cursor.json)
+- [Agent Harness instructions](examples/harness/joinlint-agent-instructions.md)
+
+Cursor is compatibility-smoke-only for Stage 1. Codex CLI and Claude Code are
+the supported formal-evaluation hosts. Configure your database MCP separately;
+the examples deliberately do not install or authorize one.
+
+## MCP contract
+
+`get_join_plan` accepts 2–8 request-local entity instances and returns at most
+four hops of current, exact, authorized physical relationships. If no safe
+path exists it returns `inconclusive`, never uncertain predicates.
+
+`validate_sql` parses one SQLite `SELECT`/`WITH`, normalizes aliases, CTEs,
+subqueries, self joins, composite predicates, INNER/LEFT joins, and WHERE
+equalities, then checks the complete graph. A supplied stale proof returns
+`PROOF_STALE`; it is never silently downgraded to independent lint. Repair
+never rewrites SQL.
+
+Every response carries explicit `validated_scope` and `not_validated_scope`.
+Every SQL validation attests `execution_count: 0`.
+
+## Manual governance CLI
+
+The existing human-governed CLI remains available for CSV and SQLite project
+workflows. These commands do not add legacy tools to the default MCP server:
+
+```bash
 joinlint init --project .
 joinlint source add sales data --project .
 joinlint scan --project .
 joinlint candidates --project . --json
-```
-
-Confirm a candidate with `joinlint accept <candidate-id> --project .` after
-reviewing or editing `model.yaml`, then run:
-
-```bash
+joinlint accept <candidate-id> --project .
 joinlint validate --project .
 joinlint baseline update --project .
 joinlint check --project .
 ```
 
-`joinlint serve-mcp --project .` starts a local STDIO MCP server with three
-read-only tools: `get_data_model`, `find_join_path`, and `validate_join`.
+## Evidence and development
 
-## Bundled SQLite smoke test
-
-The repository includes a pinned MIT-licensed Chinook SQLite fixture. To scan
-it through the public adapter:
+Run the implementation and strict contract checks with:
 
 ```bash
-work=$(mktemp -d)
-mkdir "$work/data"
-cp tests/fixtures/chinook/chinook.sqlite "$work/data/chinook.sqlite"
-joinlint init --project "$work"
-joinlint source add chinook data/chinook.sqlite --project "$work"
-joinlint scan --project "$work"
+python -m pytest -q
+python -m ruff check src tests benchmarks scripts
 ```
 
-`python -m pytest tests/test_end_to_end.py -q` also exercises the complete
-workflow: scan, explicit model review, candidate confirmation, validation,
-baseline update, clean-checkout `check`, and static report generation.
+The determinism acceptance gate starts two fresh server processes, compares
+cold and warm caches over ten repetitions, permutes entity-ref order and
+equivalent SQL aliases/equalities, and permits only documented observation
+timestamps to differ.
 
-## Scope
-
-- Local CSV directories and SQLite files on macOS and Linux.
-- Deterministic exact scans with no LLM or network requirement.
-- Git-tracked configuration, confirmed model, and sanitized baseline.
-- Candidate evidence, confirmed join validation, drift checks, static reports,
-  and bounded local MCP context.
-
-Parquet, DuckDB, remote databases, arbitrary SQL execution, automatic
-relationship confirmation, composite-key inference, Web UI, and remote MCP are
-not supported in v0.
-
-See the [v0 design](docs/superpowers/specs/2026-07-23-joinlint-v0-design.md),
-[benchmarking guide](docs/benchmarking.md), and
-[release checklist](docs/release-checklist.md).
+See the [benchmarking guide](docs/benchmarking.md) for the separation between
+deterministic capability gates and the still-pending formal Agent product
+effect study. No downstream improvement claim is made by this Developer
+Preview.
 
 ## License
 

@@ -163,7 +163,7 @@ def condition_solver() -> Solver:
                         args=[
                             "-m",
                             "joinlint",
-                            "serve-mcp",
+                            "serve-mcp-legacy",
                             "--project",
                             sample.mcp_project or "",
                         ],
