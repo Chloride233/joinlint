@@ -1,0 +1,74 @@
+name: prepare-bird-subset
+
+on:
+  workflow_dispatch:
+    inputs:
+      database_ids:
+        description: Comma-separated BIRD Train database IDs
+        required: true
+        default: european_football_1,trains,citeseer,genes
+        type: string
+      confirm_paid:
+        description: Confirm Modal compute, network, and temporary storage spend
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    environment: formal-evaluation
+    env:
+      DATABASE_IDS: ${{ inputs.database_ids }}
+      OUTPUT_PREFIX: bird-train-${{ github.run_id }}-${{ github.run_attempt }}
+      SEALED_DESTINATION: benchmarks/formal_eval/sealed/bird-train-subset
+    steps:
+      - name: Require explicit paid-run confirmation
+        if: inputs.confirm_paid != true
+        run: exit 1
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e . modal==1.5.3 sqlglot==30.13.0
+      - name: Prepare the official BIRD Train subset in Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: >-
+          python -m modal run benchmarks/formal_eval/bird_modal.py
+          --database-ids "$DATABASE_IDS"
+          --output-prefix "$OUTPUT_PREFIX"
+      - name: Download only the selected subset
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: >-
+          python -m modal volume get
+          joinlint-bird-prep
+          "$OUTPUT_PREFIX"
+          "$SEALED_DESTINATION"
+      - name: Verify transferred hashes, paths, task counts, and SQLite files
+        run: >-
+          python -m benchmarks.formal_eval.bird_dataset
+          --root "$SEALED_DESTINATION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: joinlint-bird-subset-${{ github.run_id }}
+          path: benchmarks/formal_eval/sealed/bird-train-subset
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove the temporary remote subset
+        if: always()
+        continue-on-error: true
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: >-
+          python -m modal volume rm --recursive
+          joinlint-bird-prep
+          "$OUTPUT_PREFIX"
