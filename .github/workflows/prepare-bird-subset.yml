@@ -1,6 +1,13 @@
 name: prepare-bird-subset
 
 on:
+  push:
+    branches:
+      - codex/bird-subset-prep
+    paths:
+      - .github/workflows/prepare-bird-subset.yml
+      - benchmarks/formal_eval/bird_dataset.py
+      - benchmarks/formal_eval/bird_modal.py
   workflow_dispatch:
     inputs:
       database_ids:
@@ -22,12 +29,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: formal-evaluation
     env:
-      DATABASE_IDS: ${{ inputs.database_ids }}
+      DATABASE_IDS: ${{ inputs.database_ids || 'european_football_1,trains,citeseer,genes' }}
       OUTPUT_PREFIX: bird-train-${{ github.run_id }}-${{ github.run_attempt }}
       SEALED_DESTINATION: benchmarks/formal_eval/sealed/bird-train-subset
     steps:
       - name: Require explicit paid-run confirmation
-        if: inputs.confirm_paid != true
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_paid != true
         run: exit 1
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

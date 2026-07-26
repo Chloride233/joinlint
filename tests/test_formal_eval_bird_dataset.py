@@ -247,6 +247,7 @@ def test_bird_preparation_workflow_is_approval_and_paid_gated() -> None:
 
     assert job["runs-on"] == "ubuntu-latest"
     assert job["environment"] == "formal-evaluation"
+    assert "codex/bird-subset-prep" in workflow["on"]["push"]["branches"]
     assert "confirm_paid" in workflow["on"]["workflow_dispatch"]["inputs"]
     assert "benchmarks/formal_eval/bird_modal.py" in source
     assert "benchmarks.formal_eval.bird_dataset" in source
