@@ -125,15 +125,32 @@ def build_review_bundle(
             record["database_id"]: staging / record["path"]
             for record in database_records
         }
-        selected = select_executable_candidates(
+        mixed_selection = select_executable_candidates(
             candidates,
             database_ids=(*dev_ids, TRAIN_CONFIRMATORY_DATABASE),
             tasks_per_database=tasks_per_database,
             database_paths=database_paths,
         )
+        curated_diagnostics = [
+            task for task in mixed_selection if not task["all_edges_declared_fk"]
+        ]
+        declared_candidates = {
+            database_id: [
+                task for task in values if task["all_edges_declared_fk"]
+            ]
+            for database_id, values in candidates.items()
+        }
+        selected = select_executable_candidates(
+            declared_candidates,
+            database_ids=(*dev_ids, TRAIN_CONFIRMATORY_DATABASE),
+            tasks_per_database=tasks_per_database,
+            database_paths=database_paths,
+        )
+        if not all(task["all_edges_declared_fk"] for task in selected):
+            raise ValueError("confirmatory selection contains an undeclared edge")
         packet = {
             "schema_version": 1,
-            "status": "pending_independent_review",
+            "status": "pending_freeze_validation",
             "dataset_release": "BIRD dev-20240627 + train-2023-07-11",
             "selection": {
                 "database_count": len(dev_ids) + 1,
@@ -146,15 +163,21 @@ def build_review_bundle(
                 "gold_execution_max_rows": 10_000,
                 "selection_seed": SELECTION_SEED,
                 "selection_strategy": "one-per-available-depth-then-seeded-fill",
+                "relationship_scope": "declared_fk_only",
+                "oracle_source": "bird_gold_sql_plus_declared_fk",
+                "curated_edges_in_confirmatory": 0,
             },
             "review_contract": {
                 "arm_labels_present": False,
                 "joinlint_outputs_present": False,
                 "physical_graph_preserves_source_case": True,
                 "allowed_graph_uses_sqlite_casefold": True,
-                "required_reviewers": 2,
-                "adjudicator_required_on_disagreement": True,
-                "freeze_allowed_before_completed_review": False,
+                "independent_ground_truth_review_required": False,
+                "required_reviewers": 0,
+                "adjudicator_required_on_disagreement": False,
+                "sampled_human_qa_optional": True,
+                "freeze_requires_completed_validation": True,
+                "claim_boundary": "join_graph_only_not_query_correctness",
             },
             "tasks": selected,
         }
@@ -162,6 +185,22 @@ def build_review_bundle(
         _write_canonical(packet_path, packet)
         reviewer_template_path = staging / "reviewer-template.json"
         _write_canonical(reviewer_template_path, reviewer_template(selected))
+        diagnostic_path = staging / "curated-diagnostic-tasks.json"
+        _write_canonical(
+            diagnostic_path,
+            {
+                "schema_version": 1,
+                "status": "diagnostic_only_not_confirmatory",
+                "uses_joinlint_output": False,
+                "selection_strategy": "undeclared_edges_from_legacy_mixed_selection",
+                "task_count": len(curated_diagnostics),
+                "curation_required_edge_count": sum(
+                    len(task["curation_required_edges"])
+                    for task in curated_diagnostics
+                ),
+                "tasks": curated_diagnostics,
+            },
+        )
         sources = {
             "schema_version": 1,
             "dev_source": {
@@ -173,6 +212,7 @@ def build_review_bundle(
             "databases": sorted(database_records, key=lambda row: row["database_id"]),
             "review_packet": _file_record(packet_path),
             "reviewer_template": _file_record(reviewer_template_path),
+            "curated_diagnostics": _file_record(diagnostic_path),
         }
         _write_canonical(staging / "source-manifest.json", sources)
         os.replace(staging, output)
@@ -223,7 +263,7 @@ def select_review_candidates(
 def reviewer_template(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "status": "unreviewed",
+        "status": "optional_sampled_qa",
         "instructions": {
             "work_independently": True,
             "do_not_use_joinlint_output": True,
@@ -463,7 +503,9 @@ def _write_canonical(path: Path, value: Any) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build a pending independent BIRD review packet")
+    parser = argparse.ArgumentParser(
+        description="Build a declared-FK-only BIRD packet with optional QA"
+    )
     parser.add_argument("--dev-archive", type=Path, required=True)
     parser.add_argument("--train-subset", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

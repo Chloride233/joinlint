@@ -61,7 +61,9 @@ def test_review_builder_never_imports_joinlint_runtime_or_outputs() -> None:
 
     assert "joinlint.runtime" not in source
     assert '"uses_joinlint_output": False' in source
-    assert '"status": "pending_independent_review"' in source
+    assert '"status": "pending_freeze_validation"' in source
+    assert '"relationship_scope": "declared_fk_only"' in source
+    assert '"curated_edges_in_confirmatory": 0' in source
 
 
 def test_reviewer_template_omits_machine_graphs_and_fk_support() -> None:
