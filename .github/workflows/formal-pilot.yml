@@ -30,7 +30,10 @@ on:
         type: string
 
 permissions:
-  contents: read
+  # Draft Release assets are visible only to repository maintainers. The
+  # protected, manually dispatched pilot job needs this scope to restore its
+  # frozen input; the workflow never invokes a GitHub write operation.
+  contents: write
 
 jobs:
   pilot:
