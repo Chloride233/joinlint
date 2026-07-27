@@ -54,10 +54,13 @@ asset. The manual workflow checks out the full commit bound to that asset,
 which remains correct even if the PR itself enters the default branch through
 a merge or squash commit. After download and extraction, the workflow checks
 the complete content lock before proceeding. This avoids requiring a developer
-machine to connect to Modal. Only the paid dispatch step receives both Modal
-and DeepSeek credentials. Partial budget checkpoints and private logs are
-retained if a batch stops. This code-side envelope does not replace provider
-billing alerts or account spend limits.
+machine to connect to Modal. Because GitHub limits Draft Releases to maintainers,
+the protected manual workflow receives a repository `contents: write` token
+solely to read that input asset; it does not invoke a GitHub write operation.
+Only the paid dispatch step receives both Modal and DeepSeek credentials.
+Partial budget checkpoints and private logs are retained if a batch stops. This
+code-side envelope does not replace provider billing alerts or account spend
+limits.
 
 ## Formal remote run
 

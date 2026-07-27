@@ -235,6 +235,7 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
 
     assert job["environment"] == "formal-evaluation"
     assert job["runs-on"] == "ubuntu-latest"
+    assert workflow["permissions"]["contents"] == "write"
     assert "inputs.confirm_paid != true || inputs.budget_cny != '20'" in text
     assert workflow["on"]["workflow_dispatch"]["inputs"]["pilot_commit"]["default"] == (
         "05da3fb4b2fa8536caef7a28cd9994b8b84a98c9"
