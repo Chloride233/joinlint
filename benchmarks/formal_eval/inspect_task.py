@@ -68,9 +68,9 @@ def formal_pilot_eval(
     agent_version: str,
     dockerfile: str,
     lineage_id: str,
-    token_limit: int = 20_000,
-    time_limit: int = 90,
-    sandbox_timeout: int = 120,
+    token_limit: int = 14_000,
+    time_limit: int = 180,
+    sandbox_timeout: int = 210,
     cpu: float = 0.5,
     memory_mib: int = 2048,
 ) -> Task:

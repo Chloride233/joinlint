@@ -42,12 +42,18 @@ with no repetitions. Pilot tasks and outputs never enter the confirmatory
 effect estimate.
 
 The workflow accepts only the exact CNY 20 approval. The frozen worst-case
-resource envelope is CNY 19.87648: CNY 12.80 for model tokens, CNY 5.07648 for
-120-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. Each
-sample has a 20,000-token limit and a 90-second task limit; each Modal sandbox
-has a platform-level 120-second automatic timeout. Model retries are disabled,
+resource envelope is CNY 19.84384: CNY 8.96 for model tokens, CNY 8.88384 for
+210-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. Each
+sample has a 14,000-token limit and a 180-second task limit; each Modal sandbox
+has a platform-level 210-second automatic timeout. Model retries are disabled,
 concurrency is two, and the dispatcher stops before the next 20-task batch when
 observed cost plus every remaining worst-case batch would exceed CNY 20.
+
+The full Pilot also requires a successful one-task canary attestation bound to
+the same GitHub commit, frozen input lock, repository, and remote dependency
+versions. The canary uses the same resource contract and has its own CNY 2.25
+approval ceiling. A missing or mismatched attestation blocks the full Pilot
+before the paid step.
 
 The frozen inputs are packaged as one access-controlled GitHub Draft Release
 asset. The manual workflow checks out the full commit bound to that asset,
