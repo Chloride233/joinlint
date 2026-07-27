@@ -59,6 +59,8 @@ def build_dispatch_commands(
     phase: Literal["confirmatory", "diagnostic"],
     lineage_id: str,
 ) -> tuple[list[str], ...]:
+    resolved_manifest = manifest.resolve()
+    resolved_sealed_tasks = sealed_tasks.resolve()
     conditions = (
         ("control", "treatment")
         if phase == "confirmatory"
@@ -94,9 +96,9 @@ def build_dispatch_commands(
                         "--seed",
                         str(preregistration.seed),
                         "-T",
-                        f"sealed_tasks={sealed_tasks}",
+                        f"sealed_tasks={resolved_sealed_tasks}",
                         "-T",
-                        f"manifest={manifest}",
+                        f"manifest={resolved_manifest}",
                         "-T",
                         f"host={host}",
                         "-T",

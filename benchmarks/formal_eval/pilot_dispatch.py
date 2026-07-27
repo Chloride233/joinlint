@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 from benchmarks.formal_eval.export import export_agent_rows
-from benchmarks.formal_eval.dispatch import inspect_subprocess_environment
+from benchmarks.formal_eval.dispatch import REPOSITORY_ROOT, inspect_subprocess_environment
 from benchmarks.formal_eval.pilot import (
     PilotBudgetCheckpoint,
     PilotRegistration,
@@ -94,6 +94,8 @@ def build_pilot_commands(
     log_dir: Path,
     lineage_id: str,
 ) -> tuple[list[str], ...]:
+    resolved_root = root.resolve()
+    dockerfile = (REPOSITORY_ROOT / "Dockerfile.formal-pilot").resolve()
     commands: list[list[str]] = []
     for model in registration.models:
         for host in registration.hosts:
@@ -122,9 +124,9 @@ def build_pilot_commands(
                         "--seed",
                         str(registration.seed),
                         "-T",
-                        f"sealed_tasks={root / 'agent-tasks.json'}",
+                        f"sealed_tasks={resolved_root / 'agent-tasks.json'}",
                         "-T",
-                        f"manifest={root / 'manifest.json'}",
+                        f"manifest={resolved_root / 'manifest.json'}",
                         "-T",
                         f"host={host}",
                         "-T",
@@ -132,7 +134,7 @@ def build_pilot_commands(
                         "-T",
                         f"agent_version={registration.host_versions[host]}",
                         "-T",
-                        "dockerfile=Dockerfile.formal-pilot",
+                        f"dockerfile={dockerfile}",
                         "-T",
                         f"lineage_id={lineage_id}",
                         "-T",

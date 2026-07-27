@@ -120,6 +120,18 @@ def test_pilot_dispatch_has_eight_non_retrying_bounded_batches(tmp_path: Path) -
     assert all("sandbox_timeout=120" in command for command in commands)
     assert all("cpu=0.5" in command for command in commands)
     assert all("memory_mib=2048" in command for command in commands)
+    assert all(
+        f"sealed_tasks={(tmp_path / 'sealed' / 'agent-tasks.json').resolve()}" in command
+        for command in commands
+    )
+    assert all(
+        f"manifest={(tmp_path / 'sealed' / 'manifest.json').resolve()}" in command
+        for command in commands
+    )
+    assert all(
+        f"dockerfile={Path('Dockerfile.formal-pilot').resolve()}" in command
+        for command in commands
+    )
 
 
 def test_pilot_budget_report_fails_when_observed_total_exceeds_ceiling() -> None:

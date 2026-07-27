@@ -51,6 +51,14 @@ def test_dispatch_builds_only_the_frozen_remote_matrix(tmp_path: Path) -> None:
         f"image_reference={preregistration.image_reference}" in command
         for command in confirmatory + diagnostic
     )
+    assert all(
+        f"manifest={(tmp_path / 'manifest.json').resolve()}" in command
+        for command in confirmatory + diagnostic
+    )
+    assert all(
+        f"sealed_tasks={(tmp_path / 'tasks.json').resolve()}" in command
+        for command in confirmatory + diagnostic
+    )
 
 
 def test_inspect_subprocess_environment_includes_the_repository_root(
