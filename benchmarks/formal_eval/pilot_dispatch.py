@@ -48,8 +48,13 @@ def main(argv: list[str] | None = None) -> int:
         _write_checkpoint(arguments.output, before)
         if not before.safe_to_continue:
             raise RuntimeError("pilot stopped before the next batch could exceed the budget")
-        Path(command[command.index("--log-dir") + 1]).mkdir(parents=True, exist_ok=True)
+        batch_log_dir = Path(command[command.index("--log-dir") + 1])
+        batch_log_dir.mkdir(parents=True, exist_ok=True)
         subprocess.run(command, check=True, env=inspect_subprocess_environment())
+        require_batch_health(
+            batch_log_dir,
+            expected_sample_count=registration.task_count,
+        )
         observed = observed_model_cost_cny(arguments.log_dir, registration)
         after = pilot_budget_checkpoint(
             registration,
@@ -84,6 +89,20 @@ def main(argv: list[str] | None = None) -> int:
 def _write_checkpoint(output: Path, checkpoint: PilotBudgetCheckpoint) -> None:
     payload = checkpoint.model_dump(mode="json")
     (output / "budget-checkpoint.json").write_bytes(canonical_json(payload) + b"\n")
+
+
+def require_batch_health(log_dir: Path, *, expected_sample_count: int) -> None:
+    from inspect_ai.log import list_eval_logs, read_eval_log
+
+    samples = [
+        sample
+        for info in list_eval_logs(str(log_dir), recursive=True)
+        for sample in (read_eval_log(info.name, header_only=False).samples or [])
+    ]
+    if len(samples) != expected_sample_count:
+        raise RuntimeError("pilot batch produced an incomplete sample set")
+    if all(sample.error is not None and not sample.scores for sample in samples):
+        raise RuntimeError("pilot batch has a systemic infrastructure failure")
 
 
 def build_pilot_commands(
