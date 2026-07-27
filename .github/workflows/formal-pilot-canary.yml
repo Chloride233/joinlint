@@ -78,9 +78,11 @@ jobs:
           DEEPSEEK_BASE_URL: https://api.deepseek.com
         run: >-
           python -m benchmarks.formal_eval.pilot_canary
+          run
           --root benchmarks/formal_eval/sealed/pilot-v1
           --log-dir pilot-canary-logs
           --output pilot-canary-artifacts
+          --workflow-run-id "${{ github.run_id }}"
       - name: Scan sanitized canary artifacts
         if: always()
         run: >-

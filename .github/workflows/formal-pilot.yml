@@ -28,12 +28,18 @@ on:
         required: true
         default: pilot-input.tar.gz
         type: string
+      canary_run_id:
+        description: Successful bound formal-pilot-canary workflow run ID
+        required: true
+        default: ""
+        type: string
 
 permissions:
   # Draft Release assets are visible only to repository maintainers. The
   # protected, manually dispatched pilot job needs this scope to restore its
   # frozen input; the workflow never invokes a GitHub write operation.
   contents: write
+  actions: read
 
 jobs:
   pilot:
@@ -73,6 +79,31 @@ jobs:
           python -m benchmarks.formal_eval.pilot verify
           --root benchmarks/formal_eval/sealed/pilot-v1
           --current-commit "${{ steps.pilot_commit.outputs.sha }}"
+      - name: Restore successful canary attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANARY_RUN_ID: ${{ inputs.canary_run_id }}
+        run: |
+          [[ "$CANARY_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          mkdir -p canary-attestation
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANARY_RUN_ID" \
+            > canary-attestation/run.json
+          gh run download "$CANARY_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name joinlint-formal-pilot-canary-sanitized \
+            --dir canary-attestation/artifact
+      - name: Verify canary attestation binding
+        env:
+          CANARY_RUN_ID: ${{ inputs.canary_run_id }}
+        run: >-
+          python -m benchmarks.formal_eval.pilot_canary
+          verify-attestation
+          --root benchmarks/formal_eval/sealed/pilot-v1
+          --attestation canary-attestation/artifact/canary.json
+          --run-metadata canary-attestation/run.json
+          --expected-run-id "$CANARY_RUN_ID"
+          --current-commit "${{ steps.pilot_commit.outputs.sha }}"
+          --repository "$GITHUB_REPOSITORY"
       - name: Run the approved 20-task pilot
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
