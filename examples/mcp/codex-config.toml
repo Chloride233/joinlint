@@ -1,0 +1,5 @@
+[mcp_servers.joinlint]
+command = "joinlint"
+args = ["serve-mcp", "--project", "/trusted/project", "--source", "data/app.sqlite"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60

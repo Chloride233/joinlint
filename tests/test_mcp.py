@@ -1,286 +1,278 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
-import pytest
 from mcp.client.session import ClientSession
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from joinlint.config import add_source
-from joinlint.errors import JoinLintError
-from joinlint.contracts import Envelope
-from joinlint.mcp_server import _response, create_server
-from joinlint.services import find_join_path, scan_project, validate_cached_edges, validate_cached_path
+from joinlint.mcp_contracts import GetJoinPlanResponse, ValidateSQLResponse
+from joinlint.mcp_server import _response, create_server, run_server
 
 
-def test_mcp_exposes_exactly_three_tools(project: Path) -> None:
-    server = create_server(project)
+def make_database(path: Path) -> None:
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        PRAGMA foreign_keys = ON;
+        CREATE TABLE customers(id INTEGER PRIMARY KEY);
+        CREATE TABLE orders(
+          id INTEGER PRIMARY KEY,
+          customer_id INTEGER NOT NULL,
+          FOREIGN KEY(customer_id) REFERENCES customers(id)
+        );
+        INSERT INTO customers VALUES (1), (2);
+        INSERT INTO orders VALUES (10, 1), (11, 1), (12, 2);
+        """
+    )
+    connection.commit()
+    connection.close()
+
+
+def test_mcp_exposes_exactly_two_stage1_tools(tmp_path: Path) -> None:
+    make_database(tmp_path / "data.sqlite")
+    server = create_server(tmp_path, ("data.sqlite",), cache_root=tmp_path / "cache")
 
     tools = asyncio.run(server.list_tools())
 
-    assert {tool.name for tool in tools} == {"get_data_model", "find_join_path", "validate_join"}
+    assert {tool.name for tool in tools} == {"get_join_plan", "validate_sql"}
+    validate = next(tool for tool in tools if tool.name == "validate_sql")
+    assert "sql" in validate.inputSchema["properties"]
+    assert all(tool.inputSchema["additionalProperties"] is False for tool in tools)
+    assert all("execute" not in tool.name and "schema" not in tool.name for tool in tools)
 
 
-def test_find_join_path_rejects_unconfirmed_entities(project: Path) -> None:
-    (project / ".joinlint" / "model.yaml").write_text(
-        "version: 1\nentities: {}\nrelationships: []\n", encoding="utf-8"
+def test_two_call_flow_returns_current_proof_and_bound_validation(tmp_path: Path) -> None:
+    make_database(tmp_path / "data.sqlite")
+    cache = tmp_path / "cache"
+    server = create_server(tmp_path, ("data.sqlite",), cache_root=cache)
+
+    plan = asyncio.run(
+        server.call_tool(
+            "get_join_plan",
+            {
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                ],
+                "start_ref": "orders",
+                "expected_grain_ref": "orders",
+            },
+        )
     )
-    with pytest.raises(JoinLintError) as captured:
-        find_join_path(project, "orders", "items", max_depth=4)
+    plan_response = GetJoinPlanResponse.model_validate(plan[1])
+    assert plan_response.status == "ok"
+    assert plan_response.data is not None
+    assert plan_response.data.lifecycle.status == "current"
+    assert plan_response.data.execution_count == 0
 
-    assert captured.value.code == "ENTITY_NOT_FOUND"
-
-
-def test_find_join_path_refuses_to_silently_truncate(project: Path) -> None:
-    add_source(project, "sales", "data", "csv_directory")
-    relationships = "\n".join(
-        f"  - id: edge_{index:02d}\n    from: source.id\n    to: target.id\n    cardinality: one_to_one\n    status: confirmed"
-        for index in range(21)
+    validation = asyncio.run(
+        server.call_tool(
+            "validate_sql",
+            {
+                "sql": (
+                    "SELECT * FROM orders o JOIN customers c "
+                    "ON o.customer_id = c.id"
+                ),
+                "plan_id": plan_response.data.proof.plan_id,
+            },
+        )
     )
-    (project / ".joinlint" / "model.yaml").write_text(
-        """version: 1
-entities:
-  source:
-    source: sales
-    object: source.csv
-    grain:
-      keys: [id]
-      status: confirmed
-  target:
-    source: sales
-    object: target.csv
-    grain:
-      keys: [id]
-      status: confirmed
-relationships:
-"""
-        + relationships
-        + "\n",
-        encoding="utf-8",
+    validation_response = ValidateSQLResponse.model_validate(validation[1])
+    assert validation_response.status == "ok"
+    assert validation_response.data is not None
+    assert validation_response.data.proof_matched is True
+    assert validation_response.data.execution_count == 0
+    assert "proof_binding" in validation_response.data.validated_scope
+    assert "answer_correctness" in validation_response.data.not_validated_scope
+
+
+def test_stale_proof_never_downgrades_to_independent_lint(tmp_path: Path) -> None:
+    make_database(tmp_path / "data.sqlite")
+    server = create_server(tmp_path, ("data.sqlite",), cache_root=tmp_path / "cache")
+    plan = GetJoinPlanResponse.model_validate(
+        asyncio.run(
+            server.call_tool(
+                "get_join_plan",
+                {
+                    "entity_refs": [
+                        {"ref": "orders", "entity": "orders"},
+                        {"ref": "customers", "entity": "customers"},
+                    ],
+                    "start_ref": "orders",
+                },
+            )
+        )[1]
+    )
+    assert plan.data is not None
+    connection = sqlite3.connect(tmp_path / "data.sqlite")
+    connection.execute("INSERT INTO customers VALUES (3)")
+    connection.commit()
+    connection.close()
+
+    result = asyncio.run(
+        server.call_tool(
+            "validate_sql",
+            {
+                "sql": "SELECT * FROM orders o JOIN customers c ON o.customer_id = c.id",
+                "plan_id": plan.data.proof.plan_id,
+            },
+        )
     )
 
-    with pytest.raises(JoinLintError) as captured:
-        find_join_path(project, "source", "target", max_depth=1)
+    response = ValidateSQLResponse.model_validate(result[1])
+    assert response.status == "inconclusive"
+    assert response.error is not None and response.error.code == "PROOF_STALE"
+    assert response.data is None
 
-    assert captured.value.code == "OUTPUT_LIMIT_EXCEEDED"
 
-
-def test_mcp_response_limit_returns_inconclusive_envelope() -> None:
+def test_mcp_internal_errors_are_sanitized() -> None:
     response = _response(
-        "get_data_model",
-        lambda: Envelope(command="get_data_model", status="ok", data={"value": "x" * 1_048_576}),
+        "get_join_plan",
+        lambda: (_ for _ in ()).throw(RuntimeError("/private/secret")),
     )
-
-    assert response["status"] == "inconclusive"
-    assert response["error"] == {
-        "code": "OUTPUT_LIMIT_EXCEEDED",
-        "message": "OUTPUT_LIMIT_EXCEEDED",
-    }
-
-
-def test_mcp_internal_errors_are_stable() -> None:
-    response = _response("get_data_model", lambda: (_ for _ in ()).throw(RuntimeError("/private/secret")))
 
     assert response["status"] == "error"
     assert response["error"] == {"code": "INTERNAL_ERROR", "message": "INTERNAL_ERROR"}
+    assert "/private/secret" not in str(response)
 
 
-def test_cached_validation_rejects_duplicate_edge_ids(project: Path) -> None:
-    _prepare_mcp_project(project)
+def test_mcp_response_limit_fails_closed(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class HugeResponse:
+        def model_dump_json(self, *, exclude_none: bool) -> str:
+            del exclude_none
+            return "x" * 1_048_577
 
-    with pytest.raises(JoinLintError) as captured:
-        validate_cached_edges(project, ["child_to_parent", "child_to_parent"])
+    response = _response("get_join_plan", lambda: HugeResponse())  # type: ignore[arg-type]
 
-    assert captured.value.code == "INVALID_ARGUMENT"
-
-
-def test_cached_validation_rejects_non_string_edge_ids(project: Path) -> None:
-    _prepare_mcp_project(project)
-
-    with pytest.raises(JoinLintError) as captured:
-        validate_cached_edges(project, [1])  # type: ignore[list-item]
-
-    assert captured.value.code == "INVALID_ARGUMENT"
+    assert response["status"] == "inconclusive"
+    assert response["error"]["code"] == "OUTPUT_LIMIT_EXCEEDED"
 
 
-def test_cached_path_requires_model_shape_and_reports_compound_fanout(project: Path) -> None:
-    (project / "data").mkdir()
-    (project / "data" / "children.csv").write_text(
-        "id,parent_id\n1,a\n2,a\n3,b\n", encoding="utf-8"
+def test_mcp_rejects_unknown_tool_arguments(tmp_path: Path) -> None:
+    make_database(tmp_path / "data.sqlite")
+    server = create_server(tmp_path, ("data.sqlite",), cache_root=tmp_path / "cache")
+
+    try:
+        asyncio.run(
+            server.call_tool(
+                "validate_sql",
+                {"sql": "SELECT 1", "unexpected": "not-allowed"},
+            )
+        )
+    except ToolError as error:
+        assert str(error) == "INVALID_ARGUMENT"
+    else:
+        raise AssertionError("unknown tool arguments must be rejected")
+
+
+def test_stdio_flow_does_not_write_to_project(tmp_path: Path) -> None:
+    make_database(tmp_path / "data.sqlite")
+    before = _project_files(tmp_path)
+
+    responses = asyncio.run(
+        _call_tools(
+            tmp_path,
+            [
+                (
+                    "get_join_plan",
+                    {
+                        "entity_refs": [
+                            {"ref": "orders", "entity": "orders"},
+                            {"ref": "customers", "entity": "customers"},
+                        ],
+                        "start_ref": "orders",
+                    },
+                )
+            ],
+        )
     )
-    (project / "data" / "parents.csv").write_text("id,grand_id\na,g1\nb,g1\n", encoding="utf-8")
-    (project / "data" / "grands.csv").write_text("id\ng1\n", encoding="utf-8")
-    add_source(project, "sales", "data", "csv_directory")
-    (project / ".joinlint" / "model.yaml").write_text(
-        """version: 1
-entities:
-  children:
-    source: sales
-    object: children.csv
-    grain:
-      keys: [id]
-      status: confirmed
-  parents:
-    source: sales
-    object: parents.csv
-    grain:
-      keys: [id]
-      status: confirmed
-  grands:
-    source: sales
-    object: grands.csv
-    grain:
-      keys: [id]
-      status: confirmed
-relationships:
-  - id: child_to_parent
-    from: children.parent_id
-    to: parents.id
-    cardinality: many_to_one
-    status: confirmed
-  - id: parent_to_grand
-    from: parents.grand_id
-    to: grands.id
-    cardinality: many_to_one
-    status: confirmed
-""",
-        encoding="utf-8",
+
+    assert responses[0]["status"] == "ok"
+    assert _project_files(tmp_path) == before
+    assert "/Users/" not in str(responses)
+
+
+def test_same_entity_names_across_sources_are_inconclusive(tmp_path: Path) -> None:
+    make_database(tmp_path / "first.sqlite")
+    make_database(tmp_path / "second.sqlite")
+    server = create_server(
+        tmp_path,
+        ("first.sqlite", "second.sqlite"),
+        cache_root=tmp_path / "cache",
     )
-    scan_project(project)
-    path = [
-        {"id": "child_to_parent", "direction": "forward", "cardinality": "many_to_one"},
-        {"id": "parent_to_grand", "direction": "forward", "cardinality": "many_to_one"},
-    ]
 
-    result = validate_cached_path(project, path)
+    result = asyncio.run(
+        server.call_tool(
+            "get_join_plan",
+            {
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                ],
+                "start_ref": "orders",
+            },
+        )
+    )
+    response = GetJoinPlanResponse.model_validate(result[1])
 
-    assert "COMPOUND_FANOUT" in {finding.code for finding in result.findings}
-    path[0]["direction"] = "reverse"
-    with pytest.raises(JoinLintError) as captured:
-        validate_cached_path(project, path)
-    assert captured.value.code == "INVALID_ARGUMENT"
-
-
-def test_cached_validation_refuses_symlinked_evidence(project: Path) -> None:
-    _prepare_mcp_project(project)
-    path = project / ".joinlint" / "generated" / "validation.json"
-    outside = project.parent / "outside-validation.json"
-    outside.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-    path.unlink()
-    path.symlink_to(outside)
-
-    with pytest.raises(JoinLintError) as captured:
-        validate_cached_edges(project, ["child_to_parent"])
-
-    assert captured.value.code == "EVIDENCE_STALE"
+    assert response.status == "inconclusive"
+    assert response.error is not None and response.error.code == "SOURCE_AMBIGUOUS"
 
 
-def test_cached_validation_rejects_a_mismatched_relationship_digest(project: Path) -> None:
-    _prepare_mcp_project(project)
-    path = project / ".joinlint" / "generated" / "validation.json"
-    document = json.loads(path.read_text(encoding="utf-8"))
-    document["relationships"][0]["relationship_digest"] = "0" * 64
-    path.write_text(json.dumps(document), encoding="utf-8")
+def test_run_server_scrubs_provider_credentials(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    observed: dict[str, str | None] = {}
 
-    with pytest.raises(JoinLintError) as captured:
-        validate_cached_edges(project, ["child_to_parent"])
+    class FakeServer:
+        def run(self, *, transport: str) -> None:
+            assert transport == "stdio"
+            observed["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
+            observed["ANTHROPIC_API_KEY"] = os.environ.get("ANTHROPIC_API_KEY")
+            observed["GITHUB_TOKEN"] = os.environ.get("GITHUB_TOKEN")
+            observed["MODAL_TOKEN_SECRET"] = os.environ.get("MODAL_TOKEN_SECRET")
 
-    assert captured.value.code == "EVIDENCE_STALE"
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setenv("MODAL_TOKEN_SECRET", "secret")
+    monkeypatch.setattr("joinlint.mcp_server.create_server", lambda *args, **kwargs: FakeServer())
 
+    run_server(tmp_path)
 
-def test_cached_validation_rejects_untrusted_extra_artifact_fields(project: Path) -> None:
-    _prepare_mcp_project(project)
-    path = project / ".joinlint" / "generated" / "validation.json"
-    document = json.loads(path.read_text(encoding="utf-8"))
-    document["relationships"][0]["raw_rows"] = ["sensitive-value"]
-    path.write_text(json.dumps(document), encoding="utf-8")
-
-    with pytest.raises(JoinLintError) as captured:
-        validate_cached_edges(project, ["child_to_parent"])
-
-    assert captured.value.code == "EVIDENCE_STALE"
-
-
-def test_stdio_mcp_rejects_sql_shaped_arguments(project: Path) -> None:
-    _prepare_mcp_project(project)
-
-    result = asyncio.run(_call_tools(project, [("validate_join", {"sql": "select * from children"})]))
-
-    assert result[0]["status"] == "error"
-    assert result[0]["error"]["code"] == "INVALID_ARGUMENT"
-
-
-def test_stdio_mcp_current_and_stale_evidence_never_mutates_project(project: Path) -> None:
-    _prepare_mcp_project(project)
-    before = _joinlint_state(project)
-
-    current = asyncio.run(_call_tools(project, [("get_data_model", {}), ("find_join_path", {"source_entity": "children", "target_entity": "parents"}), ("validate_join", {"edge_ids": ["child_to_parent"]})]))
-
-    assert {tool.name for tool in asyncio.run(create_server(project).list_tools())} == {
-        "get_data_model",
-        "find_join_path",
-        "validate_join",
+    assert observed == {
+        "OPENAI_API_KEY": None,
+        "ANTHROPIC_API_KEY": None,
+        "GITHUB_TOKEN": None,
+        "MODAL_TOKEN_SECRET": None,
     }
-    assert current[0]["status"] == "ok"
-    assert current[1]["data"]["paths"]
-    assert current[2]["status"] == "findings"
-    assert _joinlint_state(project) == before
-
-    (project / "data" / "children.csv").write_text("id,parent_id\n1,a\n2,missing\n", encoding="utf-8")
-    source_stale = asyncio.run(_call_tools(project, [("validate_join", {"edge_ids": ["child_to_parent"]})]))
-    assert source_stale[0]["status"] == "inconclusive"
-    assert source_stale[0]["error"]["code"] == "EVIDENCE_STALE"
-
-    scan_project(project)
-    model_path = project / ".joinlint" / "model.yaml"
-    model_path.write_text(model_path.read_text(encoding="utf-8").replace("many_to_one", "one_to_one"), encoding="utf-8")
-    model_stale = asyncio.run(_call_tools(project, [("validate_join", {"edge_ids": ["child_to_parent"]})]))
-    assert model_stale[0]["status"] == "inconclusive"
-    assert model_stale[0]["error"]["code"] == "EVIDENCE_STALE"
 
 
-def _prepare_mcp_project(project: Path) -> None:
-    (project / "data").mkdir()
-    (project / "data" / "parents.csv").write_text("id\na\nb\n", encoding="utf-8")
-    (project / "data" / "children.csv").write_text("id,parent_id\n1,a\n2,a\n", encoding="utf-8")
-    add_source(project, "sales", "data", "csv_directory")
-    (project / ".joinlint" / "model.yaml").write_text(
-        """version: 1
-entities:
-  children:
-    source: sales
-    object: children.csv
-    grain:
-      keys: [id]
-      status: confirmed
-  parents:
-    source: sales
-    object: parents.csv
-    grain:
-      keys: [id]
-      status: confirmed
-relationships:
-  - id: child_to_parent
-    from: children.parent_id
-    to: parents.id
-    cardinality: many_to_one
-    status: confirmed
-""",
-        encoding="utf-8",
-    )
-    scan_project(project)
-
-
-async def _call_tools(project: Path, calls: list[tuple[str, dict[str, object]]]) -> list[dict[str, object]]:
+async def _call_tools(
+    project: Path,
+    calls: list[tuple[str, dict[str, object]]],
+) -> list[dict[str, object]]:
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
+        "XDG_CACHE_HOME": str(project.parent / "mcp-cache"),
+    }
     server = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "joinlint", "serve-mcp", "--project", str(project)],
+        args=[
+            "-m",
+            "joinlint",
+            "serve-mcp",
+            "--project",
+            str(project),
+            "--source",
+            "data.sqlite",
+        ],
         cwd=project,
-        env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")},
+        env=environment,
     )
     async with stdio_client(server) as (read, write):
         async with ClientSession(read, write) as session:
@@ -294,9 +286,9 @@ def _mcp_response(value: object) -> dict[str, object]:
     return value
 
 
-def _joinlint_state(project: Path) -> dict[str, bytes]:
+def _project_files(project: Path) -> dict[str, bytes]:
     return {
         path.relative_to(project).as_posix(): path.read_bytes()
-        for path in sorted((project / ".joinlint").rglob("*"))
+        for path in sorted(project.rglob("*"))
         if path.is_file()
     }

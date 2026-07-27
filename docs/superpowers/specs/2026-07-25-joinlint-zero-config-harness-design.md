@@ -6,9 +6,12 @@
 
 **Product:** JoinLint MCP
 
-**Product promise:** Give data agents safe, evidence-backed join plans without
-requiring users to initialize a project, scan data, or review relationship
-candidates.
+**Positioning:** A local, read-only Join Safety MCP for AI SQL agents.
+
+**Product promise:** Stop AI agents from guessing database joins by giving them
+evidence-backed join plans and validating final SQL before another tool
+executes it, without requiring users to initialize a JoinLint project, run a
+scan, or review relationship candidates.
 
 ## 1. Summary
 

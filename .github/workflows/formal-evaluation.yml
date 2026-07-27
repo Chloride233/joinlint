@@ -1,0 +1,256 @@
+name: formal-evaluation
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Highest stage to run
+        required: true
+        default: deterministic
+        type: choice
+        options:
+          - deterministic
+          - formal
+      sealed_artifact_run_id:
+        description: Run ID holding the private frozen-input artifact
+        required: false
+        default: ""
+        type: string
+      sealed_artifact_name:
+        description: Private frozen-input artifact name
+        required: true
+        default: joinlint-formal-inputs
+        type: string
+      confirm_paid:
+        description: Confirm Modal and model API spend
+        required: true
+        default: false
+        type: boolean
+      preregistration:
+        description: Frozen schema-v2 preregistration path
+        required: true
+        default: benchmarks/formal_eval/sealed/preregistration.yaml
+        type: string
+      manifest:
+        description: Frozen formal manifest path
+        required: true
+        default: benchmarks/formal_eval/sealed/manifest.json
+        type: string
+      input_lock:
+        description: Frozen input lock path
+        required: true
+        default: benchmarks/formal_eval/sealed/input-lock.json
+        type: string
+      inputs_root:
+        description: Root containing every locked input
+        required: true
+        default: benchmarks/formal_eval/sealed
+        type: string
+      sealed_tasks:
+        description: Private Agent task payload path
+        required: true
+        default: benchmarks/formal_eval/sealed/agent-tasks.json
+        type: string
+      mcp_project:
+        description: Project used to verify the completed MCP contract
+        required: true
+        default: benchmarks/formal_eval/sealed/mcp-project
+        type: string
+      pilot_agent_results:
+        description: Sanitized independent-pilot result rows
+        required: true
+        default: benchmarks/formal_eval/sealed/pilot-agent-results.json
+        type: string
+      deterministic_suite:
+        description: Frozen raw relationship, SQL, and performance cases
+        required: true
+        default: benchmarks/formal_eval/sealed/deterministic-suite.json
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e '.[dev,eval]'
+      - run: python -m ruff check src tests benchmarks scripts
+      - run: python -m pytest -q
+      - name: Run fake-model full matrix
+        run: python -m benchmarks.formal_eval.cli fake-model --output formal-smoke
+      - name: Run non-evidentiary Inspect two-tool smoke
+        run: >-
+          python -m benchmarks.formal_eval.cli inspect-smoke
+          --project tests/fixtures/chinook
+          --output inspect-smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: formal-evaluation-pipeline-smoke
+          path: |
+            formal-smoke
+            inspect-smoke/inspect-smoke.json
+          if-no-files-found: error
+
+  formal:
+    if: github.event_name == 'workflow_dispatch' && inputs.stage == 'formal'
+    needs: deterministic
+    runs-on: ubuntu-latest
+    environment: formal-evaluation
+    env:
+      PREREGISTRATION: ${{ inputs.preregistration }}
+      MANIFEST: ${{ inputs.manifest }}
+      INPUT_LOCK: ${{ inputs.input_lock }}
+      INPUTS_ROOT: ${{ inputs.inputs_root }}
+      SEALED_TASKS: ${{ inputs.sealed_tasks }}
+      MCP_PROJECT: ${{ inputs.mcp_project }}
+      PILOT_AGENT_RESULTS: ${{ inputs.pilot_agent_results }}
+      DETERMINISTIC_SUITE: ${{ inputs.deterministic_suite }}
+      CURRENT_COMMIT: ${{ github.sha }}
+    steps:
+      - name: Require explicit paid-run confirmation
+        if: inputs.confirm_paid != true
+        run: exit 1
+      - name: Require a private frozen-input artifact
+        if: inputs.sealed_artifact_run_id == ''
+        run: exit 1
+      - uses: actions/checkout@v4
+      - name: Restore private frozen inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.sealed_artifact_name }}
+          path: benchmarks/formal_eval/sealed
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.sealed_artifact_run_id }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e '.[dev,eval,remote]'
+      - name: Verify frozen inputs
+        run: >-
+          python -m benchmarks.formal_eval.cli preflight
+          --preregistration "$PREREGISTRATION"
+          --manifest "$MANIFEST"
+          --input-lock "$INPUT_LOCK"
+          --inputs-root "$INPUTS_ROOT"
+          --sealed-tasks "$SEALED_TASKS"
+          --deterministic-suite "$DETERMINISTIC_SUITE"
+          --required-input "$MCP_PROJECT"
+          --required-input "$PILOT_AGENT_RESULTS"
+          --current-commit "$CURRENT_COMMIT"
+          --output formal-artifacts/readiness.json
+          --lineage-output formal-artifacts/lineage.json
+      - name: Require the completed two-tool JoinLint runtime
+        run: >-
+          python -m benchmarks.formal_eval.cli runtime-check
+          --project "$MCP_PROJECT"
+          --output formal-artifacts/runtime-contract.json
+      - name: Freeze run and power plans
+        run: |
+          python -m benchmarks.formal_eval.cli run-plan \
+            --preregistration "$PREREGISTRATION" \
+            --manifest "$MANIFEST" \
+            --lineage formal-artifacts/lineage.json \
+            --output formal-artifacts/run-plan.json \
+            --summary formal-artifacts/run-plan-summary.json
+          python -m benchmarks.formal_eval.cli power \
+            --pilot-agent-results "$PILOT_AGENT_RESULTS" \
+            --lineage formal-artifacts/lineage.json \
+            --output formal-artifacts/power-plan.json
+          python -m benchmarks.formal_eval.cli power-check \
+            --power-plan formal-artifacts/power-plan.json \
+            --manifest "$MANIFEST" \
+            --run-plan formal-artifacts/run-plan.json \
+            --output formal-artifacts/power-readiness.json
+      - name: Generate deterministic evidence from the frozen runtime
+        run: >-
+          python -m benchmarks.formal_eval.deterministic
+          --suite "$DETERMINISTIC_SUITE"
+          --lineage formal-artifacts/lineage.json
+          --output formal-artifacts/deterministic-evidence.json
+      - name: Run diagnostic-canary in Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: https://api.deepseek.com
+        run: >-
+          python -m benchmarks.formal_eval.dispatch
+          --preregistration "$PREREGISTRATION"
+          --manifest "$MANIFEST"
+          --sealed-tasks "$SEALED_TASKS"
+          --lineage formal-artifacts/lineage.json
+          --log-dir formal-logs/diagnostic
+          --phase diagnostic
+      - name: Require diagnostic-canary infrastructure readiness
+        run: |
+          python -m benchmarks.formal_eval.cli export-logs \
+            --log-dir formal-logs/diagnostic \
+            --preregistration "$PREREGISTRATION" \
+            --lineage formal-artifacts/lineage.json \
+            --run-plan formal-artifacts/run-plan.json \
+            --phase diagnostic \
+            --output formal-artifacts/diagnostic-results.json \
+            --summary formal-artifacts/diagnostic-cleaning.json
+          python -m benchmarks.formal_eval.cli canary-check \
+            --agent-results formal-artifacts/diagnostic-results.json \
+            --output formal-artifacts/diagnostic-canary.json
+      - name: Run confirmatory batch in Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: https://api.deepseek.com
+        run: >-
+          python -m benchmarks.formal_eval.dispatch
+          --preregistration "$PREREGISTRATION"
+          --manifest "$MANIFEST"
+          --sealed-tasks "$SEALED_TASKS"
+          --lineage formal-artifacts/lineage.json
+          --log-dir formal-logs/confirmatory
+          --phase confirmatory
+      - name: Export sanitized result rows
+        run: >-
+          python -m benchmarks.formal_eval.cli export-logs
+          --log-dir formal-logs
+          --preregistration "$PREREGISTRATION"
+          --lineage formal-artifacts/lineage.json
+          --run-plan formal-artifacts/run-plan.json
+          --phase all
+          --output formal-artifacts/agent-results.json
+          --summary formal-artifacts/cleaning.json
+      - name: Generate preliminary report pending blinded review
+        run: >-
+          python -m benchmarks.formal_eval.cli score
+          --preregistration "$PREREGISTRATION"
+          --manifest "$MANIFEST"
+          --input-lock "$INPUT_LOCK"
+          --deterministic-suite "$DETERMINISTIC_SUITE"
+          --deterministic-evidence formal-artifacts/deterministic-evidence.json
+          --run-plan formal-artifacts/run-plan.json
+          --agent-results formal-artifacts/agent-results.json
+          --output formal-artifacts/report
+          --require none
+      - name: Scan sanitized artifacts for forbidden raw fields and common secret prefixes
+        run: >-
+          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('formal-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','ANTHROPIC_API_KEY','DEEPSEEK_API_KEY'); found=[value for value in forbidden if value in text]; assert not found, found"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: formal-evaluation-sanitized
+          path: formal-artifacts
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: formal-evaluation-private-inspect-logs
+          path: formal-logs
+          if-no-files-found: error
+          retention-days: 30

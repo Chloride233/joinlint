@@ -1,0 +1,103 @@
+name: formal-evaluation-report
+
+on:
+  workflow_dispatch:
+    inputs:
+      formal_run_id:
+        description: Completed formal-evaluation run ID
+        required: true
+        type: string
+      frozen_inputs_run_id:
+        description: Run ID holding the original frozen-input artifact
+        required: true
+        type: string
+      review_run_id:
+        description: Run ID holding the arm-blinded review measurement
+        required: true
+        type: string
+      joinlint_commit:
+        description: Exact preregistered JoinLint commit
+        required: true
+        type: string
+      frozen_artifact_name:
+        required: true
+        default: joinlint-formal-inputs
+        type: string
+      review_artifact_name:
+        required: true
+        default: joinlint-formal-blind-review
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    environment: formal-evaluation
+    env:
+      JOINLINT_COMMIT: ${{ inputs.joinlint_commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.joinlint_commit }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: formal-evaluation-sanitized
+          path: formal-artifacts
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.formal_run_id }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.frozen_artifact_name }}
+          path: benchmarks/formal_eval/sealed
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.frozen_inputs_run_id }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.review_artifact_name }}
+          path: formal-review
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.review_run_id }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e '.[dev,eval]'
+      - name: Re-verify original frozen inputs
+        run: >-
+          python -m benchmarks.formal_eval.cli preflight
+          --preregistration benchmarks/formal_eval/sealed/preregistration.yaml
+          --manifest benchmarks/formal_eval/sealed/manifest.json
+          --input-lock benchmarks/formal_eval/sealed/input-lock.json
+          --inputs-root benchmarks/formal_eval/sealed
+          --sealed-tasks benchmarks/formal_eval/sealed/agent-tasks.json
+          --deterministic-suite benchmarks/formal_eval/sealed/deterministic-suite.json
+          --required-input benchmarks/formal_eval/sealed/mcp-project
+          --required-input benchmarks/formal_eval/sealed/pilot-agent-results.json
+          --current-commit "$JOINLINT_COMMIT"
+          --output formal-artifacts/report-readiness.json
+          --lineage-output formal-artifacts/report-lineage.json
+      - name: Rebuild final report with post-run blinded agreement
+        run: >-
+          python -m benchmarks.formal_eval.cli score
+          --preregistration benchmarks/formal_eval/sealed/preregistration.yaml
+          --manifest benchmarks/formal_eval/sealed/manifest.json
+          --input-lock benchmarks/formal_eval/sealed/input-lock.json
+          --deterministic-suite benchmarks/formal_eval/sealed/deterministic-suite.json
+          --deterministic-evidence formal-artifacts/deterministic-evidence.json
+          --run-plan formal-artifacts/run-plan.json
+          --blind-review formal-review/blind-review.json
+          --agent-results formal-artifacts/agent-results.json
+          --output final-report
+          --require none
+      - name: Scan final public artifacts
+        run: >-
+          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('final-report').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','ANTHROPIC_API_KEY'); found=[value for value in forbidden if value in text]; assert not found, found"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: formal-evaluation-final-report
+          path: final-report
+          if-no-files-found: error
+          retention-days: 90
