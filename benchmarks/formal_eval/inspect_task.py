@@ -10,7 +10,8 @@ from inspect_ai.model import ChatMessageAssistant, ChatMessageTool, GenerateConf
 from inspect_ai.scorer import Score, Scorer, Target, mean, scorer
 from inspect_ai.solver import TaskState
 from inspect_ai.tool import MCPServerConfigStdio
-from inspect_ai.util import ComposeConfig, ComposeService
+from inspect_ai.util import ComposeBuild, ComposeConfig, ComposeService
+from pydantic import TypeAdapter
 from benchmarks.agent_join.execution import execution_matches
 from benchmarks.agent_join.sql_edges import extract_join_edges, extract_submission, score_join_graph
 from benchmarks.formal_eval.contracts import (
@@ -40,10 +41,95 @@ def formal_agent_eval(
     image_reference: str,
     lineage_id: str,
 ) -> Task:
+    return _agent_task(
+        sealed_tasks=sealed_tasks,
+        manifest=manifest,
+        host=host,
+        condition=condition,
+        agent_version=agent_version,
+        lineage_id=lineage_id,
+        service=ComposeService(
+            image=image_reference,
+            working_dir="/workspace/joinlint",
+            x_default=True,
+        ),
+        strict_pilot=False,
+        token_limit=None,
+        time_limit=None,
+    )
+
+
+@task
+def formal_pilot_eval(
+    sealed_tasks: str,
+    manifest: str,
+    host: Host,
+    condition: Condition,
+    agent_version: str,
+    dockerfile: str,
+    lineage_id: str,
+    token_limit: int = 20_000,
+    time_limit: int = 90,
+    sandbox_timeout: int = 120,
+    cpu: float = 0.5,
+    memory_mib: int = 2048,
+) -> Task:
+    if condition not in {"control", "treatment"}:
+        raise ValueError("pilot supports only control and treatment")
+    if (
+        token_limit <= 0
+        or time_limit <= 0
+        or sandbox_timeout < time_limit
+        or cpu <= 0
+        or memory_mib <= 0
+    ):
+        raise ValueError("pilot resource limits must be positive")
+    return _agent_task(
+        sealed_tasks=sealed_tasks,
+        manifest=manifest,
+        host=host,
+        condition=condition,
+        agent_version=agent_version,
+        lineage_id=lineage_id,
+        service=ComposeService(
+            build=ComposeBuild(context=".", dockerfile=dockerfile),
+            working_dir="/workspace/joinlint",
+            cpus=cpu,
+            mem_limit=f"{memory_mib}m",
+            x_default=True,
+        ),
+        strict_pilot=True,
+        token_limit=token_limit,
+        time_limit=time_limit,
+        modal_timeout_seconds=sandbox_timeout,
+    )
+
+
+def _agent_task(
+    *,
+    sealed_tasks: str,
+    manifest: str,
+    host: Host,
+    condition: Condition,
+    agent_version: str,
+    lineage_id: str,
+    service: ComposeService,
+    strict_pilot: bool,
+    token_limit: int | None,
+    time_limit: int | None,
+    modal_timeout_seconds: int | None = None,
+) -> Task:
     manifest_document = load_document(Path(manifest), FormalManifestV2)
     sealed = _load_sealed(Path(sealed_tasks))
-    samples = _samples(manifest_document, sealed, condition, host, lineage_id)
-    solver = _solver(host, condition, agent_version)
+    samples = _samples(
+        manifest_document,
+        sealed,
+        condition,
+        host,
+        lineage_id,
+        sealed_root=Path(sealed_tasks).resolve().parent,
+    )
+    solver = _solver(host, condition, agent_version, strict_pilot=strict_pilot)
     return Task(
         dataset=samples,
         solver=solver,
@@ -55,20 +141,23 @@ def formal_agent_eval(
             cache=False,
             extra_body={"thinking": {"type": "disabled"}},
         ),
-        sandbox=(
-            "modal",
-            ComposeConfig(
-                services={
-                    "default": ComposeService(
-                        image=image_reference,
-                        working_dir="/workspace/joinlint",
-                        x_default=True,
-                    )
-                }
-            ),
-        ),
+        sandbox=("modal", _compose_config(service, modal_timeout_seconds)),
+        token_limit=token_limit,
+        time_limit=time_limit,
         name=f"joinlint_formal_{host}_{condition}",
     )
+
+
+def _compose_config(
+    service: ComposeService,
+    modal_timeout_seconds: int | None,
+) -> ComposeConfig:
+    extensions = (
+        {"x-modal": {"timeout": modal_timeout_seconds}}
+        if modal_timeout_seconds is not None
+        else {}
+    )
+    return ComposeConfig(services={"default": service}, **extensions)
 
 
 @scorer(metrics=[mean()])
@@ -184,8 +273,7 @@ def formal_execution_scorer() -> Scorer:
 def _load_sealed(path: Path) -> dict[str, SealedAgentTask]:
     if path.is_symlink() or not path.is_file():
         raise ValueError("sealed task file must be one regular file")
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    tasks = [SealedAgentTask.model_validate(item) for item in payload]
+    tasks = TypeAdapter(list[SealedAgentTask]).validate_json(path.read_bytes())
     by_id = {item.task_id: item for item in tasks}
     if len(by_id) != len(tasks):
         raise ValueError("sealed task file contains duplicate task IDs")
@@ -198,6 +286,8 @@ def _samples(
     condition: Condition,
     host: Host,
     lineage_id: str,
+    *,
+    sealed_root: Path,
 ) -> list[Sample]:
     diagnostic = condition in {"oracle_inline", "oracle_mcp", "no_harness"}
     selected = [
@@ -211,6 +301,16 @@ def _samples(
         actual = sealed.get(manifest_task.task_id)
         if actual is None:
             raise ValueError(f"sealed task is missing: {manifest_task.task_id}")
+        database_candidate = sealed_root / actual.database_path
+        if database_candidate.is_symlink():
+            raise ValueError("sealed database cannot be a symlink")
+        database_source = database_candidate.resolve(strict=True)
+        try:
+            database_source.relative_to(sealed_root)
+        except ValueError as error:
+            raise ValueError("sealed database path escapes its root") from error
+        if database_source.is_symlink() or not database_source.is_file():
+            raise ValueError("sealed database must be one regular file")
         verify_sealed_task_hashes(
             manifest_task.question_sha256,
             manifest_task.schema_sha256,
@@ -223,7 +323,7 @@ def _samples(
                 actual.allowed_graphs, separators=(",", ":")
             )
         database_destination = "/workspace/data/database.sqlite"
-        files = {database_destination: actual.database_path}
+        files = {database_destination: str(database_source)}
         if condition == "oracle_mcp":
             oracle = OracleDocument(
                 schema=actual.schema_map,
@@ -241,7 +341,7 @@ def _samples(
                 metadata={
                     "task_id": actual.task_id,
                     "database_id": actual.database_id,
-                    "database_path": actual.database_path,
+                    "database_path": str(database_source),
                     "gold_sql": actual.gold_sql,
                     "schema": actual.schema_map,
                     "expected_entities": actual.expected_entities,
@@ -262,7 +362,13 @@ def _samples(
     return samples
 
 
-def _solver(host: Host, condition: Condition, agent_version: str):  # type: ignore[no-untyped-def]
+def _solver(
+    host: Host,
+    condition: Condition,
+    agent_version: str,
+    *,
+    strict_pilot: bool = False,
+):  # type: ignore[no-untyped-def]
     from inspect_swe import claude_code, codex_cli
 
     servers = [
@@ -314,12 +420,15 @@ def _solver(host: Host, condition: Condition, agent_version: str):  # type: igno
             mcp_servers=servers,
             web_search="disabled",
             goals=False,
+            retry_refusals=0 if strict_pilot else None,
         )
     return claude_code(
         version=agent_version,
         system_prompt=prompt,
         mcp_servers=servers,
         disallowed_tools=["WebSearch"],
+        retry_refusals=0 if strict_pilot else 3,
+        retry_uncaught_errors=0 if strict_pilot else 3,
     )
 
 

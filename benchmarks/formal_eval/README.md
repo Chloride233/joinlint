@@ -34,6 +34,27 @@ It is never product evidence.
 AI's mock model and the formal trace scorer. It is a local wiring check, not a
 diagnostic canary and not formal Agent evidence.
 
+## Bounded independent pilot
+
+`formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.
+It runs 160 samples: 20 tasks × 2 DeepSeek V4 tiers × 2 hosts × control/treatment,
+with no repetitions. Pilot tasks and outputs never enter the confirmatory
+effect estimate.
+
+The workflow accepts only the exact CNY 20 approval. The frozen worst-case
+resource envelope is CNY 19.87648: CNY 12.80 for model tokens, CNY 5.07648 for
+120-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. Each
+sample has a 20,000-token limit and a 90-second task limit; each Modal sandbox
+has a platform-level 120-second automatic timeout. Model retries are disabled,
+concurrency is two, and the dispatcher stops before the next 20-task batch when
+observed cost plus every remaining worst-case batch would exceed CNY 20.
+
+The private Volume inputs must match the checked-out full commit and their
+content lock. Only the paid dispatch step receives both Modal and DeepSeek
+credentials. Partial budget checkpoints and private logs are retained if a
+batch stops. This code-side envelope does not replace provider billing alerts
+or account spend limits.
+
 ## Formal remote run
 
 Formal inputs stay under the ignored `sealed/` boundary described in

@@ -1,0 +1,88 @@
+name: formal-pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_paid:
+        description: Confirm the approved Modal and DeepSeek pilot spend
+        required: true
+        default: false
+        type: boolean
+      budget_cny:
+        description: Hard combined budget ceiling in CNY
+        required: true
+        default: "20"
+        type: string
+      pilot_volume:
+        description: Private Modal Volume holding the frozen pilot input
+        required: true
+        default: joinlint-formal-pilot
+        type: string
+      pilot_path:
+        description: Frozen path inside the private Modal Volume
+        required: true
+        default: pilot-v1
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    environment: formal-evaluation
+    steps:
+      - name: Require the exact approved paid pilot
+        if: inputs.confirm_paid != true || inputs.budget_cny != '20'
+        run: exit 1
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e '.[dev,eval,remote]'
+      - name: Restore private frozen pilot inputs
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          PILOT_VOLUME: ${{ inputs.pilot_volume }}
+          PILOT_PATH: ${{ inputs.pilot_path }}
+        run: >-
+          python -m modal volume get
+          "$PILOT_VOLUME"
+          "$PILOT_PATH"
+          benchmarks/formal_eval/sealed/pilot-v1
+      - name: Verify frozen pilot and budget envelope
+        run: >-
+          python -m benchmarks.formal_eval.pilot verify
+          --root benchmarks/formal_eval/sealed/pilot-v1
+          --current-commit "${{ github.sha }}"
+      - name: Run the approved 20-task pilot
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: https://api.deepseek.com
+        run: >-
+          python -m benchmarks.formal_eval.pilot_dispatch
+          --root benchmarks/formal_eval/sealed/pilot-v1
+          --log-dir pilot-logs
+          --output pilot-artifacts
+      - name: Scan sanitized pilot artifacts
+        if: always()
+        run: >-
+          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: joinlint-formal-pilot-sanitized
+          path: pilot-artifacts
+          if-no-files-found: warn
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: joinlint-formal-pilot-private-logs
+          path: pilot-logs
+          if-no-files-found: warn
+          retention-days: 30
