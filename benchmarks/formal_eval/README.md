@@ -49,11 +49,13 @@ has a platform-level 120-second automatic timeout. Model retries are disabled,
 concurrency is two, and the dispatcher stops before the next 20-task batch when
 observed cost plus every remaining worst-case batch would exceed CNY 20.
 
-The private Volume inputs must match the checked-out full commit and their
-content lock. Only the paid dispatch step receives both Modal and DeepSeek
-credentials. Partial budget checkpoints and private logs are retained if a
-batch stops. This code-side envelope does not replace provider billing alerts
-or account spend limits.
+The frozen inputs are packaged as one access-controlled GitHub Draft Release
+asset. Its tag is bound to the full checked-out commit; after download and
+extraction, the workflow checks the complete content lock before proceeding.
+This avoids requiring a developer machine to connect to Modal. Only the paid
+dispatch step receives both Modal and DeepSeek credentials. Partial budget
+checkpoints and private logs are retained if a batch stops. This code-side
+envelope does not replace provider billing alerts or account spend limits.
 
 ## Formal remote run
 

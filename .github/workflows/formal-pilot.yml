@@ -13,15 +13,15 @@ on:
         required: true
         default: "20"
         type: string
-      pilot_volume:
-        description: Private Modal Volume holding the frozen pilot input
+      pilot_release_tag:
+        description: Access-controlled Draft Release tag holding the frozen pilot input
         required: true
-        default: joinlint-formal-pilot
+        default: ""
         type: string
-      pilot_path:
-        description: Frozen path inside the private Modal Volume
+      pilot_release_asset:
+        description: Frozen pilot input archive asset name
         required: true
-        default: pilot-v1
+        default: pilot-input.tar.gz
         type: string
 
 permissions:
@@ -43,15 +43,18 @@ jobs:
       - run: python -m pip install -e '.[dev,eval,remote]'
       - name: Restore private frozen pilot inputs
         env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-          PILOT_VOLUME: ${{ inputs.pilot_volume }}
-          PILOT_PATH: ${{ inputs.pilot_path }}
-        run: >-
-          python -m modal volume get
-          "$PILOT_VOLUME"
-          "$PILOT_PATH"
-          benchmarks/formal_eval/sealed/pilot-v1
+          GH_TOKEN: ${{ github.token }}
+          PILOT_RELEASE_TAG: ${{ inputs.pilot_release_tag }}
+          PILOT_RELEASE_ASSET: ${{ inputs.pilot_release_asset }}
+        run: |
+          mkdir -p pilot-release benchmarks/formal_eval/sealed/pilot-v1
+          gh release download "$PILOT_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$PILOT_RELEASE_ASSET" \
+            --dir pilot-release
+          tar -xzf "pilot-release/$PILOT_RELEASE_ASSET" \
+            -C benchmarks/formal_eval/sealed/pilot-v1 \
+            --no-same-owner --no-same-permissions
       - name: Verify frozen pilot and budget envelope
         run: >-
           python -m benchmarks.formal_eval.pilot verify

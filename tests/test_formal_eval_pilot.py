@@ -237,9 +237,21 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert job["runs-on"] == "ubuntu-latest"
     assert "inputs.confirm_paid != true || inputs.budget_cny != '20'" in text
     assert "--current-commit \"${{ github.sha }}\"" in text
+    assert "pilot_volume" not in text
+    assert "modal volume get" not in text
+    assert "gh release download \"$PILOT_RELEASE_TAG\"" in text
+    assert "tar -xzf \"pilot-release/$PILOT_RELEASE_ASSET\"" in text
     assert "${{ inputs." not in "\n".join(
         step.get("run", "") for step in job["steps"]
     )
+    restore_step = next(
+        step for step in job["steps"] if step.get("name") == "Restore private frozen pilot inputs"
+    )
+    assert set(restore_step["env"]) == {
+        "GH_TOKEN",
+        "PILOT_RELEASE_TAG",
+        "PILOT_RELEASE_ASSET",
+    }
     run_step = next(
         step for step in job["steps"] if step.get("name") == "Run the approved 20-task pilot"
     )
