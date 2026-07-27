@@ -61,9 +61,9 @@ class PilotRegistration(StrictModel):
     host_versions: dict[Host, str]
     joinlint_commit: str
     budget_cny: Literal[20.0] = 20.0
-    token_limit_per_run: Literal[20_000] = 20_000
-    time_limit_seconds: Literal[90] = 90
-    modal_sandbox_timeout_seconds: Literal[120] = 120
+    token_limit_per_run: Literal[14_000] = 14_000
+    time_limit_seconds: Literal[180] = 180
+    modal_sandbox_timeout_seconds: Literal[210] = 210
     max_sandboxes: Literal[2] = 2
     cpu_cores: Literal[0.5] = 0.5
     memory_mib: Literal[2048] = 2048

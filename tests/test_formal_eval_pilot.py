@@ -48,10 +48,10 @@ def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:
     envelope = budget_envelope(registration)
 
     assert envelope.run_count == 160
-    assert envelope.model_cost_upper_cny == pytest.approx(12.8)
-    assert envelope.modal_compute_upper_cny == pytest.approx(5.07648)
+    assert envelope.model_cost_upper_cny == pytest.approx(8.96)
+    assert envelope.modal_compute_upper_cny == pytest.approx(8.88384)
     assert envelope.modal_image_build_reserve_cny == 2.0
-    assert envelope.total_upper_cny == pytest.approx(19.87648)
+    assert envelope.total_upper_cny == pytest.approx(19.84384)
     assert envelope.total_upper_cny < registration.budget_cny == 20.0
     assert {model.family for model in registration.models} == {"deepseek-v4"}
     assert {model.tier for model in registration.models} == {
@@ -59,7 +59,7 @@ def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:
         "cost_efficient",
     }
     assert model_batch_upper_costs(registration) == pytest.approx(
-        (2.4, 2.4, 2.4, 2.4, 0.8, 0.8, 0.8, 0.8)
+        (1.68, 1.68, 1.68, 1.68, 0.56, 0.56, 0.56, 0.56)
     )
 
 
@@ -77,10 +77,10 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
 
     assert CANARY_BUDGET_CNY == 2.25
     assert envelope.run_count == 1
-    assert envelope.model_cost_upper_cny == pytest.approx(0.12)
-    assert envelope.modal_compute_upper_cny == pytest.approx(0.031728)
+    assert envelope.model_cost_upper_cny == pytest.approx(0.084)
+    assert envelope.modal_compute_upper_cny == pytest.approx(0.055524)
     assert envelope.modal_image_build_reserve_cny == 2.0
-    assert envelope.total_upper_cny == pytest.approx(2.151728)
+    assert envelope.total_upper_cny == pytest.approx(2.139524)
     assert envelope.total_upper_cny < CANARY_BUDGET_CNY
     assert command[command.index("--limit") + 1] == "1"
     assert "host=codex" in command
@@ -124,9 +124,9 @@ def test_pilot_canary_attestation_binds_run_commit_input_and_dependencies() -> N
         model_id="openai-api/deepseek/deepseek-v4-pro",
         scorer_artifacts=("formal_execution_scorer", "formal_join_scorer"),
         actual_model_cost_cny=0.01,
-        modal_compute_upper_cny=0.031728,
+        modal_compute_upper_cny=0.055524,
         modal_image_build_reserve_cny=2.0,
-        total_cost_upper_cny=2.041728,
+        total_cost_upper_cny=2.065524,
         workflow_run_id=123,
         joinlint_commit=COMMIT,
         input_lock_sha256="c" * 64,
@@ -170,18 +170,18 @@ def test_pilot_budget_checkpoint_stops_before_an_unsafe_next_batch() -> None:
     safe = pilot_budget_checkpoint(
         registration,
         completed_batches=1,
-        actual_model_cost_cny=2.4,
+        actual_model_cost_cny=1.68,
     )
     unsafe = pilot_budget_checkpoint(
         registration,
         completed_batches=1,
-        actual_model_cost_cny=4.0,
+        actual_model_cost_cny=2.0,
     )
 
     assert safe.safe_to_continue is True
-    assert safe.projected_total_upper_cny == pytest.approx(19.87648)
+    assert safe.projected_total_upper_cny == pytest.approx(19.84384)
     assert unsafe.safe_to_continue is False
-    assert unsafe.projected_total_upper_cny == pytest.approx(21.47648)
+    assert unsafe.projected_total_upper_cny == pytest.approx(20.16384)
 
 
 def test_pilot_run_plan_is_exactly_twenty_tasks_and_160_runs() -> None:
@@ -225,11 +225,11 @@ def test_pilot_dispatch_has_eight_non_retrying_bounded_batches(tmp_path: Path) -
     assert len(commands) == 8
     assert {command[command.index("--epochs") + 1] for command in commands} == {"1"}
     assert {command[command.index("--max-retries") + 1] for command in commands} == {"0"}
-    assert {command[command.index("--time-limit") + 1] for command in commands} == {"90"}
+    assert {command[command.index("--time-limit") + 1] for command in commands} == {"180"}
     assert {command[command.index("--max-sandboxes") + 1] for command in commands} == {"2"}
-    assert all("token_limit=20000" in command for command in commands)
-    assert all("time_limit=90" in command for command in commands)
-    assert all("sandbox_timeout=120" in command for command in commands)
+    assert all("token_limit=14000" in command for command in commands)
+    assert all("time_limit=180" in command for command in commands)
+    assert all("sandbox_timeout=210" in command for command in commands)
     assert all("cpu=0.5" in command for command in commands)
     assert all("memory_mib=2048" in command for command in commands)
     assert all(
@@ -345,9 +345,9 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
     assert service.build.dockerfile == "Dockerfile.formal-pilot"
     assert service.cpus == 0.5
     assert service.mem_limit == "2048m"
-    assert inspect_task.token_limit == 20_000
-    assert inspect_task.time_limit == 90
-    assert sandbox.config.extensions == {"x-modal": {"timeout": 120}}
+    assert inspect_task.token_limit == 14_000
+    assert inspect_task.time_limit == 180
+    assert sandbox.config.extensions == {"x-modal": {"timeout": 210}}
 
     from inspect_sandboxes._util.naming import make_sandbox_name
 
@@ -373,7 +373,7 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
     assert params.kwargs["image"] == "test-image"
     assert params.kwargs["cpu"] == 0.5
     assert params.kwargs["memory"] == 2048
-    assert params.kwargs["timeout"] == 120
+    assert params.kwargs["timeout"] == 210
 
 
 def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> None:
