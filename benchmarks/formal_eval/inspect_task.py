@@ -144,7 +144,7 @@ def _agent_task(
         sandbox=("modal", _compose_config(service, modal_timeout_seconds)),
         token_limit=token_limit,
         time_limit=time_limit,
-        name=f"joinlint_formal_{host}_{condition}",
+        name="jl",
     )
 
 

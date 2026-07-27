@@ -24,7 +24,10 @@ from benchmarks.formal_eval.pilot import (
     pilot_budget_checkpoint,
     pilot_budget_report,
 )
-from benchmarks.formal_eval.pilot_dispatch import build_pilot_commands
+from benchmarks.formal_eval.pilot_dispatch import (
+    build_pilot_commands,
+    require_sample_batch_health,
+)
 
 
 COMMIT = "a" * 40
@@ -134,6 +137,22 @@ def test_pilot_dispatch_has_eight_non_retrying_bounded_batches(tmp_path: Path) -
     )
 
 
+def test_pilot_dispatch_stops_on_systemic_batch_failure() -> None:
+    failed_samples = [
+        SimpleNamespace(error=RuntimeError("sandbox failed"), scores={}, model_usage={})
+        for _ in range(20)
+    ]
+
+    with pytest.raises(RuntimeError, match="systemic infrastructure failure"):
+        require_sample_batch_health(failed_samples, expected_sample_count=20)
+
+    one_scored_sample = SimpleNamespace(error=None, scores={"join": 1}, model_usage={})
+    require_sample_batch_health(
+        failed_samples[:-1] + [one_scored_sample],
+        expected_sample_count=20,
+    )
+
+
 def test_pilot_budget_report_fails_when_observed_total_exceeds_ceiling() -> None:
     registration = frozen_pilot_registration(COMMIT)
     plan = build_pilot_run_plan(_manifest(20), registration, LINEAGE_ID)
@@ -220,6 +239,15 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
     assert inspect_task.token_limit == 20_000
     assert inspect_task.time_limit == 90
     assert sandbox.config.extensions == {"x-modal": {"timeout": 120}}
+
+    from inspect_sandboxes._util.naming import make_sandbox_name
+
+    sandbox_name = make_sandbox_name(
+        inspect_task.name,
+        {"__sample_id__": "x" * 100},
+    )
+    assert inspect_task.name == "jl"
+    assert len(sandbox_name) < 64
 
     captured: dict[str, str] = {}
 
