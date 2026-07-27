@@ -13,6 +13,11 @@ on:
         required: true
         default: "20"
         type: string
+      pilot_commit:
+        description: Full JoinLint commit bound to the frozen pilot input
+        required: true
+        default: 05da3fb4b2fa8536caef7a28cd9994b8b84a98c9
+        type: string
       pilot_release_tag:
         description: Access-controlled Draft Release tag holding the frozen pilot input
         required: true
@@ -36,6 +41,11 @@ jobs:
         if: inputs.confirm_paid != true || inputs.budget_cny != '20'
         run: exit 1
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pilot_commit }}
+      - name: Record checked-out pilot commit
+        id: pilot_commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -59,7 +69,7 @@ jobs:
         run: >-
           python -m benchmarks.formal_eval.pilot verify
           --root benchmarks/formal_eval/sealed/pilot-v1
-          --current-commit "${{ github.sha }}"
+          --current-commit "${{ steps.pilot_commit.outputs.sha }}"
       - name: Run the approved 20-task pilot
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
