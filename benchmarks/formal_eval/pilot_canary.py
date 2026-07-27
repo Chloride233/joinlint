@@ -195,6 +195,10 @@ def require_canary_artifacts(
     scorer_artifacts = set(sample.scores or {})
     if not required_scorers.issubset(scorer_artifacts):
         raise RuntimeError("pilot canary scorer artifacts are incomplete")
+    join_score = sample.scores["formal_join_scorer"]
+    join_metadata = join_score.metadata if isinstance(join_score.metadata, dict) else {}
+    if join_metadata.get("scoring_eligible") is not True:
+        raise RuntimeError("pilot canary evaluation lifecycle was not scoring eligible")
     if log_model_id != expected_model_id:
         raise RuntimeError("pilot canary model identity does not match registration")
     usage_models = set(sample.model_usage)

@@ -34,6 +34,25 @@ It is never product evidence.
 AI's mock model and the formal trace scorer. It is a local wiring check, not a
 diagnostic canary and not formal Agent evidence.
 
+## Evaluation lifecycle boundary
+
+Formal Agent tasks use four separate stages:
+
+1. infrastructure preparation installs and verifies the pinned host CLI and
+   checks that JoinLint imports and the uploaded SQLite database opens read-only;
+2. Agent bridge and MCP preparation remain infrastructure work;
+3. readiness is attested and evaluation starts only at the first bridged model
+   request;
+4. semantic scorers run only after evaluation completes.
+
+Each stage records its own status and duration in the Inspect sample store.
+Readiness failures and Agents that never reach a first model request produce a
+task outcome with `INFRASTRUCTURE_FAILURE`; they are never interpreted as SQL
+parse failures. A timeout after the first model request remains `MODEL_TIMEOUT`.
+The no-model lifecycle test is a mandatory workflow gate, and a Pilot canary
+cannot produce an attestation unless its semantic scorers report a completed,
+scoring-eligible evaluation.
+
 ## Bounded independent pilot
 
 `formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.
@@ -44,8 +63,9 @@ effect estimate.
 The workflow accepts only the exact CNY 20 approval. The frozen worst-case
 resource envelope is CNY 19.87648: CNY 12.80 for model tokens, CNY 5.07648 for
 120-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. Each
-sample has a 20,000-token limit and a 90-second task limit; each Modal sandbox
-has a platform-level 120-second automatic timeout. Model retries are disabled,
+sample has a 20,000-token limit, a 30-second readiness limit, and a 90-second
+evaluation limit that starts at the first model request; each Modal sandbox has
+a platform-level 120-second automatic timeout. Model retries are disabled,
 concurrency is two, and the dispatcher stops before the next 20-task batch when
 observed cost plus every remaining worst-case batch would exceed CNY 20.
 

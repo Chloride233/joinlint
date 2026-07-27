@@ -60,6 +60,8 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -e '.[dev,eval,remote]'
+      - name: Run no-model lifecycle gate
+        run: python -m pytest -q tests/test_formal_eval_lifecycle.py
       - name: Restore private frozen pilot inputs
         env:
           GH_TOKEN: ${{ github.token }}

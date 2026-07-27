@@ -92,7 +92,10 @@ def test_pilot_canary_requires_model_usage_and_both_scorers() -> None:
     expected_model = "openai-api/deepseek/deepseek-v4-pro"
     sample = SimpleNamespace(
         error=None,
-        scores={"formal_join_scorer": object(), "formal_execution_scorer": object()},
+        scores={
+            "formal_join_scorer": SimpleNamespace(metadata={"scoring_eligible": True}),
+            "formal_execution_scorer": SimpleNamespace(metadata={"scoring_eligible": True}),
+        },
         model_usage={expected_model: object()},
     )
 
@@ -109,6 +112,24 @@ def test_pilot_canary_requires_model_usage_and_both_scorers() -> None:
         require_canary_artifacts(
             log_model_id=expected_model,
             samples=[SimpleNamespace(**{**vars(sample), "model_usage": {}})],
+            expected_model_id=expected_model,
+        )
+
+    ineligible = SimpleNamespace(
+        **{
+            **vars(sample),
+            "scores": {
+                "formal_join_scorer": SimpleNamespace(
+                    metadata={"scoring_eligible": False}
+                ),
+                "formal_execution_scorer": SimpleNamespace(metadata={}),
+            },
+        }
+    )
+    with pytest.raises(RuntimeError, match="lifecycle was not scoring eligible"):
+        require_canary_artifacts(
+            log_model_id=expected_model,
+            samples=[ineligible],
             expected_model_id=expected_model,
         )
 
@@ -225,7 +246,7 @@ def test_pilot_dispatch_has_eight_non_retrying_bounded_batches(tmp_path: Path) -
     assert len(commands) == 8
     assert {command[command.index("--epochs") + 1] for command in commands} == {"1"}
     assert {command[command.index("--max-retries") + 1] for command in commands} == {"0"}
-    assert {command[command.index("--time-limit") + 1] for command in commands} == {"90"}
+    assert all("--time-limit" not in command for command in commands)
     assert {command[command.index("--max-sandboxes") + 1] for command in commands} == {"2"}
     assert all("token_limit=20000" in command for command in commands)
     assert all("time_limit=90" in command for command in commands)
@@ -346,7 +367,7 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
     assert service.cpus == 0.5
     assert service.mem_limit == "2048m"
     assert inspect_task.token_limit == 20_000
-    assert inspect_task.time_limit == 90
+    assert inspect_task.time_limit is None
     assert sandbox.config.extensions == {"x-modal": {"timeout": 120}}
 
     from inspect_sandboxes._util.naming import make_sandbox_name
@@ -428,6 +449,9 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert set(canary_restore["env"]) == {"GH_TOKEN", "CANARY_RUN_ID"}
     assert "gh run download" in canary_restore["run"]
     step_names = [step.get("name") for step in job["steps"]]
+    assert step_names.index("Run no-model lifecycle gate") < step_names.index(
+        "Restore private frozen pilot inputs"
+    )
     assert step_names.index("Verify canary attestation binding") < step_names.index(
         "Run the approved 20-task pilot"
     )
@@ -442,6 +466,10 @@ def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:
     assert job["environment"] == "formal-evaluation"
     assert workflow["permissions"]["contents"] == "write"
     assert "inputs.confirm_paid != true || inputs.budget_cny != '2.25'" in text
+    step_names = [step.get("name") for step in job["steps"]]
+    assert step_names.index("Run no-model lifecycle gate") < step_names.index(
+        "Run one-task canary"
+    )
     assert "--limit" not in text
     assert "benchmarks.formal_eval.pilot_canary" in text
     assert '--workflow-run-id "${{ github.run_id }}"' in text

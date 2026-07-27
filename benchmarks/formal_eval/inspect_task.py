@@ -2,15 +2,25 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
+from anyio import Event, create_task_group, fail_after, move_on_after, sleep
 from inspect_ai import Task, task
+from inspect_ai.agent import Agent, as_solver
 from inspect_ai.dataset import Sample
-from inspect_ai.model import ChatMessageAssistant, ChatMessageTool, GenerateConfig
+from inspect_ai.model import (
+    ChatMessageAssistant,
+    ChatMessageTool,
+    GenerateConfig,
+    GenerateInput,
+    Model,
+    ModelOutput,
+)
 from inspect_ai.scorer import Score, Scorer, Target, mean, scorer
-from inspect_ai.solver import TaskState
+from inspect_ai.solver import Generate, Solver, TaskState, chain, solver
 from inspect_ai.tool import MCPServerConfigStdio
-from inspect_ai.util import ComposeBuild, ComposeConfig, ComposeService
+from inspect_ai.util import ComposeBuild, ComposeConfig, ComposeService, sandbox, store
 from pydantic import TypeAdapter
 from benchmarks.agent_join.execution import execution_matches
 from benchmarks.agent_join.sql_edges import extract_join_edges, extract_submission, score_join_graph
@@ -22,6 +32,22 @@ from benchmarks.formal_eval.contracts import (
 )
 from benchmarks.formal_eval.deterministic import sanitized_mcp_environment
 from benchmarks.formal_eval.manifest import load_document, verify_sealed_task_hashes
+from benchmarks.formal_eval.lifecycle import (
+    LIFECYCLE_STORE_KEY,
+    LifecycleFailureReason,
+    allow_scoring,
+    complete_evaluation,
+    elapsed_seconds_since,
+    fail_evaluation,
+    infrastructure_prepared,
+    new_lifecycle,
+    parse_lifecycle,
+    readiness_failed,
+    readiness_passed,
+    scoring_eligibility,
+    start_evaluation,
+    write_lifecycle,
+)
 from benchmarks.formal_eval.oracle_mcp import OracleDocument
 from benchmarks.formal_eval.trace import ToolEvent, assess_trace
 from joinlint.contracts import canonical_json
@@ -40,6 +66,8 @@ def formal_agent_eval(
     agent_version: str,
     image_reference: str,
     lineage_id: str,
+    readiness_time_limit: int = 120,
+    evaluation_time_limit: int = 120,
 ) -> Task:
     return _agent_task(
         sealed_tasks=sealed_tasks,
@@ -55,7 +83,8 @@ def formal_agent_eval(
         ),
         strict_pilot=False,
         token_limit=None,
-        time_limit=None,
+        readiness_time_limit=readiness_time_limit,
+        evaluation_time_limit=evaluation_time_limit,
     )
 
 
@@ -79,7 +108,7 @@ def formal_pilot_eval(
     if (
         token_limit <= 0
         or time_limit <= 0
-        or sandbox_timeout < time_limit
+        or sandbox_timeout <= time_limit
         or cpu <= 0
         or memory_mib <= 0
     ):
@@ -100,7 +129,8 @@ def formal_pilot_eval(
         ),
         strict_pilot=True,
         token_limit=token_limit,
-        time_limit=time_limit,
+        readiness_time_limit=sandbox_timeout - time_limit,
+        evaluation_time_limit=time_limit,
         modal_timeout_seconds=sandbox_timeout,
     )
 
@@ -116,9 +146,12 @@ def _agent_task(
     service: ComposeService,
     strict_pilot: bool,
     token_limit: int | None,
-    time_limit: int | None,
+    readiness_time_limit: int,
+    evaluation_time_limit: int,
     modal_timeout_seconds: int | None = None,
 ) -> Task:
+    if readiness_time_limit <= 0 or evaluation_time_limit <= 0:
+        raise ValueError("lifecycle time limits must be positive")
     manifest_document = load_document(Path(manifest), FormalManifestV2)
     sealed = _load_sealed(Path(sealed_tasks))
     samples = _samples(
@@ -129,10 +162,17 @@ def _agent_task(
         lineage_id,
         sealed_root=Path(sealed_tasks).resolve().parent,
     )
-    solver = _solver(host, condition, agent_version, strict_pilot=strict_pilot)
+    task_solver = _solver(
+        host,
+        condition,
+        agent_version,
+        strict_pilot=strict_pilot,
+        readiness_time_limit=readiness_time_limit,
+        evaluation_time_limit=evaluation_time_limit,
+    )
     return Task(
         dataset=samples,
-        solver=solver,
+        solver=task_solver,
         scorer=[formal_join_scorer(), formal_execution_scorer()],
         config=GenerateConfig(
             temperature=0,
@@ -143,7 +183,7 @@ def _agent_task(
         ),
         sandbox=("modal", _compose_config(service, modal_timeout_seconds)),
         token_limit=token_limit,
-        time_limit=time_limit,
+        time_limit=None,
         name="jl",
     )
 
@@ -164,12 +204,18 @@ def _compose_config(
 def formal_join_scorer() -> Scorer:
     async def score(state: TaskState, target: Target) -> Score:
         del target
+        blocked = _lifecycle_score(state)
+        if blocked is not None:
+            return blocked
         metadata = state.metadata or {}
         completion = state.output.completion if state.output is not None else ""
         try:
             submission = extract_submission(completion)
         except (ValueError, json.JSONDecodeError):
-            return Score(value=0, metadata={"failure_code": "SQL_PARSE_FAILED"})
+            return Score(
+                value=0,
+                metadata=_semantic_metadata({"failure_code": "SQL_PARSE_FAILED"}),
+            )
         allowed = metadata.get("allowed_graphs") or []
         oracle_has_safe_path = bool(metadata.get("oracle_has_safe_path"))
         condition = str(metadata["condition"])
@@ -202,13 +248,16 @@ def formal_join_scorer() -> Scorer:
                 payload["trace"] = trace.model_dump(mode="json")
             return Score(
                 value=1 if safe_abstention else 0,
-                metadata=payload,
+                metadata=_semantic_metadata(payload),
             )
         try:
             edges = extract_join_edges(submission.sql, metadata["schema"])
             join_score = score_join_graph(edges, allowed)
         except (KeyError, ValueError):
-            return Score(value=0, metadata={"failure_code": "SQL_PARSE_FAILED"})
+            return Score(
+                value=0,
+                metadata=_semantic_metadata({"failure_code": "SQL_PARSE_FAILED"}),
+            )
         if condition in {"treatment", "oracle_mcp", "no_harness"}:
             trace = assess_trace(
                 _tool_events(state.messages),
@@ -237,7 +286,7 @@ def formal_join_scorer() -> Scorer:
         }
         if trace is not None:
             payload["trace"] = trace.model_dump(mode="json")
-        return Score(value=1 if success else 0, metadata=payload)
+        return Score(value=1 if success else 0, metadata=_semantic_metadata(payload))
 
     return score
 
@@ -246,14 +295,23 @@ def formal_join_scorer() -> Scorer:
 def formal_execution_scorer() -> Scorer:
     async def score(state: TaskState, target: Target) -> Score:
         del target
+        blocked = _lifecycle_score(state)
+        if blocked is not None:
+            return blocked
         metadata = state.metadata or {}
         completion = state.output.completion if state.output is not None else ""
         try:
             sql = extract_submission(completion).sql
         except (ValueError, json.JSONDecodeError):
-            return Score(value=0, metadata={"error_code": "SQL_PARSE_FAILED"})
+            return Score(
+                value=0,
+                metadata=_semantic_metadata({"error_code": "SQL_PARSE_FAILED"}),
+            )
         if not sql:
-            return Score(value=0, metadata={"error_code": "NO_SQL"})
+            return Score(
+                value=0,
+                metadata=_semantic_metadata({"error_code": "NO_SQL"}),
+            )
         result = execution_matches(
             Path(str(metadata["database_path"])),
             str(metadata["task_id"]),
@@ -264,7 +322,7 @@ def formal_execution_scorer() -> Scorer:
         )
         return Score(
             value=1 if result.equivalent else 0,
-            metadata={"error_code": result.error_code},
+            metadata=_semantic_metadata({"error_code": result.error_code}),
         )
 
     return score
@@ -368,6 +426,8 @@ def _solver(
     agent_version: str,
     *,
     strict_pilot: bool = False,
+    readiness_time_limit: int = 120,
+    evaluation_time_limit: int = 120,
 ):  # type: ignore[no-untyped-def]
     from inspect_swe import claude_code, codex_cli
 
@@ -414,22 +474,255 @@ def _solver(
     if condition in {"treatment", "oracle_mcp"}:
         prompt += "\n\n" + HARNESS_PROMPT
     if host == "codex":
-        return codex_cli(
-            version=agent_version,
+        agent = codex_cli(
+            version="sandbox",
             system_prompt=prompt,
             mcp_servers=servers,
             web_search="disabled",
             goals=False,
             retry_refusals=0 if strict_pilot else None,
+            filter=_mark_evaluation_started,
         )
-    return claude_code(
-        version=agent_version,
-        system_prompt=prompt,
-        mcp_servers=servers,
-        disallowed_tools=["WebSearch"],
-        retry_refusals=0 if strict_pilot else 3,
-        retry_uncaught_errors=0 if strict_pilot else 3,
+    else:
+        agent = claude_code(
+            version="sandbox",
+            system_prompt=prompt,
+            mcp_servers=servers,
+            disallowed_tools=["WebSearch"],
+            retry_refusals=0 if strict_pilot else 3,
+            retry_uncaught_errors=0 if strict_pilot else 3,
+            filter=_mark_evaluation_started,
+        )
+    return chain(
+        infrastructure_readiness(host, agent_version, readiness_time_limit),
+        evaluation_lifecycle(agent, readiness_time_limit, evaluation_time_limit),
     )
+
+
+@solver
+def infrastructure_readiness(
+    host: Host,
+    agent_version: str,
+    timeout_seconds: int,
+) -> Solver:
+    async def solve(state: TaskState, generate: Generate) -> TaskState:
+        del generate
+        record = new_lifecycle(host, agent_version)
+        write_lifecycle(state.store, record)
+        started = perf_counter()
+        try:
+            with fail_after(timeout_seconds):
+                await _prepare_host_binary(host, agent_version)
+                await _run_readiness_probes()
+        except TimeoutError:
+            record = readiness_failed(
+                record,
+                duration_seconds=perf_counter() - started,
+                detail="readiness_timeout",
+            )
+            write_lifecycle(state.store, record)
+            state.completed = True
+            return state
+        except Exception as error:
+            record = readiness_failed(
+                record,
+                duration_seconds=perf_counter() - started,
+                detail=_safe_failure_detail(error),
+            )
+            write_lifecycle(state.store, record)
+            state.completed = True
+            return state
+        record = infrastructure_prepared(record, duration_seconds=perf_counter() - started)
+        write_lifecycle(state.store, record)
+        return state
+
+    return solve
+
+
+@solver
+def evaluation_lifecycle(
+    agent: Agent,
+    preparation_timeout_seconds: int,
+    evaluation_timeout_seconds: int,
+) -> Solver:
+    agent_solver = as_solver(agent)
+
+    async def solve(state: TaskState, generate: Generate) -> TaskState:
+        done = Event()
+        agent_error: Exception | None = None
+        result_state = state
+
+        async def run_agent() -> None:
+            nonlocal agent_error, result_state
+            try:
+                result_state = await agent_solver(state, generate)
+            except Exception as error:
+                agent_error = error
+            finally:
+                done.set()
+
+        async with create_task_group() as tasks:
+            tasks.start_soon(run_agent)
+            readiness_elapsed = elapsed_seconds_since(
+                _require_lifecycle(state).readiness_started_at
+            )
+            readiness_remaining = max(0.001, preparation_timeout_seconds - readiness_elapsed)
+            with move_on_after(readiness_remaining) as preparation_scope:
+                while not done.is_set() and not _evaluation_has_started(state):
+                    await sleep(0.01)
+            record = _require_lifecycle(state)
+            if not _evaluation_has_started(state):
+                tasks.cancel_scope.cancel()
+                detail = (
+                    _safe_failure_detail(agent_error)
+                    if agent_error is not None
+                    else "agent_preparation_timeout"
+                    if preparation_scope.cancel_called
+                    else "agent_stopped_before_first_model_request"
+                )
+                record = readiness_failed(
+                    record,
+                    reason=LifecycleFailureReason.EVALUATION_NOT_STARTED,
+                    duration_seconds=elapsed_seconds_since(record.readiness_started_at),
+                    detail=detail,
+                )
+                write_lifecycle(state.store, record)
+                state.completed = True
+                return state
+
+            evaluation_started = perf_counter()
+            with move_on_after(evaluation_timeout_seconds) as evaluation_scope:
+                await done.wait()
+            if evaluation_scope.cancel_called:
+                tasks.cancel_scope.cancel()
+                record = fail_evaluation(
+                    record,
+                    reason=LifecycleFailureReason.MODEL_TIMEOUT,
+                    duration_seconds=perf_counter() - evaluation_started,
+                    detail="evaluation_timeout",
+                )
+                write_lifecycle(state.store, record)
+                state.completed = True
+                return state
+            if agent_error is not None:
+                record = fail_evaluation(
+                    record,
+                    reason=LifecycleFailureReason.EVALUATION_FAILED,
+                    duration_seconds=perf_counter() - evaluation_started,
+                    detail=_safe_failure_detail(agent_error),
+                )
+                write_lifecycle(state.store, record)
+                state.completed = True
+                return state
+
+        record = complete_evaluation(
+            _require_lifecycle(result_state),
+            duration_seconds=perf_counter() - evaluation_started,
+        )
+        write_lifecycle(result_state.store, allow_scoring(record))
+        return result_state
+
+    return solve
+
+
+async def _prepare_host_binary(host: Host, agent_version: str) -> None:
+    from inspect_swe._util.agentbinary import ensure_agent_binary_installed
+
+    if host == "codex":
+        from inspect_swe._codex_cli.agentbinary import codex_cli_binary_source
+
+        source = codex_cli_binary_source()
+    else:
+        from inspect_swe._claude_code.agentbinary import claude_code_binary_source
+
+        source = claude_code_binary_source()
+    binary = await ensure_agent_binary_installed(source, agent_version, sandbox=sandbox())
+    link = f"/usr/local/bin/{source.binary}"
+    linked = await sandbox().exec(["ln", "-sf", binary, link], user="root", timeout=15)
+    if not linked.success:
+        raise RuntimeError("host_binary_link_failed")
+    result = await sandbox().exec([binary, "--version"], timeout=15)
+    if not result.success or agent_version not in result.stdout:
+        raise RuntimeError("host_binary_version_mismatch")
+
+
+async def _run_readiness_probes() -> None:
+    code = (
+        "import sqlite3; import joinlint; "
+        "connection=sqlite3.connect('file:/workspace/data/database.sqlite?mode=ro', uri=True); "
+        "connection.execute('PRAGMA schema_version').fetchone(); connection.close()"
+    )
+    result = await sandbox().exec(["python", "-c", code], cwd="/workspace/joinlint", timeout=15)
+    if not result.success:
+        raise RuntimeError("joinlint_or_database_readiness_failed")
+
+
+def _require_lifecycle(state: TaskState):  # type: ignore[no-untyped-def]
+    value = state.store.get(LIFECYCLE_STORE_KEY)
+    if value is None:
+        raise ValueError("evaluation lifecycle is missing")
+    return parse_lifecycle(value)
+
+
+def _evaluation_has_started(state: TaskState) -> bool:
+    from benchmarks.formal_eval.lifecycle import LifecyclePhase
+
+    return _require_lifecycle(state).phase == LifecyclePhase.EVALUATION_STARTED
+
+
+async def _mark_evaluation_started(
+    model: Model,
+    messages: list[object],
+    tools: list[object],
+    tool_choice: object,
+    config: GenerateConfig,
+) -> ModelOutput | GenerateInput | None:
+    del model, messages, tools, tool_choice, config
+    active_store = store()
+    from benchmarks.formal_eval.lifecycle import LifecyclePhase
+
+    record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+    if record.phase == LifecyclePhase.INFRASTRUCTURE_PENDING:
+        record = readiness_passed(
+            record,
+            duration_seconds=elapsed_seconds_since(record.readiness_started_at),
+        )
+        write_lifecycle(active_store, record)
+        write_lifecycle(active_store, start_evaluation(record))
+    return None
+
+
+def _lifecycle_score(state: TaskState) -> Score | None:
+    eligibility = scoring_eligibility(state.store.get(LIFECYCLE_STORE_KEY))
+    if eligibility.eligible:
+        return None
+    return Score(
+        value=0,
+        metadata={
+            "scoring_eligible": False,
+            "score_kind": "task_outcome",
+            "failure_code": eligibility.failure_code,
+            "lifecycle_reason": eligibility.lifecycle_reason,
+        },
+    )
+
+
+def _semantic_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "scoring_eligible": True,
+        "score_kind": "semantic_score",
+        **payload,
+    }
+
+
+def _safe_failure_detail(error: Exception) -> str:
+    if isinstance(error, RuntimeError) and str(error) in {
+        "host_binary_link_failed",
+        "host_binary_version_mismatch",
+        "joinlint_or_database_readiness_failed",
+    }:
+        return str(error)
+    return type(error).__name__
 
 
 def _tool_events(messages: list[object]) -> list[ToolEvent]:

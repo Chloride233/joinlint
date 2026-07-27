@@ -141,8 +141,6 @@ def build_pilot_commands(
                         "1",
                         "--max-retries",
                         "0",
-                        "--time-limit",
-                        str(registration.time_limit_seconds),
                         "--max-sandboxes",
                         str(registration.max_sandboxes),
                         "--no-fail-on-error",
