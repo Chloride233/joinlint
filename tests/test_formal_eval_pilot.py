@@ -13,7 +13,6 @@ from benchmarks.formal_eval.contracts import (
     FormalTask,
     SealedAgentTask,
 )
-from benchmarks.formal_eval.inspect_task import _samples, formal_pilot_eval
 from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.manifest import verify_input_lock
 from benchmarks.formal_eval.pilot import (
@@ -144,6 +143,9 @@ def test_pilot_budget_report_fails_when_observed_total_exceeds_ceiling() -> None
 
 
 def test_pilot_task_resolves_database_relative_to_sealed_root(tmp_path: Path) -> None:
+    pytest.importorskip("inspect_ai")
+    from benchmarks.formal_eval.inspect_task import _samples
+
     sealed_root = tmp_path / "sealed"
     database = sealed_root / "databases" / "case.sqlite"
     database.parent.mkdir(parents=True)
@@ -168,6 +170,10 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("inspect_ai")
+    pytest.importorskip("inspect_sandboxes")
+    from benchmarks.formal_eval.inspect_task import formal_pilot_eval
+
     sealed_root = tmp_path / "sealed"
     database = sealed_root / "databases" / "case.sqlite"
     database.parent.mkdir(parents=True)
