@@ -1,22 +1,22 @@
-name: formal-pilot
+name: formal-pilot-canary
 
 on:
   workflow_dispatch:
     inputs:
       confirm_paid:
-        description: Confirm the approved Modal and DeepSeek pilot spend
+        description: Confirm the approved one-task Modal and DeepSeek canary spend
         required: true
         default: false
         type: boolean
       budget_cny:
-        description: Hard combined budget ceiling in CNY
+        description: Hard combined canary budget ceiling in CNY
         required: true
-        default: "20"
+        default: "2.25"
         type: string
       pilot_commit:
         description: Full JoinLint commit bound to the frozen pilot input
         required: true
-        default: 05da3fb4b2fa8536caef7a28cd9994b8b84a98c9
+        default: ""
         type: string
       pilot_release_tag:
         description: Access-controlled Draft Release tag holding the frozen pilot input
@@ -28,26 +28,17 @@ on:
         required: true
         default: pilot-input.tar.gz
         type: string
-      canary_run_id:
-        description: Successful bound formal-pilot-canary workflow run ID
-        required: true
-        default: ""
-        type: string
 
 permissions:
-  # Draft Release assets are visible only to repository maintainers. The
-  # protected, manually dispatched pilot job needs this scope to restore its
-  # frozen input; the workflow never invokes a GitHub write operation.
   contents: write
-  actions: read
 
 jobs:
-  pilot:
+  canary:
     runs-on: ubuntu-latest
     environment: formal-evaluation
     steps:
-      - name: Require the exact approved paid pilot
-        if: inputs.confirm_paid != true || inputs.budget_cny != '20'
+      - name: Require the exact approved paid canary
+        if: inputs.confirm_paid != true || inputs.budget_cny != '2.25'
         run: exit 1
       - uses: actions/checkout@v4
         with:
@@ -74,62 +65,39 @@ jobs:
           tar -xzf "pilot-release/$PILOT_RELEASE_ASSET" \
             -C benchmarks/formal_eval/sealed/pilot-v1 \
             --no-same-owner --no-same-permissions
-      - name: Verify frozen pilot and budget envelope
+      - name: Verify frozen pilot input
         run: >-
           python -m benchmarks.formal_eval.pilot verify
           --root benchmarks/formal_eval/sealed/pilot-v1
           --current-commit "${{ steps.pilot_commit.outputs.sha }}"
-      - name: Restore successful canary attestation
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CANARY_RUN_ID: ${{ inputs.canary_run_id }}
-        run: |
-          [[ "$CANARY_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-          mkdir -p canary-attestation
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANARY_RUN_ID" \
-            > canary-attestation/run.json
-          gh run download "$CANARY_RUN_ID" \
-            --repo "$GITHUB_REPOSITORY" \
-            --name joinlint-formal-pilot-canary-sanitized \
-            --dir canary-attestation/artifact
-      - name: Verify canary attestation binding
-        env:
-          CANARY_RUN_ID: ${{ inputs.canary_run_id }}
-        run: >-
-          python -m benchmarks.formal_eval.pilot_canary
-          verify-attestation
-          --root benchmarks/formal_eval/sealed/pilot-v1
-          --attestation canary-attestation/artifact/canary.json
-          --run-metadata canary-attestation/run.json
-          --expected-run-id "$CANARY_RUN_ID"
-          --current-commit "${{ steps.pilot_commit.outputs.sha }}"
-          --repository "$GITHUB_REPOSITORY"
-      - name: Run the approved 20-task pilot
+      - name: Run one-task canary
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_BASE_URL: https://api.deepseek.com
         run: >-
-          python -m benchmarks.formal_eval.pilot_dispatch
+          python -m benchmarks.formal_eval.pilot_canary
+          run
           --root benchmarks/formal_eval/sealed/pilot-v1
-          --log-dir pilot-logs
-          --output pilot-artifacts
-      - name: Scan sanitized pilot artifacts
+          --log-dir pilot-canary-logs
+          --output pilot-canary-artifacts
+          --workflow-run-id "${{ github.run_id }}"
+      - name: Scan sanitized canary artifacts
         if: always()
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
+          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-canary-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: joinlint-formal-pilot-sanitized
-          path: pilot-artifacts
+          name: joinlint-formal-pilot-canary-sanitized
+          path: pilot-canary-artifacts
           if-no-files-found: warn
           retention-days: 90
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: joinlint-formal-pilot-private-logs
-          path: pilot-logs
+          name: joinlint-formal-pilot-canary-private-logs
+          path: pilot-canary-logs
           if-no-files-found: warn
           retention-days: 30

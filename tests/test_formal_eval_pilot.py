@@ -28,6 +28,14 @@ from benchmarks.formal_eval.pilot_dispatch import (
     build_pilot_commands,
     require_sample_batch_health,
 )
+from benchmarks.formal_eval.pilot_canary import (
+    CANARY_BUDGET_CNY,
+    PilotCanaryReport,
+    build_canary_command,
+    canary_budget_envelope,
+    require_canary_artifacts,
+    verify_canary_attestation_values,
+)
 
 
 COMMIT = "a" * 40
@@ -53,6 +61,107 @@ def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:
     assert model_batch_upper_costs(registration) == pytest.approx(
         (2.4, 2.4, 2.4, 2.4, 0.8, 0.8, 0.8, 0.8)
     )
+
+
+def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
+    registration = frozen_pilot_registration(COMMIT)
+
+    envelope = canary_budget_envelope(registration)
+    command = build_canary_command(
+        inspect="/usr/bin/inspect",
+        registration=registration,
+        root=tmp_path / "sealed",
+        log_dir=tmp_path / "logs",
+        lineage_id=LINEAGE_ID,
+    )
+
+    assert CANARY_BUDGET_CNY == 2.25
+    assert envelope.run_count == 1
+    assert envelope.model_cost_upper_cny == pytest.approx(0.12)
+    assert envelope.modal_compute_upper_cny == pytest.approx(0.031728)
+    assert envelope.modal_image_build_reserve_cny == 2.0
+    assert envelope.total_upper_cny == pytest.approx(2.151728)
+    assert envelope.total_upper_cny < CANARY_BUDGET_CNY
+    assert command[command.index("--limit") + 1] == "1"
+    assert "host=codex" in command
+    assert "condition=treatment" in command
+    assert registration.models[0].id in command
+
+
+def test_pilot_canary_requires_model_usage_and_both_scorers() -> None:
+    expected_model = "openai-api/deepseek/deepseek-v4-pro"
+    sample = SimpleNamespace(
+        error=None,
+        scores={"formal_join_scorer": object(), "formal_execution_scorer": object()},
+        model_usage={expected_model: object()},
+    )
+
+    model_id, scorers = require_canary_artifacts(
+        log_model_id=expected_model,
+        samples=[sample],
+        expected_model_id=expected_model,
+    )
+
+    assert model_id == expected_model
+    assert scorers == ("formal_execution_scorer", "formal_join_scorer")
+
+    with pytest.raises(RuntimeError, match="provider model identity"):
+        require_canary_artifacts(
+            log_model_id=expected_model,
+            samples=[SimpleNamespace(**{**vars(sample), "model_usage": {}})],
+            expected_model_id=expected_model,
+        )
+
+
+def test_pilot_canary_attestation_binds_run_commit_input_and_dependencies() -> None:
+    dependencies = {
+        "inspect-ai": "0.3.249",
+        "inspect-sandboxes": "0.4.0",
+        "inspect-swe": "0.2.66",
+        "modal": "1.5.3",
+    }
+    report = PilotCanaryReport(
+        model_id="openai-api/deepseek/deepseek-v4-pro",
+        scorer_artifacts=("formal_execution_scorer", "formal_join_scorer"),
+        actual_model_cost_cny=0.01,
+        modal_compute_upper_cny=0.031728,
+        modal_image_build_reserve_cny=2.0,
+        total_cost_upper_cny=2.041728,
+        workflow_run_id=123,
+        joinlint_commit=COMMIT,
+        input_lock_sha256="c" * 64,
+        dependency_versions=dependencies,
+    )
+    run_metadata = {
+        "id": 123,
+        "name": "formal-pilot-canary",
+        "path": ".github/workflows/formal-pilot-canary.yml",
+        "event": "workflow_dispatch",
+        "conclusion": "success",
+        "head_sha": COMMIT,
+        "head_repository": {"full_name": "Chloride233/joinlint"},
+    }
+
+    verify_canary_attestation_values(
+        report,
+        expected_run_id=123,
+        current_commit=COMMIT,
+        input_lock_sha256="c" * 64,
+        dependency_versions=dependencies,
+        run_metadata=run_metadata,
+        repository="Chloride233/joinlint",
+    )
+
+    with pytest.raises(ValueError, match="commit"):
+        verify_canary_attestation_values(
+            report,
+            expected_run_id=123,
+            current_commit="d" * 40,
+            input_lock_sha256="c" * 64,
+            dependency_versions=dependencies,
+            run_metadata=run_metadata,
+            repository="Chloride233/joinlint",
+        )
 
 
 def test_pilot_budget_checkpoint_stops_before_an_unsafe_next_batch() -> None:
@@ -280,6 +389,10 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert workflow["on"]["workflow_dispatch"]["inputs"]["pilot_commit"]["default"] == (
         "05da3fb4b2fa8536caef7a28cd9994b8b84a98c9"
     )
+    assert workflow["on"]["workflow_dispatch"]["inputs"]["canary_run_id"]["required"] == (
+        "true"
+    )
+    assert workflow["permissions"]["actions"] == "read"
     assert "ref: ${{ inputs.pilot_commit }}" in text
     assert "--current-commit \"${{ steps.pilot_commit.outputs.sha }}\"" in text
     assert "pilot_volume" not in text
@@ -307,6 +420,40 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         "DEEPSEEK_BASE_URL",
     }
     assert "OPENAI_API_KEY" not in text
+    canary_restore = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Restore successful canary attestation"
+    )
+    assert set(canary_restore["env"]) == {"GH_TOKEN", "CANARY_RUN_ID"}
+    assert "gh run download" in canary_restore["run"]
+    step_names = [step.get("name") for step in job["steps"]]
+    assert step_names.index("Verify canary attestation binding") < step_names.index(
+        "Run the approved 20-task pilot"
+    )
+
+
+def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:
+    workflow_path = Path(".github/workflows/formal-pilot-canary.yml")
+    workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    text = workflow_path.read_text(encoding="utf-8")
+    job = workflow["jobs"]["canary"]
+
+    assert job["environment"] == "formal-evaluation"
+    assert workflow["permissions"]["contents"] == "write"
+    assert "inputs.confirm_paid != true || inputs.budget_cny != '2.25'" in text
+    assert "--limit" not in text
+    assert "benchmarks.formal_eval.pilot_canary" in text
+    assert '--workflow-run-id "${{ github.run_id }}"' in text
+    run_step = next(
+        step for step in job["steps"] if step.get("name") == "Run one-task canary"
+    )
+    assert set(run_step["env"]) == {
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_BASE_URL",
+    }
 
 
 def _manifest(count: int, *, task: SealedAgentTask | None = None) -> FormalManifestV2:
