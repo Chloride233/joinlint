@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -9,6 +10,9 @@ from typing import Literal
 from benchmarks.formal_eval.contracts import FormalManifestV2, PreregistrationV2
 from benchmarks.formal_eval.lineage import EvaluationLineage
 from benchmarks.formal_eval.manifest import load_document, validate_manifest
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     for command in commands:
         Path(command[command.index("--log-dir") + 1]).mkdir(parents=True, exist_ok=True)
-        subprocess.run(command, check=True)
+        subprocess.run(command, check=True, env=inspect_subprocess_environment())
     return 0
 
 
@@ -106,6 +110,15 @@ def build_dispatch_commands(
                     ]
                 )
     return tuple(commands)
+
+
+def inspect_subprocess_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    existing = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = str(REPOSITORY_ROOT) + (
+        f"{os.pathsep}{existing}" if existing else ""
+    )
+    return environment
 
 
 if __name__ == "__main__":

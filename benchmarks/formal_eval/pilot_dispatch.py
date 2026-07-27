@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from benchmarks.formal_eval.export import export_agent_rows
+from benchmarks.formal_eval.dispatch import inspect_subprocess_environment
 from benchmarks.formal_eval.pilot import (
     PilotBudgetCheckpoint,
     PilotRegistration,
@@ -48,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         if not before.safe_to_continue:
             raise RuntimeError("pilot stopped before the next batch could exceed the budget")
         Path(command[command.index("--log-dir") + 1]).mkdir(parents=True, exist_ok=True)
-        subprocess.run(command, check=True)
+        subprocess.run(command, check=True, env=inspect_subprocess_environment())
         observed = observed_model_cost_cny(arguments.log_dir, registration)
         after = pilot_budget_checkpoint(
             registration,

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import yaml
 
-from benchmarks.formal_eval.dispatch import build_dispatch_commands
+from benchmarks.formal_eval.dispatch import REPOSITORY_ROOT, build_dispatch_commands, inspect_subprocess_environment
 import pytest
 
 from benchmarks.formal_eval.export import (
@@ -51,6 +51,16 @@ def test_dispatch_builds_only_the_frozen_remote_matrix(tmp_path: Path) -> None:
         f"image_reference={preregistration.image_reference}" in command
         for command in confirmatory + diagnostic
     )
+
+
+def test_inspect_subprocess_environment_includes_the_repository_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PYTHONPATH", "existing-path")
+
+    environment = inspect_subprocess_environment()
+
+    assert environment["PYTHONPATH"].split(":") == [str(REPOSITORY_ROOT), "existing-path"]
 
 
 def test_exported_row_drops_sealed_inputs_and_transcripts() -> None:
