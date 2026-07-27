@@ -4,6 +4,7 @@ import argparse
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from benchmarks.formal_eval.export import export_agent_rows
 from benchmarks.formal_eval.dispatch import REPOSITORY_ROOT, inspect_subprocess_environment
@@ -99,6 +100,14 @@ def require_batch_health(log_dir: Path, *, expected_sample_count: int) -> None:
         for info in list_eval_logs(str(log_dir), recursive=True)
         for sample in (read_eval_log(info.name, header_only=False).samples or [])
     ]
+    require_sample_batch_health(samples, expected_sample_count=expected_sample_count)
+
+
+def require_sample_batch_health(
+    samples: list[Any],
+    *,
+    expected_sample_count: int,
+) -> None:
     if len(samples) != expected_sample_count:
         raise RuntimeError("pilot batch produced an incomplete sample set")
     if all(sample.error is not None and not sample.scores for sample in samples):

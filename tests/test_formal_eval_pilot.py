@@ -24,7 +24,10 @@ from benchmarks.formal_eval.pilot import (
     pilot_budget_checkpoint,
     pilot_budget_report,
 )
-from benchmarks.formal_eval.pilot_dispatch import build_pilot_commands, require_batch_health
+from benchmarks.formal_eval.pilot_dispatch import (
+    build_pilot_commands,
+    require_sample_batch_health,
+)
 
 
 COMMIT = "a" * 40
@@ -134,39 +137,20 @@ def test_pilot_dispatch_has_eight_non_retrying_bounded_batches(tmp_path: Path) -
     )
 
 
-def test_pilot_dispatch_stops_on_systemic_batch_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from inspect_ai import log as inspect_log
-
-    failed_samples = tuple(
+def test_pilot_dispatch_stops_on_systemic_batch_failure() -> None:
+    failed_samples = [
         SimpleNamespace(error=RuntimeError("sandbox failed"), scores={}, model_usage={})
         for _ in range(20)
-    )
-    monkeypatch.setattr(
-        inspect_log,
-        "list_eval_logs",
-        lambda *_args, **_kwargs: [SimpleNamespace(name="failed.eval")],
-    )
-    monkeypatch.setattr(
-        inspect_log,
-        "read_eval_log",
-        lambda *_args, **_kwargs: SimpleNamespace(samples=failed_samples),
-    )
+    ]
 
     with pytest.raises(RuntimeError, match="systemic infrastructure failure"):
-        require_batch_health(tmp_path, expected_sample_count=20)
+        require_sample_batch_health(failed_samples, expected_sample_count=20)
 
     one_scored_sample = SimpleNamespace(error=None, scores={"join": 1}, model_usage={})
-    monkeypatch.setattr(
-        inspect_log,
-        "read_eval_log",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            samples=failed_samples[:-1] + (one_scored_sample,)
-        ),
+    require_sample_batch_health(
+        failed_samples[:-1] + [one_scored_sample],
+        expected_sample_count=20,
     )
-    require_batch_health(tmp_path, expected_sample_count=20)
 
 
 def test_pilot_budget_report_fails_when_observed_total_exceeds_ceiling() -> None:
