@@ -32,6 +32,7 @@ def test_infrastructure_preparation_does_not_start_evaluation_or_pass_readiness(
     record = infrastructure_prepared(
         new_lifecycle("codex", "0.144.1", now=NOW),
         duration_seconds=2,
+        host_binary_sha256="a" * 64,
         now=NOW,
     )
 

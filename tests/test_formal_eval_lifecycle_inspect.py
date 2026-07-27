@@ -117,6 +117,7 @@ def _pending_state() -> TaskState:
     record = infrastructure_prepared(
         new_lifecycle("codex", "0.144.1", now=NOW),
         duration_seconds=0,
+        host_binary_sha256="a" * 64,
         now=NOW,
     )
     return _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})

@@ -55,6 +55,7 @@ class LifecycleRecord(StrictModel):
     readiness_started_at: datetime | None = None
     infrastructure_prepared_at: datetime | None = None
     infrastructure_preparation_duration_seconds: float | None = Field(default=None, ge=0)
+    host_binary_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     readiness_completed_at: datetime | None = None
     readiness_duration_seconds: float | None = Field(default=None, ge=0)
     evaluation_started_at: datetime | None = None
@@ -108,6 +109,7 @@ def infrastructure_prepared(
     record: LifecycleRecord,
     *,
     duration_seconds: float,
+    host_binary_sha256: str,
     now: datetime | None = None,
 ) -> LifecycleRecord:
     _require_phase(record, LifecyclePhase.INFRASTRUCTURE_PENDING)
@@ -115,6 +117,7 @@ def infrastructure_prepared(
         update={
             "infrastructure_prepared_at": now or _utc_now(),
             "infrastructure_preparation_duration_seconds": duration_seconds,
+            "host_binary_sha256": host_binary_sha256,
         }
     )
 

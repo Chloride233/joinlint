@@ -53,6 +53,11 @@ The no-model lifecycle test is a mandatory workflow gate, and a Pilot canary
 cannot produce an attestation unless its semantic scorers report a completed,
 scoring-eligible evaluation.
 
+Formal images download and checksum the exact frozen Codex and Claude host
+binaries once at image-build time. Each sample verifies the image-installed
+version and SHA-256, and spends no readiness time downloading or transferring
+host binaries.
+
 ## Bounded independent pilot
 
 `formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.

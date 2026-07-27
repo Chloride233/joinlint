@@ -512,7 +512,7 @@ def infrastructure_readiness(
         started = perf_counter()
         try:
             with fail_after(timeout_seconds):
-                await _prepare_host_binary(host, agent_version)
+                host_binary_sha256 = await _prepare_host_binary(host, agent_version)
                 await _run_readiness_probes()
         except TimeoutError:
             record = readiness_failed(
@@ -532,7 +532,11 @@ def infrastructure_readiness(
             write_lifecycle(state.store, record)
             state.completed = True
             return state
-        record = infrastructure_prepared(record, duration_seconds=perf_counter() - started)
+        record = infrastructure_prepared(
+            record,
+            duration_seconds=perf_counter() - started,
+            host_binary_sha256=host_binary_sha256,
+        )
         write_lifecycle(state.store, record)
         return state
 
@@ -625,25 +629,33 @@ def evaluation_lifecycle(
     return solve
 
 
-async def _prepare_host_binary(host: Host, agent_version: str) -> None:
-    from inspect_swe._util.agentbinary import ensure_agent_binary_installed
-
-    if host == "codex":
-        from inspect_swe._codex_cli.agentbinary import codex_cli_binary_source
-
-        source = codex_cli_binary_source()
-    else:
-        from inspect_swe._claude_code.agentbinary import claude_code_binary_source
-
-        source = claude_code_binary_source()
-    binary = await ensure_agent_binary_installed(source, agent_version, sandbox=sandbox())
-    link = f"/usr/local/bin/{source.binary}"
-    linked = await sandbox().exec(["ln", "-sf", binary, link], user="root", timeout=15)
-    if not linked.success:
-        raise RuntimeError("host_binary_link_failed")
+async def _prepare_host_binary(host: Host, agent_version: str) -> str:
+    binary_name = "codex" if host == "codex" else "claude"
+    located = await sandbox().exec(["which", binary_name], timeout=15)
+    binary = located.stdout.strip() if located.success else ""
+    if not binary:
+        raise RuntimeError("host_binary_missing_from_image")
     result = await sandbox().exec([binary, "--version"], timeout=15)
     if not result.success or agent_version not in result.stdout:
         raise RuntimeError("host_binary_version_mismatch")
+    digest = await sandbox().exec(["sha256sum", binary], timeout=15)
+    sha256 = digest.stdout.split(maxsplit=1)[0] if digest.success else ""
+    if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
+        raise RuntimeError("host_binary_digest_failed")
+    attest = (
+        "import json,sys; "
+        "records=json.load(open('/usr/local/share/joinlint/host-binaries.json'))['records']; "
+        "matches=[r for r in records if r['host']==sys.argv[1] and "
+        "r['version']==sys.argv[2] and r['sha256']==sys.argv[3]]; "
+        "assert len(matches)==1"
+    )
+    attested = await sandbox().exec(
+        ["python", "-c", attest, host, agent_version, sha256],
+        timeout=15,
+    )
+    if not attested.success:
+        raise RuntimeError("host_binary_attestation_failed")
+    return sha256
 
 
 async def _run_readiness_probes() -> None:
@@ -717,7 +729,9 @@ def _semantic_metadata(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _safe_failure_detail(error: Exception) -> str:
     if isinstance(error, RuntimeError) and str(error) in {
-        "host_binary_link_failed",
+        "host_binary_missing_from_image",
+        "host_binary_digest_failed",
+        "host_binary_attestation_failed",
         "host_binary_version_mismatch",
         "joinlint_or_database_readiness_failed",
     }:
