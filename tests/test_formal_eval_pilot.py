@@ -30,6 +30,7 @@ from benchmarks.formal_eval.pilot_dispatch import (
 )
 from benchmarks.formal_eval.pilot_canary import (
     CANARY_BUDGET_CNY,
+    CANARY_SANDBOX_TIMEOUT_SECONDS,
     PilotCanaryReport,
     build_canary_command,
     canary_budget_envelope,
@@ -77,15 +78,18 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
     )
 
     assert CANARY_BUDGET_CNY == 2.25
+    assert CANARY_SANDBOX_TIMEOUT_SECONDS == 150
     assert envelope.run_count == 1
     assert envelope.model_cost_upper_cny == pytest.approx(0.12)
-    assert envelope.modal_compute_upper_cny == pytest.approx(0.031728)
+    assert envelope.modal_compute_upper_cny == pytest.approx(0.03966)
     assert envelope.modal_image_build_reserve_cny == 2.0
-    assert envelope.total_upper_cny == pytest.approx(2.151728)
+    assert envelope.total_upper_cny == pytest.approx(2.15966)
     assert envelope.total_upper_cny < CANARY_BUDGET_CNY
     assert command[command.index("--limit") + 1] == "1"
     assert "host=codex" in command
     assert "condition=treatment" in command
+    assert "sandbox_timeout=150" in command
+    assert "sandbox_timeout=120" not in command
     assert registration.models[0].id in command
 
 

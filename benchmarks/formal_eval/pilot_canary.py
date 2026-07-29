@@ -29,6 +29,7 @@ from joinlint.contracts import canonical_json
 
 
 CANARY_BUDGET_CNY = 2.25
+CANARY_SANDBOX_TIMEOUT_SECONDS = 150
 REMOTE_DEPENDENCIES = ("inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
 
 
@@ -67,7 +68,7 @@ def canary_budget_envelope(registration: PilotRegistration) -> PilotCanaryBudget
         model.pricing_cny.output_per_million_cny,
     )
     model_upper = registration.token_limit_per_run * rate / 1_000_000
-    modal_usd = registration.modal_sandbox_timeout_seconds * (
+    modal_usd = CANARY_SANDBOX_TIMEOUT_SECONDS * (
         registration.cpu_cores * MODAL_CPU_USD_PER_CORE_SECOND
         + (registration.memory_mib / 1024) * MODAL_MEMORY_USD_PER_GIB_SECOND
     )
@@ -107,6 +108,10 @@ def build_canary_command(
         raise ValueError("pilot canary command is not uniquely defined")
     command = list(matches[0])
     command[3:3] = ["--limit", "1"]
+    sandbox_timeout_index = command.index(
+        f"sandbox_timeout={registration.modal_sandbox_timeout_seconds}"
+    )
+    command[sandbox_timeout_index] = f"sandbox_timeout={CANARY_SANDBOX_TIMEOUT_SECONDS}"
     return command
 
 

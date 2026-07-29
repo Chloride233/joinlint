@@ -72,6 +72,10 @@ precursor to a paid Agent canary. It uses the exact Pilot Dockerfile and lifecyc
 limits, exposes only Modal credentials, rejects any model usage, and emits a
 commit-bound readiness report. Its exact CNY 2.05 approval covers the CNY
 0.031728 sandbox-compute upper bound plus the existing CNY 2.00 image-build reserve.
+The paid one-task canary uses a 150-second sandbox envelope so its independently
+measured 60-second readiness window does not consume the 90-second evaluation
+window. Its CNY 2.25 gate covers that canary-only envelope and does not change
+the separately frozen 20-task Pilot registration.
 
 ## Bounded independent pilot
 
