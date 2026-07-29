@@ -90,5 +90,6 @@ def test_modal_readiness_workflow_scopes_secrets_and_budget() -> None:
     }
     assert run_step["env"]["PYTHONPATH"] == "${{ github.workspace }}"
     assert "mockllm/model" in run_step["run"]
+    assert "readiness_time_limit=60" in run_step["run"]
     assert "DEEPSEEK_API_KEY" not in run_step["run"]
     assert "OPENAI_API_KEY" not in run_step["run"]

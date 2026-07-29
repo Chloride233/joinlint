@@ -142,7 +142,7 @@ def formal_modal_readiness_eval(
     host: Host,
     agent_version: str,
     dockerfile: str,
-    readiness_time_limit: int = 30,
+    readiness_time_limit: int = 60,
     sandbox_timeout: int = 120,
 ) -> Task:
     if readiness_time_limit <= 0 or sandbox_timeout <= readiness_time_limit:

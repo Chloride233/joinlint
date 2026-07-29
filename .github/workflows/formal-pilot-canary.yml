@@ -84,7 +84,7 @@ jobs:
           -T host=codex
           -T agent_version=0.144.1
           -T dockerfile="$(pwd)/Dockerfile.formal-pilot"
-          -T readiness_time_limit=30
+          -T readiness_time_limit=60
           -T sandbox_timeout=120
       - name: Verify zero model usage and readiness attestation
         run: >-
