@@ -50,7 +50,7 @@ jobs:
         run: exit 1
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.pilot_commit }}
+          ref: ${{ github.sha }}
       - name: Record checked-out commit
         id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
