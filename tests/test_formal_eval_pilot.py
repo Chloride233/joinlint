@@ -26,7 +26,7 @@ from benchmarks.formal_eval.pilot import (
 )
 from benchmarks.formal_eval.pilot_dispatch import (
     build_pilot_commands,
-    observed_model_cost_cny,
+    model_usage_cost_cny,
     require_sample_batch_health,
 )
 from benchmarks.formal_eval.pilot_canary import (
@@ -148,8 +148,6 @@ def test_pilot_canary_requires_model_usage_and_both_scorers() -> None:
 
 
 def test_observed_cost_treats_cache_read_as_additional_input_usage(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registration = frozen_pilot_registration(COMMIT)
     usage = SimpleNamespace(
@@ -158,17 +156,7 @@ def test_observed_cost_treats_cache_read_as_additional_input_usage(
         input_tokens_cache_write=None,
         output_tokens=482,
     )
-    sample = SimpleNamespace(model_usage={registration.models[0].returned_id: usage})
-    monkeypatch.setattr(
-        "inspect_ai.log.list_eval_logs",
-        lambda *args, **kwargs: [SimpleNamespace(name="log")],
-    )
-    monkeypatch.setattr(
-        "inspect_ai.log.read_eval_log",
-        lambda *args, **kwargs: SimpleNamespace(samples=[sample]),
-    )
-
-    cost = observed_model_cost_cny(tmp_path, registration)
+    cost = model_usage_cost_cny(usage, registration.models[0].pricing_cny)
 
     assert cost == pytest.approx(0.0069192)
 
