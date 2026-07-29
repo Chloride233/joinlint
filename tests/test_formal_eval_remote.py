@@ -149,10 +149,10 @@ def test_exported_row_drops_sealed_inputs_and_transcripts() -> None:
     serialized = json.dumps(payload)
 
     assert payload["join_correct_task_completion"] is True
-    assert payload["input_tokens"] == 120
+    assert payload["input_tokens"] == 150
     assert payload["input_cache_read_tokens"] == 20
     assert payload["input_cache_write_tokens"] == 10
-    assert payload["calculated_cost_cny"] == pytest.approx(0.0004805)
+    assert payload["calculated_cost_cny"] == pytest.approx(0.0005705)
     assert "SECRET" not in serialized
     assert "gold_sql" not in payload
     assert "database_path" not in payload

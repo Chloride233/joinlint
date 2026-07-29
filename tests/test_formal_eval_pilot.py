@@ -26,12 +26,14 @@ from benchmarks.formal_eval.pilot import (
 )
 from benchmarks.formal_eval.pilot_dispatch import (
     build_pilot_commands,
+    observed_model_cost_cny,
     require_sample_batch_health,
 )
 from benchmarks.formal_eval.pilot_canary import (
     CANARY_BUDGET_CNY,
     CANARY_SANDBOX_TIMEOUT_SECONDS,
     CANARY_TOKEN_LIMIT,
+    CANARY_TOKEN_LIMIT_TYPE,
     PilotCanaryReport,
     build_canary_command,
     canary_budget_envelope,
@@ -81,6 +83,7 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
     assert CANARY_BUDGET_CNY == 2.25
     assert CANARY_SANDBOX_TIMEOUT_SECONDS == 150
     assert CANARY_TOKEN_LIMIT == 35_000
+    assert CANARY_TOKEN_LIMIT_TYPE == "(input*0.5)+output"
     assert envelope.run_count == 1
     assert envelope.model_cost_upper_cny == pytest.approx(0.21)
     assert envelope.modal_compute_upper_cny == pytest.approx(0.03966)
@@ -92,6 +95,7 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
     assert "condition=treatment" in command
     assert "token_limit=35000" in command
     assert "token_limit=20000" not in command
+    assert "token_limit_type=(input*0.5)+output" in command
     assert "sandbox_timeout=150" in command
     assert "sandbox_timeout=120" not in command
     assert registration.models[0].id in command
@@ -141,6 +145,32 @@ def test_pilot_canary_requires_model_usage_and_both_scorers() -> None:
             samples=[ineligible],
             expected_model_id=expected_model,
         )
+
+
+def test_observed_cost_treats_cache_read_as_additional_input_usage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = frozen_pilot_registration(COMMIT)
+    usage = SimpleNamespace(
+        input_tokens=984,
+        input_tokens_cache_read=43_008,
+        input_tokens_cache_write=None,
+        output_tokens=482,
+    )
+    sample = SimpleNamespace(model_usage={registration.models[0].returned_id: usage})
+    monkeypatch.setattr(
+        "inspect_ai.log.list_eval_logs",
+        lambda *args, **kwargs: [SimpleNamespace(name="log")],
+    )
+    monkeypatch.setattr(
+        "inspect_ai.log.read_eval_log",
+        lambda *args, **kwargs: SimpleNamespace(samples=[sample]),
+    )
+
+    cost = observed_model_cost_cny(tmp_path, registration)
+
+    assert cost == pytest.approx(0.0069192)
 
 
 def test_pilot_canary_attestation_binds_run_commit_input_and_dependencies() -> None:

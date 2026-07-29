@@ -20,7 +20,7 @@ from inspect_ai.model import (
 from inspect_ai.scorer import Score, Scorer, Target, mean, scorer
 from inspect_ai.solver import Generate, Solver, TaskState, chain, solver
 from inspect_ai.tool import MCPServerConfigStdio
-from inspect_ai.util import ComposeBuild, ComposeConfig, ComposeService, sandbox, store
+from inspect_ai.util import ComposeBuild, ComposeConfig, ComposeService, TokenLimit, sandbox, store
 from pydantic import TypeAdapter
 from benchmarks.agent_join.execution import execution_matches
 from benchmarks.agent_join.sql_edges import extract_join_edges, extract_submission, score_join_graph
@@ -99,6 +99,7 @@ def formal_pilot_eval(
     dockerfile: str,
     lineage_id: str,
     token_limit: int = 20_000,
+    token_limit_type: str = "all",
     time_limit: int = 90,
     sandbox_timeout: int = 120,
     cpu: float = 0.5,
@@ -108,6 +109,7 @@ def formal_pilot_eval(
         raise ValueError("pilot supports only control and treatment")
     if (
         token_limit <= 0
+        or token_limit_type not in {"all", "(input*0.5)+output"}
         or time_limit <= 0
         or sandbox_timeout <= time_limit
         or cpu <= 0
@@ -130,6 +132,7 @@ def formal_pilot_eval(
         ),
         strict_pilot=True,
         token_limit=token_limit,
+        token_limit_type=token_limit_type,
         readiness_time_limit=sandbox_timeout - time_limit,
         evaluation_time_limit=time_limit,
         modal_timeout_seconds=sandbox_timeout,
@@ -188,6 +191,7 @@ def _agent_task(
     service: ComposeService,
     strict_pilot: bool,
     token_limit: int | None,
+    token_limit_type: str = "all",
     readiness_time_limit: int,
     evaluation_time_limit: int,
     modal_timeout_seconds: int | None = None,
@@ -225,7 +229,11 @@ def _agent_task(
             extra_body={"thinking": {"type": "disabled"}},
         ),
         sandbox=("modal", _compose_config(service, modal_timeout_seconds)),
-        token_limit=token_limit,
+        token_limit=(
+            TokenLimit(tokens=token_limit, type=token_limit_type)
+            if token_limit is not None and token_limit_type != "all"
+            else token_limit
+        ),
         time_limit=None,
         name="jl",
     )

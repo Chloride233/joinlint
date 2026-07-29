@@ -191,11 +191,10 @@ def observed_model_cost_cny(log_dir: Path, registration: PilotRegistration) -> f
                 if model_pricing is None:
                     raise ValueError(f"unexpected returned model identity: {model_id}")
                 cache_read = usage.input_tokens_cache_read or 0
-                if cache_read > usage.input_tokens:
-                    raise ValueError("cache-read usage exceeds total input usage")
+                cache_write = usage.input_tokens_cache_write or 0
                 total += (
                     cache_read * model_pricing.input_cache_hit_per_million_cny
-                    + (usage.input_tokens - cache_read)
+                    + (usage.input_tokens + cache_write)
                     * model_pricing.input_cache_miss_per_million_cny
                     + usage.output_tokens * model_pricing.output_per_million_cny
                 ) / 1_000_000

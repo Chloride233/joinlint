@@ -31,6 +31,7 @@ from joinlint.contracts import canonical_json
 CANARY_BUDGET_CNY = 2.25
 CANARY_SANDBOX_TIMEOUT_SECONDS = 150
 CANARY_TOKEN_LIMIT = 35_000
+CANARY_TOKEN_LIMIT_TYPE = "(input*0.5)+output"
 REMOTE_DEPENDENCIES = ("inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
 
 
@@ -111,6 +112,7 @@ def build_canary_command(
     command[3:3] = ["--limit", "1"]
     token_limit_index = command.index(f"token_limit={registration.token_limit_per_run}")
     command[token_limit_index] = f"token_limit={CANARY_TOKEN_LIMIT}"
+    command.extend(["-T", f"token_limit_type={CANARY_TOKEN_LIMIT_TYPE}"])
     sandbox_timeout_index = command.index(
         f"sandbox_timeout={registration.modal_sandbox_timeout_seconds}"
     )

@@ -74,10 +74,12 @@ commit-bound readiness report. Its exact CNY 2.05 approval covers the CNY
 0.031728 sandbox-compute upper bound plus the existing CNY 2.00 image-build reserve.
 The paid one-task canary uses a 150-second sandbox envelope so its independently
 measured 60-second readiness window does not consume the 90-second evaluation
-window. Its Inspect accounting limit is 35,000 tokens because Inspect includes
-cache-read tokens again in its cumulative `total_tokens`; the canary budget uses
-the same 35,000-token worst case. Its CNY 2.25 gate covers that canary-only
-envelope and does not change the separately frozen 20-task Pilot registration.
+window. Its Inspect accounting limit uses the native price-weighted expression
+`(input*0.5)+output:35000`: input is weighted at the cache-miss CNY 3 rate
+relative to the CNY 6 output rate, while cache hits are conservatively treated
+as misses. The resulting CNY 0.21 model ceiling keeps the complete canary under
+its CNY 2.25 gate. This canary-only envelope does not change the separately
+frozen 20-task Pilot registration.
 
 ## Bounded independent pilot
 

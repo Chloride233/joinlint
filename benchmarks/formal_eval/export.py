@@ -150,12 +150,13 @@ def _row(
         bool(trace.get("blocking_compliant")) if blocking_applicable else None
     )
     usage = list(sample.model_usage.values())
-    input_tokens = sum(value.input_tokens for value in usage)
+    uncached_input_tokens = sum(value.input_tokens for value in usage)
     input_cache_read_tokens = sum(value.input_tokens_cache_read or 0 for value in usage)
     input_cache_write_tokens = sum(value.input_tokens_cache_write or 0 for value in usage)
+    input_tokens = (
+        uncached_input_tokens + input_cache_read_tokens + input_cache_write_tokens
+    )
     output_tokens = sum(value.output_tokens for value in usage)
-    if input_cache_read_tokens > input_tokens:
-        raise ValueError("Inspect cache-read usage exceeds total input usage")
     pricing = model_pricing.get(model_id)
     if pricing is None:
         raise ValueError(f"missing frozen pricing for returned model identity: {model_id}")
