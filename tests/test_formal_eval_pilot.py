@@ -83,24 +83,24 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
 
     assert CANARY_BUDGET_CNY == 2.25
     assert CANARY_SANDBOX_TIMEOUT_SECONDS == 150
-    assert CANARY_TOKEN_LIMIT == 35_000
+    assert CANARY_TOKEN_LIMIT == 60_000
     assert CANARY_TOKEN_LIMIT_TYPE == "(input*0.5)+output"
     assert envelope.run_count == 1
-    assert envelope.model_cost_upper_cny == pytest.approx(0.21)
+    assert envelope.model_cost_upper_cny == pytest.approx(0.12)
     assert envelope.modal_compute_upper_cny == pytest.approx(0.03966)
     assert envelope.modal_image_build_reserve_cny == 2.0
-    assert envelope.total_upper_cny == pytest.approx(2.24966)
+    assert envelope.total_upper_cny == pytest.approx(2.15966)
     assert envelope.total_upper_cny < CANARY_BUDGET_CNY
     assert command[command.index("--limit") + 1] == "1"
     assert CANARY_HOST == "claude_code"
     assert "host=claude_code" in command
     assert "condition=treatment" in command
-    assert "token_limit=35000" in command
+    assert "token_limit=60000" in command
     assert "token_limit=20000" not in command
     assert "token_limit_type=(input*0.5)+output" in command
     assert "sandbox_timeout=150" in command
     assert "sandbox_timeout=120" not in command
-    assert registration.models[0].id in command
+    assert registration.models[1].id in command
 
 
 def test_pilot_canary_requires_model_usage_and_both_scorers() -> None:

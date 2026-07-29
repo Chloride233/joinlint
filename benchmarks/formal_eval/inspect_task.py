@@ -20,7 +20,15 @@ from inspect_ai.model import (
 from inspect_ai.scorer import Score, Scorer, Target, mean, scorer
 from inspect_ai.solver import Generate, Solver, TaskState, chain, solver
 from inspect_ai.tool import MCPServerConfigStdio
-from inspect_ai.util import ComposeBuild, ComposeConfig, ComposeService, TokenLimit, sandbox, store
+from inspect_ai.util import (
+    ComposeBuild,
+    ComposeConfig,
+    ComposeService,
+    TokenLimit,
+    sample_limits,
+    sandbox,
+    store,
+)
 from pydantic import TypeAdapter
 from benchmarks.agent_join.execution import execution_matches
 from benchmarks.agent_join.sql_edges import extract_join_edges, extract_submission, score_join_graph
@@ -716,7 +724,7 @@ def evaluation_lifecycle(
             if agent_error is not None:
                 reason = (
                     LifecycleFailureReason.MODEL_LIMIT
-                    if _is_model_limit_error(agent_error)
+                    if _is_model_limit_error(agent_error) or _sample_model_limit_exceeded()
                     else LifecycleFailureReason.EVALUATION_FAILED
                 )
                 record = fail_evaluation(
@@ -863,6 +871,17 @@ def _is_model_limit_error(error: Exception) -> bool:
     return any(
         marker in detail
         for marker in ("token limit exceeded", "message limit exceeded", "turn limit exceeded")
+    )
+
+
+def _sample_model_limit_exceeded() -> bool:
+    try:
+        limits = sample_limits()
+    except RuntimeError:
+        return False
+    return any(
+        limit.limit is not None and limit.usage >= limit.limit
+        for limit in (limits.token, limits.message, limits.turn)
     )
 
 

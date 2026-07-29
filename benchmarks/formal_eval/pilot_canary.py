@@ -30,7 +30,7 @@ from joinlint.contracts import canonical_json
 
 CANARY_BUDGET_CNY = 2.25
 CANARY_SANDBOX_TIMEOUT_SECONDS = 150
-CANARY_TOKEN_LIMIT = 35_000
+CANARY_TOKEN_LIMIT = 60_000
 CANARY_TOKEN_LIMIT_TYPE = "(input*0.5)+output"
 CANARY_HOST: Host = "claude_code"
 REMOTE_DEPENDENCIES = ("anthropic", "inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
@@ -287,9 +287,9 @@ def _input_lock_sha256(root: Path) -> str:
 
 
 def _canary_model(registration: PilotRegistration):  # type: ignore[no-untyped-def]
-    models = [model for model in registration.models if model.tier == "high_capability"]
+    models = [model for model in registration.models if model.tier == "cost_efficient"]
     if len(models) != 1:
-        raise ValueError("pilot canary requires one high-capability model")
+        raise ValueError("pilot canary requires one cost-efficient model")
     return models[0]
 
 

@@ -179,6 +179,20 @@ def test_model_limit_after_first_request_is_not_infrastructure_failure() -> None
     assert eligibility.failure_code == "MODEL_LIMIT"
 
 
+def test_native_sample_limit_usage_detects_generic_bridge_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exceeded = SimpleNamespace(limit=35_000, usage=52_973)
+    unused = SimpleNamespace(limit=None, usage=0)
+    monkeypatch.setattr(
+        inspect_task,
+        "sample_limits",
+        lambda: SimpleNamespace(token=exceeded, message=unused, turn=unused),
+    )
+
+    assert inspect_task._sample_model_limit_exceeded() is True
+
+
 def test_sql_parse_failure_still_reports_treatment_tool_funnel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
