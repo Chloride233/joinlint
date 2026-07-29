@@ -83,7 +83,12 @@ def test_modal_readiness_workflow_scopes_secrets_and_budget() -> None:
     assert canary["if"] == "inputs.readiness_only != true"
     assert job["steps"][1]["with"]["ref"] == "${{ github.sha }}"
     assert "inputs.confirm_paid != true || inputs.budget_cny != '2.05'" in text
-    assert set(run_step["env"]) == {"MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"}
+    assert set(run_step["env"]) == {
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "PYTHONPATH",
+    }
+    assert run_step["env"]["PYTHONPATH"] == "${{ github.workspace }}"
     assert "mockllm/model" in run_step["run"]
     assert "DEEPSEEK_API_KEY" not in run_step["run"]
     assert "OPENAI_API_KEY" not in run_step["run"]

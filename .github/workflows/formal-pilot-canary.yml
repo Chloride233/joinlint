@@ -69,6 +69,7 @@ jobs:
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          PYTHONPATH: ${{ github.workspace }}
         run: >-
           inspect eval
           benchmarks/formal_eval/inspect_task.py@formal_modal_readiness_eval
