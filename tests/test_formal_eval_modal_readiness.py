@@ -33,6 +33,15 @@ def test_modal_readiness_requires_zero_model_usage_and_attested_score(
         "inspect_ai.log.read_eval_log",
         lambda *args, **kwargs: SimpleNamespace(samples=[sample]),
     )
+    monkeypatch.setattr(
+        "benchmarks.formal_eval.modal_readiness.dependency_versions",
+        lambda: {
+            "inspect-ai": "0.3.249",
+            "inspect-sandboxes": "0.4.0",
+            "inspect-swe": "0.2.66",
+            "modal": "1.5.3",
+        },
+    )
 
     report = verify_modal_readiness(
         tmp_path / "logs",
