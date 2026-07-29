@@ -66,18 +66,23 @@ def create_server(
 
     @mcp.tool(name="get_join_plan")
     def get_join_plan_tool(
-        entity_refs: list[dict[str, str]],
+        entity_refs: list[EntityRef],
         start_ref: str,
         expected_grain_ref: str | None = None,
         max_depth: int = 4,
         include_alternatives: bool = False,
     ) -> dict[str, object]:
-        """Return an exact physical Join Proof; this does not prove query correctness."""
+        """Return an exact physical Join Proof.
+
+        Each entity_refs item is exactly {"ref": "orders", "entity": "orders"}.
+        ref is request-local; entity is the physical table name. This proof does
+        not prove query correctness.
+        """
         return _response(
             "get_join_plan",
             lambda: runtime_service().get_join_plan(
                 GetJoinPlanRequest(
-                    entity_refs=tuple(EntityRef.model_validate(item) for item in entity_refs),
+                    entity_refs=tuple(entity_refs),
                     start_ref=start_ref,
                     expected_grain_ref=expected_grain_ref,
                     max_depth=max_depth,

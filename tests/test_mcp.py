@@ -40,7 +40,14 @@ def test_mcp_exposes_exactly_two_stage1_tools(tmp_path: Path) -> None:
     tools = asyncio.run(server.list_tools())
 
     assert {tool.name for tool in tools} == {"get_join_plan", "validate_sql"}
+    plan = next(tool for tool in tools if tool.name == "get_join_plan")
     validate = next(tool for tool in tools if tool.name == "validate_sql")
+    entity_ref_schema = plan.inputSchema["properties"]["entity_refs"]["items"]
+    assert entity_ref_schema == {"$ref": "#/$defs/EntityRef"}
+    entity_ref_schema = plan.inputSchema["$defs"]["EntityRef"]
+    assert entity_ref_schema["properties"].keys() == {"ref", "entity"}
+    assert entity_ref_schema["required"] == ["ref", "entity"]
+    assert entity_ref_schema["additionalProperties"] is False
     assert "sql" in validate.inputSchema["properties"]
     assert all(tool.inputSchema["additionalProperties"] is False for tool in tools)
     assert all("execute" not in tool.name and "schema" not in tool.name for tool in tools)

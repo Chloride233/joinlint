@@ -55,7 +55,7 @@ from joinlint.contracts import canonical_json
 
 
 BASE_PROMPT = """You are evaluating one SQLite question. Use the EvaluationDatabase execute_sql tool for data access. Return exactly one JSON object with string fields sql and warning. sql must contain one read-only SELECT, or be empty only when no safe join exists. Do not include Markdown."""
-HARNESS_PROMPT = """Before generating multi-table SQL, call JoinLint get_join_plan with every intended table instance in entity_refs, a unique request-local ref for each instance, and the intended start_ref and expected_grain_ref. Use only the returned proof predicates. Call JoinLint validate_sql with the exact final SQL and returned plan_id. Do not execute SQL when planning or validation is error, inconclusive, stale, unavailable, or blocking. JoinLint proof is not query correctness."""
+HARNESS_PROMPT = """Before generating multi-table SQL, call JoinLint get_join_plan. Each entity_refs item must be exactly {"ref":"orders","entity":"orders"}: ref is a unique request-local alias and entity is the physical table name. Include every intended table instance plus start_ref and expected_grain_ref. Use only returned proof predicates. Do not call execute_sql for schema or row exploration. Call JoinLint validate_sql with the exact final SQL and returned plan_id, then call execute_sql only after validation passes. Do not execute SQL when planning or validation is error, inconclusive, stale, unavailable, or blocking. JoinLint proof is not query correctness."""
 
 
 @task
