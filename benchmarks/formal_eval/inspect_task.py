@@ -32,6 +32,7 @@ from benchmarks.formal_eval.contracts import (
 )
 from benchmarks.formal_eval.deterministic import sanitized_mcp_environment
 from benchmarks.formal_eval.manifest import load_document, verify_sealed_task_hashes
+from benchmarks.formal_eval.modal_compat import install_modal_filesystem_compat
 from benchmarks.formal_eval.lifecycle import (
     LIFECYCLE_STORE_KEY,
     LifecycleFailureReason,
@@ -152,6 +153,7 @@ def _agent_task(
 ) -> Task:
     if readiness_time_limit <= 0 or evaluation_time_limit <= 0:
         raise ValueError("lifecycle time limits must be positive")
+    install_modal_filesystem_compat()
     manifest_document = load_document(Path(manifest), FormalManifestV2)
     sealed = _load_sealed(Path(sealed_tasks))
     samples = _samples(
@@ -667,6 +669,12 @@ async def _run_readiness_probes() -> None:
     result = await sandbox().exec(["python", "-c", code], cwd="/workspace/joinlint", timeout=15)
     if not result.success:
         raise RuntimeError("joinlint_or_database_readiness_failed")
+    try:
+        remote = await sandbox().exec_remote(["true"], stream=False)
+    except Exception as error:
+        raise RuntimeError("sandbox_tools_readiness_failed") from error
+    if not remote.success:
+        raise RuntimeError("sandbox_tools_readiness_failed")
 
 
 def _require_lifecycle(state: TaskState):  # type: ignore[no-untyped-def]
@@ -734,6 +742,8 @@ def _safe_failure_detail(error: Exception) -> str:
         "host_binary_attestation_failed",
         "host_binary_version_mismatch",
         "joinlint_or_database_readiness_failed",
+        "sandbox_tools_readiness_failed",
+        "unsupported_inspect_sandboxes_version",
     }:
         return str(error)
     return type(error).__name__

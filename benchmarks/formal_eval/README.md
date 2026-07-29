@@ -38,9 +38,11 @@ diagnostic canary and not formal Agent evidence.
 
 Formal Agent tasks use four separate stages:
 
-1. infrastructure preparation installs and verifies the pinned host CLI and
-   checks that JoinLint imports and the uploaded SQLite database opens read-only;
-2. Agent bridge and MCP preparation remain infrastructure work;
+1. infrastructure preparation verifies the image-installed host CLI, checks
+   that JoinLint imports and the uploaded SQLite database opens read-only, and
+   forces one remote command so Inspect sandbox-tools are injected and running;
+2. Agent bridge and MCP preparation remain infrastructure work and reuse the
+   readiness-attested sandbox-tools service;
 3. readiness is attested and evaluation starts only at the first bridged model
    request;
 4. semantic scorers run only after evaluation completes.
@@ -58,6 +60,12 @@ binaries in a stable layer before copying frequently changing JoinLint source.
 Modal can therefore reuse that layer across JoinLint commits. Each sample only
 verifies the image-installed version and SHA-256; it does not download or
 transfer host binaries.
+
+`inspect-sandboxes==0.4.0` still calls Modal's deprecated `Sandbox.open` and
+`Sandbox.mkdir` APIs. The formal runtime installs a version-locked compatibility
+shim that uses Modal's current `Sandbox.filesystem` API for file transfer. The
+shim fails closed when the pinned adapter version changes so an upstream upgrade
+must be reviewed rather than silently inheriting the patch.
 
 ## Bounded independent pilot
 

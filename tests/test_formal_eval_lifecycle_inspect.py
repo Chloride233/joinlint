@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -97,6 +98,43 @@ def test_agent_stopping_before_first_model_boundary_is_infrastructure_outcome() 
     assert record.failure_reason == LifecycleFailureReason.EVALUATION_NOT_STARTED
     assert record.evaluation_status == "not_started"
     assert scoring_eligibility(record).failure_code == "INFRASTRUCTURE_FAILURE"
+
+
+def test_readiness_forces_sandbox_tools_injection_before_agent_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class ReadySandbox:
+        async def exec(self, *args: object, **kwargs: object) -> SimpleNamespace:
+            calls.append(("exec", args, kwargs))
+            return SimpleNamespace(success=True)
+
+        async def exec_remote(self, command: list[str], *, stream: bool) -> SimpleNamespace:
+            calls.append(("exec_remote", tuple(command), stream))
+            return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: ReadySandbox())
+
+    asyncio.run(inspect_task._run_readiness_probes())
+
+    assert calls[-1] == ("exec_remote", ("true",), False)
+
+
+def test_readiness_reports_sandbox_tools_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BrokenSandbox:
+        async def exec(self, *args: object, **kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(success=True)
+
+        async def exec_remote(self, command: list[str], *, stream: bool) -> SimpleNamespace:
+            return SimpleNamespace(success=False)
+
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: BrokenSandbox())
+
+    with pytest.raises(RuntimeError, match="sandbox_tools_readiness_failed"):
+        asyncio.run(inspect_task._run_readiness_probes())
 
 
 def _state(*, store: dict[str, object]) -> TaskState:
