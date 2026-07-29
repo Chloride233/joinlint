@@ -3,39 +3,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
 from pathlib import Path
-from typing import Any, Literal
-
-from pydantic import Field
-
-from benchmarks.formal_eval.contracts import Host, StrictModel
-from joinlint.contracts import canonical_json
-
-
-SandboxPlatform = Literal["linux-x64"]
-
-
-class HostBinaryRecord(StrictModel):
-    host: Host
-    version: str
-    platform: SandboxPlatform
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    size_bytes: int = Field(gt=0)
-
-
-class HostBinaryAttestation(StrictModel):
-    schema_version: Literal[1] = 1
-    records: tuple[HostBinaryRecord, ...]
+from typing import Any
 
 
 async def install_host_binaries(
-    host_versions: dict[Host, str],
+    host_versions: dict[str, str],
     destination: Path,
     *,
-    platform: SandboxPlatform = "linux-x64",
-) -> HostBinaryAttestation:
+    platform: str = "linux-x64",
+) -> dict[str, object]:
     destination.mkdir(parents=True, exist_ok=True)
-    records: list[HostBinaryRecord] = []
+    records: list[dict[str, str | int]] = []
     for host in sorted(host_versions):
         version = host_versions[host]
         source = _binary_source(host)
@@ -48,31 +28,31 @@ async def install_host_binaries(
         target.write_bytes(binary)
         target.chmod(0o755)
         records.append(
-            HostBinaryRecord(
-                host=host,
-                version=version,
-                platform=platform,
-                sha256=hashlib.sha256(binary).hexdigest(),
-                size_bytes=len(binary),
-            )
+            {
+                "host": host,
+                "version": version,
+                "platform": platform,
+                "sha256": hashlib.sha256(binary).hexdigest(),
+                "size_bytes": len(binary),
+            }
         )
-    return HostBinaryAttestation(records=tuple(records))
+    return {"schema_version": 1, "records": records}
 
 
 def install_and_attest(
-    host_versions: dict[Host, str],
+    host_versions: dict[str, str],
     destination: Path,
     output: Path,
-) -> HostBinaryAttestation:
+) -> dict[str, object]:
     if output.exists() or output.is_symlink():
         raise ValueError("host binary attestation output already exists")
     attestation = asyncio.run(install_host_binaries(host_versions, destination))
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(canonical_json(attestation.model_dump(mode="json")) + b"\n")
+    output.write_bytes(_canonical_json(attestation) + b"\n")
     return attestation
 
 
-def _binary_source(host: Host) -> Any:
+def _binary_source(host: str) -> Any:
     if host == "codex":
         from inspect_swe._codex_cli.agentbinary import codex_cli_binary_source
 
@@ -85,7 +65,7 @@ def _binary_source(host: Host) -> Any:
 async def _download_binary(
     source: Any,
     version: str,
-    platform: SandboxPlatform,
+    platform: str,
 ) -> tuple[bytes, str]:
     from inspect_swe._util.agentbinary import download_agent_binary_async
 
@@ -109,8 +89,17 @@ def main(argv: list[str] | None = None) -> int:
         arguments.destination,
         arguments.output,
     )
-    print(canonical_json(attestation.model_dump(mode="json")).decode("utf-8"))
+    print(_canonical_json(attestation).decode("utf-8"))
     return 0
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
 
 
 if __name__ == "__main__":

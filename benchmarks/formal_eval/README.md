@@ -54,9 +54,10 @@ cannot produce an attestation unless its semantic scorers report a completed,
 scoring-eligible evaluation.
 
 Formal images download and checksum the exact frozen Codex and Claude host
-binaries once at image-build time. Each sample verifies the image-installed
-version and SHA-256, and spends no readiness time downloading or transferring
-host binaries.
+binaries in a stable layer before copying frequently changing JoinLint source.
+Modal can therefore reuse that layer across JoinLint commits. Each sample only
+verifies the image-installed version and SHA-256; it does not download or
+transfer host binaries.
 
 ## Bounded independent pilot
 

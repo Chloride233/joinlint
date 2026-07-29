@@ -44,10 +44,10 @@ def test_image_install_attests_exact_host_binaries(
         )
     )
 
-    assert [record.host for record in attestation.records] == ["claude_code", "codex"]
-    assert {
-        record.host: record.sha256 for record in attestation.records
-    } == {
+    records = attestation["records"]
+    assert isinstance(records, list)
+    assert [record["host"] for record in records] == ["claude_code", "codex"]
+    assert {record["host"]: record["sha256"] for record in records} == {
         host: hashlib.sha256(payload).hexdigest() for host, payload in payloads.items()
     }
     assert set(sources) == {"codex", "claude_code"}
@@ -84,12 +84,20 @@ def test_image_install_rejects_resolved_version_drift(
 
 def test_formal_images_install_the_frozen_pilot_host_versions() -> None:
     registration = frozen_pilot_registration("a" * 40)
+    dockerfiles = (
+        Path("Dockerfile.formal-pilot"),
+        Path("benchmarks/formal_eval/Dockerfile"),
+    )
 
-    for path in (Path("Dockerfile.formal-pilot"), Path("benchmarks/formal_eval/Dockerfile")):
+    assert dockerfiles[0].read_bytes() == dockerfiles[1].read_bytes()
+    for path in dockerfiles:
         dockerfile = path.read_text(encoding="utf-8")
         assert (
             f"--codex-version {registration.host_versions['codex']}" in dockerfile
         )
         assert (
             f"--claude-version {registration.host_versions['claude_code']}" in dockerfile
+        )
+        assert dockerfile.index("RUN python host_binaries.py install") < dockerfile.index(
+            "COPY . ."
         )
