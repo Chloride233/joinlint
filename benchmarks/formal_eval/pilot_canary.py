@@ -112,7 +112,8 @@ def build_canary_command(
     command[3:3] = ["--limit", "1"]
     token_limit_index = command.index(f"token_limit={registration.token_limit_per_run}")
     command[token_limit_index] = f"token_limit={CANARY_TOKEN_LIMIT}"
-    command.extend(["-T", f"token_limit_type={CANARY_TOKEN_LIMIT_TYPE}"])
+    token_type_index = command.index(f"token_limit_type={registration.token_limit_type}")
+    command[token_type_index] = f"token_limit_type={CANARY_TOKEN_LIMIT_TYPE}"
     sandbox_timeout_index = command.index(
         f"sandbox_timeout={registration.modal_sandbox_timeout_seconds}"
     )

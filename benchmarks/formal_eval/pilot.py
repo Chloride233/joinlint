@@ -48,10 +48,11 @@ PILOT_ALLOCATION = {"citeseer": 8, "genes": 4, "trains": 8}
 PILOT_DOMAINS = {"citeseer": "research", "genes": "biology", "trains": "transportation"}
 MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000667
+PILOT_ASSIGNMENT_DESIGN = "balanced_diagonal_crossover_v1"
 
 
 class PilotRegistration(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     evaluation_id: str
     dataset_release: str
     seed: int = Field(ge=0)
@@ -61,9 +62,13 @@ class PilotRegistration(StrictModel):
     host_versions: dict[Host, str]
     joinlint_commit: str
     budget_cny: Literal[20.0] = 20.0
-    token_limit_per_run: Literal[20_000] = 20_000
+    assignment_design: Literal["balanced_diagonal_crossover_v1"] = (
+        "balanced_diagonal_crossover_v1"
+    )
+    token_limit_per_run: Literal[35_000] = 35_000
+    token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
     time_limit_seconds: Literal[90] = 90
-    modal_sandbox_timeout_seconds: Literal[120] = 120
+    modal_sandbox_timeout_seconds: Literal[150] = 150
     modal_image_builder_version: Literal["2025.06 Stable"] = "2025.06 Stable"
     max_sandboxes: Literal[2] = 2
     cpu_cores: Literal[0.5] = 0.5
@@ -124,7 +129,7 @@ class PilotBudgetCheckpoint(StrictModel):
 def frozen_pilot_registration(commit: str) -> PilotRegistration:
     observed_at = date(2026, 7, 26)
     return PilotRegistration(
-        evaluation_id="joinlint-deepseek-modal-pilot-v1",
+        evaluation_id="joinlint-deepseek-modal-pilot-v2",
         dataset_release=PILOT_DATASET_RELEASE,
         seed=20260727,
         models=(
@@ -157,12 +162,13 @@ def frozen_pilot_registration(commit: str) -> PilotRegistration:
         ),
         host_versions={"codex": "0.144.1", "claude_code": "2.1.212"},
         joinlint_commit=commit,
+        assignment_design=PILOT_ASSIGNMENT_DESIGN,
     )
 
 
 def budget_envelope(registration: PilotRegistration) -> PilotBudgetEnvelope:
     model_upper = sum(model_batch_upper_costs(registration))
-    runs_per_model = registration.task_count * len(registration.hosts) * 2
+    runs_per_model = registration.task_count * 2
     run_count = runs_per_model * len(registration.models)
     modal_usd = run_count * registration.modal_sandbox_timeout_seconds * (
         registration.cpu_cores * MODAL_CPU_USD_PER_CORE_SECOND
@@ -181,16 +187,17 @@ def budget_envelope(registration: PilotRegistration) -> PilotBudgetEnvelope:
 
 def model_batch_upper_costs(registration: PilotRegistration) -> tuple[float, ...]:
     costs: list[float] = []
+    tasks_per_batch = registration.task_count // len(registration.hosts)
     for model in registration.models:
-        rate = max(
-            model.pricing_cny.input_cache_hit_per_million_cny,
-            model.pricing_cny.input_cache_miss_per_million_cny,
+        weighted_unit_rate = max(
+            model.pricing_cny.input_cache_hit_per_million_cny / 0.5,
+            model.pricing_cny.input_cache_miss_per_million_cny / 0.5,
             model.pricing_cny.output_per_million_cny,
         )
         batch_cost = (
-            registration.task_count
+            tasks_per_batch
             * registration.token_limit_per_run
-            * rate
+            * weighted_unit_rate
             / 1_000_000
         )
         for _host in registration.hosts:
@@ -405,9 +412,10 @@ def build_pilot_run_plan(
     lineage_id: str,
 ) -> RunPlanV2:
     runs: list[RunSpec] = []
-    for task in manifest.tasks:
-        for model in registration.models:
-            for host in registration.hosts:
+    for model in registration.models:
+        for host in registration.hosts:
+            partition = pilot_partition_for(model.tier, host)
+            for task in pilot_partition_tasks(manifest, partition):
                 for condition in ("control", "treatment"):
                     runs.append(
                         RunSpec(
@@ -431,14 +439,43 @@ def build_pilot_run_plan(
                         )
                     )
     runs.sort(key=lambda run: run.sample_id.encode("utf-8"))
-    if len(runs) != 160:
-        raise ValueError("pilot run plan must contain exactly 160 runs")
+    if len(runs) != 80:
+        raise ValueError("pilot run plan must contain exactly 80 runs")
+    run_counts = Counter(run.task_id for run in runs)
+    if set(run_counts.values()) != {4}:
+        raise ValueError("each pilot task must have four paired crossover runs")
     return RunPlanV2(
         evaluation_id=registration.evaluation_id,
         lineage_id=lineage_id,
         runs=tuple(runs),
         blind_review_sample_ids=(),
     )
+
+
+def pilot_partition_for(
+    model_tier: str,
+    host: Host,
+) -> Literal["even", "odd"]:
+    if model_tier not in {"high_capability", "cost_efficient"}:
+        raise ValueError("unsupported pilot model tier")
+    diagonal = (model_tier == "high_capability") == (host == "codex")
+    return "even" if diagonal else "odd"
+
+
+def pilot_partition_tasks(
+    manifest: FormalManifestV2,
+    partition: Literal["even", "odd"],
+) -> tuple[FormalTask, ...]:
+    ordered = sorted(
+        manifest.tasks,
+        key=lambda task: (task.database_id.encode("utf-8"), task.task_id.encode("utf-8")),
+    )
+    offset = 0 if partition == "even" else 1
+    selected = tuple(ordered[offset::2])
+    expected = (len(ordered) + (1 if partition == "even" else 0)) // 2
+    if len(selected) != expected:
+        raise ValueError("pilot crossover partition is not reproducible")
+    return selected
 
 
 def pilot_budget_report(

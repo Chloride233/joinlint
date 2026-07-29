@@ -14,6 +14,7 @@ from benchmarks.formal_eval.pilot import (
     budget_envelope,
     pilot_budget_checkpoint,
     pilot_budget_report,
+    pilot_partition_for,
     verify_pilot_inputs,
 )
 from joinlint.contracts import canonical_json
@@ -54,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.run(command, check=True, env=inspect_subprocess_environment())
         require_batch_health(
             batch_log_dir,
-            expected_sample_count=registration.task_count,
+            expected_sample_count=registration.task_count // len(registration.hosts),
         )
         observed = observed_model_cost_cny(arguments.log_dir, registration)
         after = pilot_budget_checkpoint(
@@ -164,7 +165,11 @@ def build_pilot_commands(
                         "-T",
                         f"lineage_id={lineage_id}",
                         "-T",
+                        f"task_partition={pilot_partition_for(model.tier, host)}",
+                        "-T",
                         f"token_limit={registration.token_limit_per_run}",
+                        "-T",
+                        f"token_limit_type={registration.token_limit_type}",
                         "-T",
                         f"time_limit={registration.time_limit_seconds}",
                         "-T",

@@ -50,6 +50,7 @@ from benchmarks.formal_eval.lifecycle import (
     write_lifecycle,
 )
 from benchmarks.formal_eval.oracle_mcp import OracleDocument
+from benchmarks.formal_eval.pilot import pilot_partition_tasks
 from benchmarks.formal_eval.trace import ToolEvent, assess_trace
 from joinlint.contracts import canonical_json
 
@@ -98,15 +99,18 @@ def formal_pilot_eval(
     agent_version: str,
     dockerfile: str,
     lineage_id: str,
-    token_limit: int = 20_000,
-    token_limit_type: str = "all",
+    task_partition: str,
+    token_limit: int = 35_000,
+    token_limit_type: str = "(input*0.5)+output",
     time_limit: int = 90,
-    sandbox_timeout: int = 120,
+    sandbox_timeout: int = 150,
     cpu: float = 0.5,
     memory_mib: int = 2048,
 ) -> Task:
     if condition not in {"control", "treatment"}:
         raise ValueError("pilot supports only control and treatment")
+    if task_partition not in {"even", "odd"}:
+        raise ValueError("pilot requires one frozen crossover partition")
     if (
         token_limit <= 0
         or token_limit_type not in {"all", "(input*0.5)+output"}
@@ -136,6 +140,7 @@ def formal_pilot_eval(
         readiness_time_limit=sandbox_timeout - time_limit,
         evaluation_time_limit=time_limit,
         modal_timeout_seconds=sandbox_timeout,
+        task_partition=task_partition,
     )
 
 
@@ -195,11 +200,16 @@ def _agent_task(
     readiness_time_limit: int,
     evaluation_time_limit: int,
     modal_timeout_seconds: int | None = None,
+    task_partition: str | None = None,
 ) -> Task:
     if readiness_time_limit <= 0 or evaluation_time_limit <= 0:
         raise ValueError("lifecycle time limits must be positive")
     install_modal_filesystem_compat()
     manifest_document = load_document(Path(manifest), FormalManifestV2)
+    if task_partition is not None:
+        manifest_document = manifest_document.model_copy(
+            update={"tasks": pilot_partition_tasks(manifest_document, task_partition)}
+        )
     sealed = _load_sealed(Path(sealed_tasks))
     samples = _samples(
         manifest_document,

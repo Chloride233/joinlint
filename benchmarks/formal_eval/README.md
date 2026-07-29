@@ -84,20 +84,27 @@ frozen 20-task Pilot registration.
 ## Bounded independent pilot
 
 `formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.
-It runs 160 samples: 20 tasks × 2 DeepSeek V4 tiers × 2 hosts × control/treatment,
-with no repetitions. Pilot tasks and outputs never enter the confirmatory
-effect estimate.
+It runs 80 samples under the frozen `balanced_diagonal_crossover_v1` design.
+Every task runs on both DeepSeek V4 tiers and both control/treatment arms. For
+each task, Pro and Flash use opposite hosts; the assignment reverses across the
+stable task ordering, so every model/host cell receives 10 tasks. This preserves
+paired arm comparisons and exercises all four model/host cells without treating
+the Pilot as a full-factorial effect study. There are no repetitions. Pilot
+tasks and outputs never enter the confirmatory effect estimate.
 
 The workflow accepts only the exact CNY 20 approval. The frozen worst-case
-resource envelope is CNY 19.87648: CNY 12.80 for model tokens, CNY 5.07648 for
-120-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. Each
-sample has a 20,000-token limit, a 30-second readiness limit, and a 90-second
+resource envelope is CNY 16.3728: CNY 11.20 for model tokens, CNY 3.1728 for
+150-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. Each
+sample has the same native price-weighted token limit proven by the successful
+canary, `(input*0.5)+output:35000`, a 60-second readiness limit, and a 90-second
 evaluation limit that starts at the first model request; each Modal sandbox has
-a platform-level 120-second automatic timeout. The workspace Image Builder is
+a platform-level 150-second automatic timeout. The existing 0.5 CPU and 2 GiB
+memory allocation remains unchanged rather than introducing an unmeasured
+memory reduction. The workspace Image Builder is
 operator-confirmed and frozen as `2025.06 Stable`; this declared setting is
 bound into the input lock but is not presented as a machine-queried attestation.
 Model retries are disabled,
-concurrency is two, and the dispatcher stops before the next 20-task batch when
+concurrency is two, and the dispatcher stops before the next 10-task batch when
 observed cost plus every remaining worst-case batch would exceed CNY 20.
 
 The frozen inputs are packaged as one access-controlled GitHub Draft Release

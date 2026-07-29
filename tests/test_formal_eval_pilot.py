@@ -51,11 +51,11 @@ def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:
 
     envelope = budget_envelope(registration)
 
-    assert envelope.run_count == 160
-    assert envelope.model_cost_upper_cny == pytest.approx(12.8)
-    assert envelope.modal_compute_upper_cny == pytest.approx(5.07648)
+    assert envelope.run_count == 80
+    assert envelope.model_cost_upper_cny == pytest.approx(11.2)
+    assert envelope.modal_compute_upper_cny == pytest.approx(3.1728)
     assert envelope.modal_image_build_reserve_cny == 2.0
-    assert envelope.total_upper_cny == pytest.approx(19.87648)
+    assert envelope.total_upper_cny == pytest.approx(16.3728)
     assert envelope.total_upper_cny < registration.budget_cny == 20.0
     assert registration.modal_image_builder_version == "2025.06 Stable"
     assert {model.family for model in registration.models} == {"deepseek-v4"}
@@ -64,7 +64,7 @@ def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:
         "cost_efficient",
     }
     assert model_batch_upper_costs(registration) == pytest.approx(
-        (2.4, 2.4, 2.4, 2.4, 0.8, 0.8, 0.8, 0.8)
+        (2.1, 2.1, 2.1, 2.1, 0.7, 0.7, 0.7, 0.7)
     )
 
 
@@ -218,32 +218,36 @@ def test_pilot_budget_checkpoint_stops_before_an_unsafe_next_batch() -> None:
     safe = pilot_budget_checkpoint(
         registration,
         completed_batches=1,
-        actual_model_cost_cny=2.4,
+        actual_model_cost_cny=2.1,
     )
     unsafe = pilot_budget_checkpoint(
         registration,
         completed_batches=1,
-        actual_model_cost_cny=4.0,
+        actual_model_cost_cny=6.0,
     )
 
     assert safe.safe_to_continue is True
-    assert safe.projected_total_upper_cny == pytest.approx(19.87648)
+    assert safe.projected_total_upper_cny == pytest.approx(16.3728)
     assert unsafe.safe_to_continue is False
-    assert unsafe.projected_total_upper_cny == pytest.approx(21.47648)
+    assert unsafe.projected_total_upper_cny == pytest.approx(20.2728)
 
 
-def test_pilot_run_plan_is_exactly_twenty_tasks_and_160_runs() -> None:
+def test_pilot_run_plan_is_twenty_tasks_and_80_balanced_crossover_runs() -> None:
     registration = frozen_pilot_registration(COMMIT)
     plan = build_pilot_run_plan(_manifest(20), registration, LINEAGE_ID)
 
     assert len({run.task_id for run in plan.runs}) == 20
-    assert len(plan.runs) == 160
+    assert len(plan.runs) == 80
     assert {run.repetition for run in plan.runs} == {0}
     assert {run.condition for run in plan.runs} == {"control", "treatment"}
     assert {run.host for run in plan.runs} == {"codex", "claude_code"}
     assert {run.model_id for run in plan.runs} == {
         model.returned_id for model in registration.models
     }
+    assert {
+        sum(run.task_id == task_id for run in plan.runs)
+        for task_id in {run.task_id for run in plan.runs}
+    } == {4}
     assert not any(run.confirmatory for run in plan.runs)
 
 
@@ -275,9 +279,14 @@ def test_pilot_dispatch_has_eight_non_retrying_bounded_batches(tmp_path: Path) -
     assert {command[command.index("--max-retries") + 1] for command in commands} == {"0"}
     assert all("--time-limit" not in command for command in commands)
     assert {command[command.index("--max-sandboxes") + 1] for command in commands} == {"2"}
-    assert all("token_limit=20000" in command for command in commands)
+    assert all("token_limit=35000" in command for command in commands)
+    assert all("token_limit_type=(input*0.5)+output" in command for command in commands)
     assert all("time_limit=90" in command for command in commands)
-    assert all("sandbox_timeout=120" in command for command in commands)
+    assert all("sandbox_timeout=150" in command for command in commands)
+    assert {
+        next(value for value in command if value.startswith("task_partition="))
+        for command in commands
+    } == {"task_partition=even", "task_partition=odd"}
     assert all("cpu=0.5" in command for command in commands)
     assert all("memory_mib=2048" in command for command in commands)
     assert all(
@@ -297,16 +306,16 @@ def test_pilot_dispatch_has_eight_non_retrying_bounded_batches(tmp_path: Path) -
 def test_pilot_dispatch_stops_on_systemic_batch_failure() -> None:
     failed_samples = [
         SimpleNamespace(error=RuntimeError("sandbox failed"), scores={}, model_usage={})
-        for _ in range(20)
+        for _ in range(10)
     ]
 
     with pytest.raises(RuntimeError, match="systemic infrastructure failure"):
-        require_sample_batch_health(failed_samples, expected_sample_count=20)
+        require_sample_batch_health(failed_samples, expected_sample_count=10)
 
     one_scored_sample = SimpleNamespace(error=None, scores={"join": 1}, model_usage={})
     require_sample_batch_health(
         failed_samples[:-1] + [one_scored_sample],
-        expected_sample_count=20,
+        expected_sample_count=10,
     )
 
 
@@ -325,7 +334,7 @@ def test_pilot_budget_report_fails_when_observed_total_exceeds_ceiling() -> None
 
     report = pilot_budget_report(registration, plan, results)
 
-    assert report.run_count == 160
+    assert report.run_count == 80
     assert report.total_cost_upper_cny > report.approved_budget_cny
     assert report.passed is False
 
@@ -384,6 +393,7 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
         agent_version="0.144.1",
         dockerfile="Dockerfile.formal-pilot",
         lineage_id=LINEAGE_ID,
+        task_partition="even",
     )
 
     sandbox = inspect_task.sandbox
@@ -393,9 +403,10 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
     assert service.build.dockerfile == "Dockerfile.formal-pilot"
     assert service.cpus == 0.5
     assert service.mem_limit == "2048m"
-    assert inspect_task.token_limit == 20_000
+    assert inspect_task.token_limit == 35_000
+    assert inspect_task.token_limit_type == "(input*0.5)+output"
     assert inspect_task.time_limit is None
-    assert sandbox.config.extensions == {"x-modal": {"timeout": 120}}
+    assert sandbox.config.extensions == {"x-modal": {"timeout": 150}}
 
     from inspect_sandboxes._util.naming import make_sandbox_name
 
@@ -421,7 +432,7 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
     assert params.kwargs["image"] == "test-image"
     assert params.kwargs["cpu"] == 0.5
     assert params.kwargs["memory"] == 2048
-    assert params.kwargs["timeout"] == 120
+    assert params.kwargs["timeout"] == 150
 
 
 def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> None:
