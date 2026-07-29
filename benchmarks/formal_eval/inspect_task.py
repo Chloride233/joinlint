@@ -107,7 +107,8 @@ def formal_pilot_eval(
     agent_version: str,
     dockerfile: str,
     lineage_id: str,
-    task_partition: str,
+    task_partition: str = "",
+    task_ids: str = "",
     token_limit: int = 35_000,
     token_limit_type: str = "(input*0.5)+output",
     message_limit: int = 12,
@@ -118,8 +119,11 @@ def formal_pilot_eval(
 ) -> Task:
     if condition not in {"control", "treatment"}:
         raise ValueError("pilot supports only control and treatment")
-    if task_partition not in {"even", "odd"}:
-        raise ValueError("pilot requires one frozen crossover partition")
+    requested_task_ids = tuple(value for value in task_ids.split(",") if value)
+    if len(requested_task_ids) != len(set(requested_task_ids)):
+        raise ValueError("pilot task-ID set must not contain duplicates")
+    if (task_partition in {"even", "odd"}) == bool(requested_task_ids):
+        raise ValueError("pilot requires exactly one frozen partition or task-ID set")
     if (
         token_limit <= 0
         or token_limit_type not in {"all", "(input*0.5)+output"}
@@ -150,7 +154,8 @@ def formal_pilot_eval(
         readiness_time_limit=sandbox_timeout - time_limit,
         evaluation_time_limit=time_limit,
         modal_timeout_seconds=sandbox_timeout,
-        task_partition=task_partition,
+        task_partition=task_partition or None,
+        task_ids=requested_task_ids,
         message_limit=message_limit,
     )
 
@@ -212,6 +217,7 @@ def _agent_task(
     evaluation_time_limit: int,
     modal_timeout_seconds: int | None = None,
     task_partition: str | None = None,
+    task_ids: tuple[str, ...] = (),
     message_limit: int | None = None,
 ) -> Task:
     if readiness_time_limit <= 0 or evaluation_time_limit <= 0:
@@ -222,6 +228,14 @@ def _agent_task(
         manifest_document = manifest_document.model_copy(
             update={"tasks": pilot_partition_tasks(manifest_document, task_partition)}
         )
+    if task_ids:
+        requested = set(task_ids)
+        selected = tuple(
+            task for task in manifest_document.tasks if task.task_id in requested
+        )
+        if len(selected) != len(requested):
+            raise ValueError("pilot task-ID set is missing from the frozen manifest")
+        manifest_document = manifest_document.model_copy(update={"tasks": selected})
     sealed = _load_sealed(Path(sealed_tasks))
     samples = _samples(
         manifest_document,

@@ -52,9 +52,9 @@ Readiness failures and Agents that never reach a first model request produce a
 task outcome with `INFRASTRUCTURE_FAILURE`; they are never interpreted as SQL
 parse failures. A timeout after the first model request remains `MODEL_TIMEOUT`.
 Message, turn, or token exhaustion after that boundary remains `MODEL_LIMIT`.
-The no-model lifecycle test is a mandatory workflow gate, and a Pilot canary
-cannot produce an attestation unless its semantic scorers report a completed,
-scoring-eligible evaluation.
+The no-model lifecycle test is a mandatory workflow gate. The legacy one-cell
+Pilot canary is operational evidence only; it is not accepted as evidence that
+the full Pilot matrix or its resource contract is ready.
 
 Formal images download and checksum the exact frozen Codex and Claude host
 binaries in a stable layer before copying frequently changing JoinLint source.
@@ -80,8 +80,36 @@ bridge dependency is exercised before any full matrix run. Its Inspect accountin
 limit uses the native price-weighted expression `(input*0.5)+output:60000`:
 input is weighted at the cache-miss CNY 1 rate relative to the CNY 2 output rate,
 while cache hits are conservatively treated as misses. The resulting CNY 0.12
-model ceiling keeps the complete canary under its CNY 2.25 gate. This canary-only envelope does not change the separately
-frozen 20-task Pilot registration.
+model ceiling keeps the complete canary under its CNY 2.25 gate. This
+canary-only envelope does not change the separately frozen 20-task Pilot
+registration. A green result proves only that the selected Claude/Flash path
+reached scoring; it does not authorize a full Pilot dispatch.
+
+## Sealed four-cell calibration
+
+`formal-pilot-calibration.yml` is the required gate before another full Pilot.
+The sealed input freezes two task IDs using the deterministic
+`highest_join_depth_then_task_id_v1` rule. Each task runs in treatment on both
+model tiers and both hosts, producing eight samples. Unlike the legacy canary,
+calibration uses the exact Pilot limits without overrides: 35,000 native
+price-weighted tokens, 12 messages, 90 seconds after the first model request,
+and a 150-second Modal sandbox.
+
+Calibration emits three separate attestations. Infrastructure attestation
+requires every model/host/task cell to prepare the selected host binary.
+Harness attestation requires complete entity planning, a usable proof, exact
+final-SQL validation, successful proof binding, and MCP grounding. Scoring
+attestation requires both scorer artifacts, scoring eligibility, and a
+parseable final submission. All three must pass before `formal-pilot.yml`
+accepts the calibration run.
+
+The eight-run ceiling is CNY 4.00: a modeled CNY 1.12 token upper bound, CNY
+0.31728 Modal-compute upper bound, and CNY 2.00 image-build reserve. Dispatch
+also requires the previously accumulated investigation spend and cumulative
+campaign budget; both values are recorded in the attestation. The weighted
+token expression remains a conservative prompt-complexity limit, not a
+cache-aware monetary meter. Actual model cost is calculated separately from
+cache-hit, uncached-input, and output usage.
 
 ## Bounded independent pilot
 
@@ -96,9 +124,13 @@ tasks and outputs never enter the confirmatory effect estimate.
 
 The workflow accepts only the exact CNY 20 approval. The frozen worst-case
 resource envelope is CNY 16.3728: CNY 11.20 for model tokens, CNY 3.1728 for
-150-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. Each
-sample has the same native price-weighted token limit proven by the successful
-canary, `(input*0.5)+output:35000`, a 60-second readiness limit, and a 90-second
+150-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. It also
+requires the cumulative investigation budget and the spend observed before the
+Pilot; dispatch stops unless that prior spend plus the full CNY 20 run ceiling
+fits inside the campaign budget. Each
+sample has the native price-weighted token limit exercised by the required
+four-cell calibration, `(input*0.5)+output:35000`, a 60-second readiness limit,
+and a 90-second
 evaluation limit that starts at the first model request; each Modal sandbox has
 a platform-level 150-second automatic timeout. A 12-message limit bounds
 runaway host exploration before the token ceiling. The existing 0.5 CPU and 2 GiB

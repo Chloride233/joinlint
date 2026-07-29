@@ -6,6 +6,9 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from pydantic import Field
+
+from benchmarks.formal_eval.contracts import StrictModel
 from benchmarks.formal_eval.export import export_agent_rows
 from benchmarks.formal_eval.dispatch import REPOSITORY_ROOT, inspect_subprocess_environment
 from benchmarks.formal_eval.lifecycle import LIFECYCLE_STORE_KEY
@@ -21,11 +24,21 @@ from benchmarks.formal_eval.pilot import (
 from joinlint.contracts import canonical_json
 
 
+class PilotCampaignBudget(StrictModel):
+    campaign_budget_cny: float = Field(gt=0)
+    campaign_spend_before_cny: float = Field(ge=0)
+    pilot_cost_upper_cny: float = Field(ge=0)
+    campaign_total_upper_cny: float = Field(ge=0)
+    passed: bool
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the frozen 20-task Modal pilot")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--log-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--campaign-budget-cny", type=float, required=True)
+    parser.add_argument("--campaign-spend-before-cny", type=float, required=True)
     arguments = parser.parse_args(argv)
     registration, _, run_plan = verify_pilot_inputs(arguments.root)
     inspect = shutil.which("inspect")
@@ -41,6 +54,13 @@ def main(argv: list[str] | None = None) -> int:
     envelope = budget_envelope(registration)
     if envelope.total_upper_cny > registration.budget_cny:
         raise ValueError("pilot upper-bound cost exceeds the approved budget")
+    campaign_before = pilot_campaign_budget(
+        campaign_budget_cny=arguments.campaign_budget_cny,
+        campaign_spend_before_cny=arguments.campaign_spend_before_cny,
+        pilot_cost_upper_cny=registration.budget_cny,
+    )
+    if not campaign_before.passed:
+        raise ValueError("pilot could exceed the approved cumulative campaign budget")
     arguments.output.mkdir(parents=True, exist_ok=True)
     for batch_index, command in enumerate(commands):
         before = pilot_budget_checkpoint(
@@ -86,7 +106,31 @@ def main(argv: list[str] | None = None) -> int:
     (arguments.output / "budget.json").write_bytes(
         canonical_json(budget.model_dump(mode="json")) + b"\n"
     )
-    return 0 if budget.passed else 2
+    campaign = pilot_campaign_budget(
+        campaign_budget_cny=arguments.campaign_budget_cny,
+        campaign_spend_before_cny=arguments.campaign_spend_before_cny,
+        pilot_cost_upper_cny=budget.total_cost_upper_cny,
+    )
+    (arguments.output / "campaign-budget.json").write_bytes(
+        canonical_json(campaign.model_dump(mode="json")) + b"\n"
+    )
+    return 0 if budget.passed and campaign.passed else 2
+
+
+def pilot_campaign_budget(
+    *,
+    campaign_budget_cny: float,
+    campaign_spend_before_cny: float,
+    pilot_cost_upper_cny: float,
+) -> PilotCampaignBudget:
+    total = campaign_spend_before_cny + pilot_cost_upper_cny
+    return PilotCampaignBudget(
+        campaign_budget_cny=campaign_budget_cny,
+        campaign_spend_before_cny=campaign_spend_before_cny,
+        pilot_cost_upper_cny=pilot_cost_upper_cny,
+        campaign_total_upper_cny=total,
+        passed=total <= campaign_budget_cny,
+    )
 
 
 def _write_checkpoint(output: Path, checkpoint: PilotBudgetCheckpoint) -> None:

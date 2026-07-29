@@ -127,6 +127,20 @@ class PilotBudgetCheckpoint(StrictModel):
     safe_to_continue: bool
 
 
+class PilotCalibrationSpec(StrictModel):
+    schema_version: Literal[1] = 1
+    task_ids: tuple[str, str]
+    selection_rule: Literal["highest_join_depth_then_task_id_v1"] = (
+        "highest_join_depth_then_task_id_v1"
+    )
+
+    @model_validator(mode="after")
+    def require_two_distinct_tasks(self) -> PilotCalibrationSpec:
+        if len(set(self.task_ids)) != 2:
+            raise ValueError("pilot calibration requires two distinct task IDs")
+        return self
+
+
 def frozen_pilot_registration(commit: str) -> PilotRegistration:
     observed_at = date(2026, 7, 26)
     return PilotRegistration(
@@ -359,6 +373,7 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
         )
         sealed_tasks.sort(key=lambda task: task.task_id.encode("utf-8"))
         verify_sealed_manifest(manifest, sealed_tasks)
+        calibration = build_pilot_calibration_spec(manifest)
         registration = frozen_pilot_registration(commit)
         envelope = budget_envelope(registration)
 
@@ -367,6 +382,7 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
             [task.model_dump(mode="json", by_alias=True) for task in sealed_tasks],
         )
         _write_canonical(staging / "manifest.json", manifest.model_dump(mode="json"))
+        _write_canonical(staging / "calibration.json", calibration.model_dump(mode="json"))
         _write_canonical(staging / "registration.json", registration.model_dump(mode="json"))
         source = {
             "schema_version": 1,
@@ -479,6 +495,27 @@ def pilot_partition_tasks(
     return selected
 
 
+def build_pilot_calibration_spec(manifest: FormalManifestV2) -> PilotCalibrationSpec:
+    ranked = sorted(
+        manifest.tasks,
+        key=lambda task: (-task.join_depth, task.task_id.encode("utf-8")),
+    )
+    if len(ranked) < 2:
+        raise ValueError("pilot calibration requires at least two frozen tasks")
+    return PilotCalibrationSpec(task_ids=(ranked[0].task_id, ranked[1].task_id))
+
+
+def load_pilot_calibration_spec(
+    root: Path,
+    manifest: FormalManifestV2,
+) -> PilotCalibrationSpec:
+    specification = load_document(root / "calibration.json", PilotCalibrationSpec)
+    expected = build_pilot_calibration_spec(manifest)
+    if specification != expected:
+        raise ValueError("pilot calibration task selection is not reproducible")
+    return specification
+
+
 def pilot_budget_report(
     registration: PilotRegistration,
     run_plan: RunPlanV2,
@@ -528,6 +565,7 @@ def verify_pilot_inputs(root: Path) -> tuple[PilotRegistration, FormalManifestV2
         (root / "agent-tasks.json").read_bytes()
     )
     verify_sealed_manifest(manifest, tasks)
+    load_pilot_calibration_spec(root, manifest)
     if manifest.dataset_release != registration.dataset_release:
         raise ValueError("pilot registration and manifest releases differ")
     expected_lineage = digest_value(

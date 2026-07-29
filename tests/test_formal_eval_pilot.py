@@ -18,15 +18,24 @@ from benchmarks.formal_eval.manifest import verify_input_lock
 from benchmarks.formal_eval.pilot import (
     _input_lock,
     budget_envelope,
+    build_pilot_calibration_spec,
     build_pilot_run_plan,
     frozen_pilot_registration,
     model_batch_upper_costs,
     pilot_budget_checkpoint,
     pilot_budget_report,
 )
+from benchmarks.formal_eval.pilot_calibration import (
+    CALIBRATION_BUDGET_CNY,
+    InfrastructureAttestation,
+    attest_calibration_samples,
+    build_calibration_commands,
+    calibration_budget_envelope,
+)
 from benchmarks.formal_eval.pilot_dispatch import (
     build_pilot_commands,
     model_usage_cost_cny,
+    pilot_campaign_budget,
     require_sample_batch_health,
 )
 from benchmarks.formal_eval.pilot_canary import (
@@ -101,6 +110,150 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
     assert "sandbox_timeout=150" in command
     assert "sandbox_timeout=120" not in command
     assert registration.models[1].id in command
+
+
+def test_pilot_calibration_freezes_two_highest_depth_tasks() -> None:
+    manifest = _manifest(4)
+    depths = (1, 4, 2, 4)
+    manifest = manifest.model_copy(
+        update={
+            "tasks": tuple(
+                task.model_copy(update={"join_depth": depth})
+                for task, depth in zip(manifest.tasks, depths, strict=True)
+            )
+        }
+    )
+
+    specification = build_pilot_calibration_spec(manifest)
+
+    assert specification.task_ids == ("task-1", "task-3")
+
+
+def test_pilot_calibration_uses_exact_formal_resource_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import benchmarks.formal_eval.pilot_calibration as calibration
+
+    registration = frozen_pilot_registration(COMMIT)
+    manifest = _manifest(20)
+    specification = build_pilot_calibration_spec(manifest)
+    run_plan = SimpleNamespace(lineage_id=LINEAGE_ID)
+    monkeypatch.setattr(
+        calibration,
+        "verify_pilot_inputs",
+        lambda root: (registration, manifest, run_plan),
+    )
+    monkeypatch.setattr(
+        calibration,
+        "load_pilot_calibration_spec",
+        lambda root, current_manifest: specification,
+    )
+
+    commands = build_calibration_commands(
+        inspect="/usr/bin/inspect",
+        registration=registration,
+        root=tmp_path / "sealed",
+        log_dir=tmp_path / "logs",
+        lineage_id=LINEAGE_ID,
+    )
+    envelope = calibration_budget_envelope(registration)
+
+    assert CALIBRATION_BUDGET_CNY == 4.0
+    assert envelope.run_count == 8
+    assert envelope.model_cost_upper_cny == pytest.approx(1.12)
+    assert envelope.modal_compute_upper_cny == pytest.approx(0.31728)
+    assert envelope.total_upper_cny == pytest.approx(3.43728)
+    assert len(commands) == 4
+    assert all("condition=treatment" in command for command in commands)
+    assert all("token_limit=35000" in command for command in commands)
+    assert all("message_limit=12" in command for command in commands)
+    assert all("time_limit=90" in command for command in commands)
+    assert all("sandbox_timeout=150" in command for command in commands)
+    assert all(not any(value.startswith("task_partition=") for value in command) for command in commands)
+    expected_task_ids = f"task_ids={','.join(specification.task_ids)}"
+    assert all(expected_task_ids in command for command in commands)
+
+
+def test_pilot_calibration_attests_infrastructure_harness_and_scoring() -> None:
+    from benchmarks.formal_eval.lifecycle import (
+        allow_scoring,
+        complete_evaluation,
+        infrastructure_prepared,
+        new_lifecycle,
+        readiness_passed,
+        start_evaluation,
+    )
+
+    registration = frozen_pilot_registration(COMMIT)
+    task_ids = ("task-a", "task-b")
+    lifecycle = new_lifecycle("codex", "0.144.1")
+    lifecycle = infrastructure_prepared(
+        lifecycle,
+        duration_seconds=1,
+        host_binary_sha256="c" * 64,
+    )
+    lifecycle = readiness_passed(lifecycle, duration_seconds=1)
+    lifecycle = start_evaluation(lifecycle)
+    lifecycle = complete_evaluation(lifecycle, duration_seconds=1)
+    lifecycle = allow_scoring(lifecycle)
+    trace = {
+        "plan_called": True,
+        "plan_usable": True,
+        "complete_entity_planning": True,
+        "final_sql_validated": True,
+        "validation_passed": True,
+        "mcp_grounded": True,
+        "tool_error": False,
+    }
+    samples = []
+    for model in registration.models:
+        for host in registration.hosts:
+            for task_id in task_ids:
+                host_lifecycle = lifecycle.model_copy(
+                    update={"host": host, "agent_version": registration.host_versions[host]}
+                )
+                samples.append(
+                    SimpleNamespace(
+                        metadata={"host": host, "task_id": task_id},
+                        model_usage={model.returned_id: object()},
+                        store={
+                            "joinlint.formal_eval.lifecycle.v1": host_lifecycle.model_dump(
+                                mode="json"
+                            )
+                        },
+                        scores={
+                            "formal_join_scorer": SimpleNamespace(
+                                metadata={"failure_code": None, "trace": trace}
+                            ),
+                            "formal_execution_scorer": SimpleNamespace(
+                                metadata={"error_code": None}
+                            ),
+                        },
+                    )
+                )
+
+    infrastructure, harness, scoring = attest_calibration_samples(
+        samples,
+        registration=registration,
+        task_ids=task_ids,
+    )
+
+    assert infrastructure.status == "passed"
+    assert harness.status == "passed"
+    assert scoring.status == "passed"
+    assert len(infrastructure.cells) == len(harness.cells) == len(scoring.cells) == 8
+
+    samples[0].scores["formal_join_scorer"].metadata["failure_code"] = "SQL_PARSE_FAILED"
+    _, _, failed_scoring = attest_calibration_samples(
+        samples,
+        registration=registration,
+        task_ids=task_ids,
+    )
+    assert failed_scoring.status == "failed"
+
+    with pytest.raises(ValueError, match="status is inconsistent"):
+        InfrastructureAttestation(status="passed", cells=())
 
 
 def test_pilot_canary_requires_model_usage_and_both_scorers() -> None:
@@ -233,6 +386,23 @@ def test_pilot_budget_checkpoint_stops_before_an_unsafe_next_batch() -> None:
     assert safe.projected_total_upper_cny == pytest.approx(16.3728)
     assert unsafe.safe_to_continue is False
     assert unsafe.projected_total_upper_cny == pytest.approx(20.2728)
+
+
+def test_pilot_campaign_budget_includes_prior_investigation_spend() -> None:
+    safe = pilot_campaign_budget(
+        campaign_budget_cny=30,
+        campaign_spend_before_cny=8,
+        pilot_cost_upper_cny=20,
+    )
+    unsafe = pilot_campaign_budget(
+        campaign_budget_cny=27,
+        campaign_spend_before_cny=8,
+        pilot_cost_upper_cny=20,
+    )
+
+    assert safe.campaign_total_upper_cny == 28
+    assert safe.passed is True
+    assert unsafe.passed is False
 
 
 def test_pilot_run_plan_is_twenty_tasks_and_80_balanced_crossover_runs() -> None:
@@ -468,7 +638,7 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert workflow["on"]["workflow_dispatch"]["inputs"]["pilot_commit"]["default"] == (
         "05da3fb4b2fa8536caef7a28cd9994b8b84a98c9"
     )
-    assert workflow["on"]["workflow_dispatch"]["inputs"]["canary_run_id"]["required"] == (
+    assert workflow["on"]["workflow_dispatch"]["inputs"]["calibration_run_id"]["required"] == (
         "true"
     )
     assert workflow["permissions"]["actions"] == "read"
@@ -497,20 +667,24 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         "MODAL_TOKEN_SECRET",
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_BASE_URL",
+        "CAMPAIGN_BUDGET_CNY",
+        "CAMPAIGN_SPEND_BEFORE_CNY",
     }
+    assert "--campaign-budget-cny \"$CAMPAIGN_BUDGET_CNY\"" in run_step["run"]
+    assert "--campaign-spend-before-cny \"$CAMPAIGN_SPEND_BEFORE_CNY\"" in run_step["run"]
     assert "OPENAI_API_KEY" not in text
-    canary_restore = next(
+    calibration_restore = next(
         step
         for step in job["steps"]
-        if step.get("name") == "Restore successful canary attestation"
+        if step.get("name") == "Restore successful calibration attestation"
     )
-    assert set(canary_restore["env"]) == {"GH_TOKEN", "CANARY_RUN_ID"}
-    assert "gh run download" in canary_restore["run"]
+    assert set(calibration_restore["env"]) == {"GH_TOKEN", "CALIBRATION_RUN_ID"}
+    assert "gh run download" in calibration_restore["run"]
     step_names = [step.get("name") for step in job["steps"]]
     assert step_names.index("Run no-model lifecycle gate") < step_names.index(
         "Restore private frozen pilot inputs"
     )
-    assert step_names.index("Verify canary attestation binding") < step_names.index(
+    assert step_names.index("Verify calibration attestation binding") < step_names.index(
         "Run the approved 20-task pilot"
     )
 
@@ -540,6 +714,29 @@ def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_BASE_URL",
     }
+
+
+def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() -> None:
+    workflow_path = Path(".github/workflows/formal-pilot-calibration.yml")
+    workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    text = workflow_path.read_text(encoding="utf-8")
+    job = workflow["jobs"]["calibration"]
+
+    assert job["environment"] == "formal-evaluation"
+    assert "inputs.confirm_paid != true || inputs.budget_cny != '4'" in text
+    run_step = next(
+        step for step in job["steps"] if step.get("name") == "Run sealed four-cell calibration"
+    )
+    assert set(run_step["env"]) == {
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_BASE_URL",
+        "CAMPAIGN_BUDGET_CNY",
+        "CAMPAIGN_SPEND_BEFORE_CNY",
+    }
+    assert "--campaign-budget-cny \"$CAMPAIGN_BUDGET_CNY\"" in run_step["run"]
+    assert "--campaign-spend-before-cny \"$CAMPAIGN_SPEND_BEFORE_CNY\"" in run_step["run"]
 
 
 def _manifest(count: int, *, task: SealedAgentTask | None = None) -> FormalManifestV2:

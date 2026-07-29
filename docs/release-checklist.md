@@ -62,8 +62,9 @@
   `execution_count: 0`; missing or nonzero values must fail the SQL gate.
 - Run the protected `formal-evaluation` GitHub Actions workflow only after its
   explicit paid-run approval; do not use a local machine as a runner.
-- Verify the diagnostic canary completes before confirmatory dispatch and never
-  enters the confirmatory report.
+- Verify the diagnostic canary remains operational evidence only. Before a full
+  Pilot, require the bound four-cell calibration attestation with the exact
+  Pilot limits; neither diagnostic output enters the confirmatory report.
 - Verify sanitized exports reject unexpected returned model IDs, duplicate run
   identities, missing scorer artifacts, raw questions, schema text, gold SQL,
   database paths, transcripts, and common credential prefixes.
