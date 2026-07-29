@@ -64,6 +64,7 @@ class PilotRegistration(StrictModel):
     token_limit_per_run: Literal[20_000] = 20_000
     time_limit_seconds: Literal[90] = 90
     modal_sandbox_timeout_seconds: Literal[120] = 120
+    modal_image_builder_version: Literal["2025.06 Stable"] = "2025.06 Stable"
     max_sandboxes: Literal[2] = 2
     cpu_cores: Literal[0.5] = 0.5
     memory_mib: Literal[2048] = 2048

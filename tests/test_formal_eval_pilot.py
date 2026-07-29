@@ -53,6 +53,7 @@ def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:
     assert envelope.modal_image_build_reserve_cny == 2.0
     assert envelope.total_upper_cny == pytest.approx(19.87648)
     assert envelope.total_upper_cny < registration.budget_cny == 20.0
+    assert registration.modal_image_builder_version == "2025.06 Stable"
     assert {model.family for model in registration.models} == {"deepseek-v4"}
     assert {model.tier for model in registration.models} == {
         "high_capability",

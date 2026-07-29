@@ -79,7 +79,10 @@ resource envelope is CNY 19.87648: CNY 12.80 for model tokens, CNY 5.07648 for
 120-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. Each
 sample has a 20,000-token limit, a 30-second readiness limit, and a 90-second
 evaluation limit that starts at the first model request; each Modal sandbox has
-a platform-level 120-second automatic timeout. Model retries are disabled,
+a platform-level 120-second automatic timeout. The workspace Image Builder is
+operator-confirmed and frozen as `2025.06 Stable`; this declared setting is
+bound into the input lock but is not presented as a machine-queried attestation.
+Model retries are disabled,
 concurrency is two, and the dispatcher stops before the next 20-task batch when
 observed cost plus every remaining worst-case batch would exceed CNY 20.
 
