@@ -67,6 +67,12 @@ shim that uses Modal's current `Sandbox.filesystem` API for file transfer. The
 shim fails closed when the pinned adapter version changes so an upstream upgrade
 must be reviewed rather than silently inheriting the patch.
 
+`formal-modal-readiness.yml` is the manual, no-model precursor to a paid Agent
+canary. It uses the exact Pilot Dockerfile and lifecycle limits, exposes only
+Modal credentials, rejects any model usage, and emits a commit-bound readiness
+report. Its exact CNY 2.05 approval covers the CNY 0.031728 sandbox-compute upper
+bound plus the existing CNY 2.00 image-build reserve.
+
 ## Bounded independent pilot
 
 `formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.

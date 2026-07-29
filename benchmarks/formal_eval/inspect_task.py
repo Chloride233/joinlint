@@ -136,6 +136,47 @@ def formal_pilot_eval(
     )
 
 
+@task
+def formal_modal_readiness_eval(
+    database: str,
+    host: Host,
+    agent_version: str,
+    dockerfile: str,
+    readiness_time_limit: int = 30,
+    sandbox_timeout: int = 120,
+) -> Task:
+    if readiness_time_limit <= 0 or sandbox_timeout <= readiness_time_limit:
+        raise ValueError("readiness resource limits must be positive")
+    database_path = Path(database).resolve(strict=True)
+    if database_path.is_symlink() or not database_path.is_file():
+        raise ValueError("readiness database must be one regular file")
+    install_modal_filesystem_compat()
+    service = ComposeService(
+        build=ComposeBuild(context=".", dockerfile=dockerfile),
+        working_dir="/workspace/joinlint",
+        cpus=0.5,
+        mem_limit="2048m",
+        x_default=True,
+    )
+    return Task(
+        dataset=[
+            Sample(
+                id="modal-readiness",
+                input="Infrastructure readiness only; no model request is permitted.",
+                target="",
+                files={"/workspace/data/database.sqlite": str(database_path)},
+            )
+        ],
+        solver=infrastructure_readiness(host, agent_version, readiness_time_limit),
+        scorer=formal_modal_readiness_scorer(),
+        config=GenerateConfig(max_tokens=1, cache=False),
+        sandbox=("modal", _compose_config(service, sandbox_timeout)),
+        token_limit=1,
+        time_limit=None,
+        name="jl-readiness",
+    )
+
+
 def _agent_task(
     *,
     sealed_tasks: str,
@@ -200,6 +241,35 @@ def _compose_config(
         else {}
     )
     return ComposeConfig(services={"default": service}, **extensions)
+
+
+@scorer(metrics=[mean()])
+def formal_modal_readiness_scorer() -> Scorer:
+    async def score(state: TaskState, target: Target) -> Score:
+        del target
+        record = _require_lifecycle(state)
+        passed = (
+            record.infrastructure_prepared_at is not None
+            and record.host_binary_sha256 is not None
+            and record.failure_reason is None
+        )
+        return Score(
+            value=1 if passed else 0,
+            metadata={
+                "score_kind": "infrastructure_readiness",
+                "readiness_attested": passed,
+                "host": record.host,
+                "agent_version": record.agent_version,
+                "host_binary_sha256": record.host_binary_sha256,
+                "infrastructure_preparation_duration_seconds": (
+                    record.infrastructure_preparation_duration_seconds
+                ),
+                "failure_reason": record.failure_reason,
+                "failure_detail": record.failure_detail,
+            },
+        )
+
+    return score
 
 
 @scorer(metrics=[mean()])
