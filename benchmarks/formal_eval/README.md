@@ -51,6 +51,7 @@ Each stage records its own status and duration in the Inspect sample store.
 Readiness failures and Agents that never reach a first model request produce a
 task outcome with `INFRASTRUCTURE_FAILURE`; they are never interpreted as SQL
 parse failures. A timeout after the first model request remains `MODEL_TIMEOUT`.
+Message, turn, or token exhaustion after that boundary remains `MODEL_LIMIT`.
 The no-model lifecycle test is a mandatory workflow gate, and a Pilot canary
 cannot produce an attestation unless its semantic scorers report a completed,
 scoring-eligible evaluation.
@@ -74,7 +75,8 @@ commit-bound readiness report. Its exact CNY 2.05 approval covers the CNY
 0.031728 sandbox-compute upper bound plus the existing CNY 2.00 image-build reserve.
 The paid one-task canary uses a 150-second sandbox envelope so its independently
 measured 60-second readiness window does not consume the 90-second evaluation
-window. Its Inspect accounting limit uses the native price-weighted expression
+window. Pilot v3 targets Claude Code so the host bridge dependency is exercised
+before any full matrix run. Its Inspect accounting limit uses the native price-weighted expression
 `(input*0.5)+output:35000`: input is weighted at the cache-miss CNY 3 rate
 relative to the CNY 6 output rate, while cache hits are conservatively treated
 as misses. The resulting CNY 0.21 model ceiling keeps the complete canary under
@@ -98,14 +100,18 @@ resource envelope is CNY 16.3728: CNY 11.20 for model tokens, CNY 3.1728 for
 sample has the same native price-weighted token limit proven by the successful
 canary, `(input*0.5)+output:35000`, a 60-second readiness limit, and a 90-second
 evaluation limit that starts at the first model request; each Modal sandbox has
-a platform-level 150-second automatic timeout. The existing 0.5 CPU and 2 GiB
+a platform-level 150-second automatic timeout. A 12-message limit bounds
+runaway host exploration before the token ceiling. The existing 0.5 CPU and 2 GiB
 memory allocation remains unchanged rather than introducing an unmeasured
 memory reduction. The workspace Image Builder is
 operator-confirmed and frozen as `2025.06 Stable`; this declared setting is
 bound into the input lock but is not presented as a machine-queried attestation.
 Model retries are disabled,
 concurrency is two, and the dispatcher stops before the next 10-task batch when
-observed cost plus every remaining worst-case batch would exceed CNY 20.
+observed cost plus every remaining worst-case batch would exceed CNY 20. Any
+sample-level infrastructure lifecycle failure stops the batch; model time or
+message/token limits remain explicit Agent outcomes and are not relabeled as
+infrastructure failures.
 
 The frozen inputs are packaged as one access-controlled GitHub Draft Release
 asset. The manual workflow checks out the full commit bound to that asset,

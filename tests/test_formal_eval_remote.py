@@ -183,6 +183,7 @@ def test_deepseek_pricing_uses_cache_hit_and_miss_rates() -> None:
 
 
 def test_export_distinguishes_model_timeout_from_infrastructure_failure() -> None:
+    assert _runtime_failure_code("token limit exceeded") == "MODEL_LIMIT"
     assert _runtime_failure_code("sample time limit exceeded") == "MODEL_TIMEOUT"
     assert _runtime_failure_code("sandbox vanished") == "INFRASTRUCTURE_FAILURE"
     assert _runtime_failure_code(None) is None

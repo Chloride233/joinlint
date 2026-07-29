@@ -248,6 +248,8 @@ def _runtime_failure_code(error: object) -> FailureCode | None:
     if error is None:
         return None
     text = str(error).lower()
+    if "token limit" in text or "message limit" in text or "turn limit" in text:
+        return "MODEL_LIMIT"
     if "timeout" in text or "time limit" in text:
         return "MODEL_TIMEOUT"
     return "INFRASTRUCTURE_FAILURE"

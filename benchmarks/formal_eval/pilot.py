@@ -52,7 +52,7 @@ PILOT_ASSIGNMENT_DESIGN = "balanced_diagonal_crossover_v1"
 
 
 class PilotRegistration(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     evaluation_id: str
     dataset_release: str
     seed: int = Field(ge=0)
@@ -67,6 +67,7 @@ class PilotRegistration(StrictModel):
     )
     token_limit_per_run: Literal[35_000] = 35_000
     token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
+    message_limit_per_run: Literal[12] = 12
     time_limit_seconds: Literal[90] = 90
     modal_sandbox_timeout_seconds: Literal[150] = 150
     modal_image_builder_version: Literal["2025.06 Stable"] = "2025.06 Stable"
@@ -129,7 +130,7 @@ class PilotBudgetCheckpoint(StrictModel):
 def frozen_pilot_registration(commit: str) -> PilotRegistration:
     observed_at = date(2026, 7, 26)
     return PilotRegistration(
-        evaluation_id="joinlint-deepseek-modal-pilot-v2",
+        evaluation_id="joinlint-deepseek-modal-pilot-v3",
         dataset_release=PILOT_DATASET_RELEASE,
         seed=20260727,
         models=(

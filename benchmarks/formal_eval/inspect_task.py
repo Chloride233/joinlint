@@ -102,6 +102,7 @@ def formal_pilot_eval(
     task_partition: str,
     token_limit: int = 35_000,
     token_limit_type: str = "(input*0.5)+output",
+    message_limit: int = 12,
     time_limit: int = 90,
     sandbox_timeout: int = 150,
     cpu: float = 0.5,
@@ -114,6 +115,7 @@ def formal_pilot_eval(
     if (
         token_limit <= 0
         or token_limit_type not in {"all", "(input*0.5)+output"}
+        or message_limit <= 0
         or time_limit <= 0
         or sandbox_timeout <= time_limit
         or cpu <= 0
@@ -141,6 +143,7 @@ def formal_pilot_eval(
         evaluation_time_limit=time_limit,
         modal_timeout_seconds=sandbox_timeout,
         task_partition=task_partition,
+        message_limit=message_limit,
     )
 
 
@@ -201,6 +204,7 @@ def _agent_task(
     evaluation_time_limit: int,
     modal_timeout_seconds: int | None = None,
     task_partition: str | None = None,
+    message_limit: int | None = None,
 ) -> Task:
     if readiness_time_limit <= 0 or evaluation_time_limit <= 0:
         raise ValueError("lifecycle time limits must be positive")
@@ -244,6 +248,7 @@ def _agent_task(
             if token_limit is not None and token_limit_type != "all"
             else token_limit
         ),
+        message_limit=message_limit,
         time_limit=None,
         name="jl",
     )
@@ -298,17 +303,27 @@ def formal_join_scorer() -> Scorer:
         if blocked is not None:
             return blocked
         metadata = state.metadata or {}
+        condition = str(metadata["condition"])
         completion = state.output.completion if state.output is not None else ""
         try:
             submission = extract_submission(completion)
         except (ValueError, json.JSONDecodeError):
+            payload: dict[str, Any] = {"failure_code": "SQL_PARSE_FAILED"}
+            if condition in {"treatment", "oracle_mcp", "no_harness"}:
+                trace = assess_trace(
+                    _tool_events(state.messages),
+                    expected_entities=set(metadata["expected_entities"]),
+                    final_sql="",
+                    final_edges=set(),
+                    submitted_sql=False,
+                )
+                payload["trace"] = trace.model_dump(mode="json")
             return Score(
                 value=0,
-                metadata=_semantic_metadata({"failure_code": "SQL_PARSE_FAILED"}),
+                metadata=_semantic_metadata(payload),
             )
         allowed = metadata.get("allowed_graphs") or []
         oracle_has_safe_path = bool(metadata.get("oracle_has_safe_path"))
-        condition = str(metadata["condition"])
         trace = None
         if condition in {"treatment", "oracle_mcp", "no_harness"}:
             trace = assess_trace(
@@ -603,7 +618,7 @@ def infrastructure_readiness(
         try:
             with fail_after(timeout_seconds):
                 host_binary_sha256 = await _prepare_host_binary(host, agent_version)
-                await _run_readiness_probes()
+                await _run_readiness_probes(host)
         except TimeoutError:
             record = readiness_failed(
                 record,
@@ -699,9 +714,14 @@ def evaluation_lifecycle(
                 state.completed = True
                 return state
             if agent_error is not None:
+                reason = (
+                    LifecycleFailureReason.MODEL_LIMIT
+                    if _is_model_limit_error(agent_error)
+                    else LifecycleFailureReason.EVALUATION_FAILED
+                )
                 record = fail_evaluation(
                     record,
-                    reason=LifecycleFailureReason.EVALUATION_FAILED,
+                    reason=reason,
                     duration_seconds=perf_counter() - evaluation_started,
                     detail=_safe_failure_detail(agent_error),
                 )
@@ -748,15 +768,16 @@ async def _prepare_host_binary(host: Host, agent_version: str) -> str:
     return sha256
 
 
-async def _run_readiness_probes() -> None:
+async def _run_readiness_probes(host: Host) -> None:
+    dependency = "openai" if host == "codex" else "anthropic"
     code = (
-        "import sqlite3; import joinlint; "
+        f"import {dependency}; import sqlite3; import joinlint; "
         "connection=sqlite3.connect('file:/workspace/data/database.sqlite?mode=ro', uri=True); "
         "connection.execute('PRAGMA schema_version').fetchone(); connection.close()"
     )
     result = await sandbox().exec(["python", "-c", code], cwd="/workspace/joinlint", timeout=15)
     if not result.success:
-        raise RuntimeError("joinlint_or_database_readiness_failed")
+        raise RuntimeError("host_bridge_dependency_or_database_readiness_failed")
     try:
         remote = await sandbox().exec_remote(["true"], stream=False)
     except Exception as error:
@@ -829,12 +850,20 @@ def _safe_failure_detail(error: Exception) -> str:
         "host_binary_digest_failed",
         "host_binary_attestation_failed",
         "host_binary_version_mismatch",
-        "joinlint_or_database_readiness_failed",
+        "host_bridge_dependency_or_database_readiness_failed",
         "sandbox_tools_readiness_failed",
         "unsupported_inspect_sandboxes_version",
     }:
         return str(error)
     return type(error).__name__
+
+
+def _is_model_limit_error(error: Exception) -> bool:
+    detail = str(error).lower()
+    return any(
+        marker in detail
+        for marker in ("token limit exceeded", "message limit exceeded", "turn limit exceeded")
+    )
 
 
 def _tool_events(messages: list[object]) -> list[ToolEvent]:

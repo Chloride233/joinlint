@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from benchmarks.formal_eval.contracts import InputLockV2, StrictModel
+from benchmarks.formal_eval.contracts import Host, InputLockV2, StrictModel
 from benchmarks.formal_eval.dispatch import inspect_subprocess_environment
 from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.manifest import load_document
@@ -32,7 +32,8 @@ CANARY_BUDGET_CNY = 2.25
 CANARY_SANDBOX_TIMEOUT_SECONDS = 150
 CANARY_TOKEN_LIMIT = 35_000
 CANARY_TOKEN_LIMIT_TYPE = "(input*0.5)+output"
-REMOTE_DEPENDENCIES = ("inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
+CANARY_HOST: Host = "claude_code"
+REMOTE_DEPENDENCIES = ("anthropic", "inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
 
 
 class PilotCanaryBudget(StrictModel):
@@ -47,7 +48,7 @@ class PilotCanaryReport(StrictModel):
     schema_version: Literal[1] = 1
     status: Literal["passed"] = "passed"
     model_id: str
-    host: Literal["codex"] = "codex"
+    host: Literal["claude_code"] = "claude_code"
     condition: Literal["treatment"] = "treatment"
     sample_count: Literal[1] = 1
     scorer_artifacts: tuple[str, ...]
@@ -103,7 +104,7 @@ def build_canary_command(
             lineage_id=lineage_id,
         )
         if command[command.index("--model") + 1] == model.id
-        and "host=codex" in command
+        and f"host={CANARY_HOST}" in command
         and "condition=treatment" in command
     ]
     if len(matches) != 1:

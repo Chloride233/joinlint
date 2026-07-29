@@ -8,6 +8,7 @@ from typing import Any
 
 from benchmarks.formal_eval.export import export_agent_rows
 from benchmarks.formal_eval.dispatch import REPOSITORY_ROOT, inspect_subprocess_environment
+from benchmarks.formal_eval.lifecycle import LIFECYCLE_STORE_KEY
 from benchmarks.formal_eval.pilot import (
     PilotBudgetCheckpoint,
     PilotRegistration,
@@ -111,6 +112,11 @@ def require_sample_batch_health(
 ) -> None:
     if len(samples) != expected_sample_count:
         raise RuntimeError("pilot batch produced an incomplete sample set")
+    for sample in samples:
+        sample_store = getattr(sample, "store", None) or {}
+        lifecycle = sample_store.get(LIFECYCLE_STORE_KEY, {})
+        if isinstance(lifecycle, dict) and lifecycle.get("infrastructure_status") == "failed":
+            raise RuntimeError("pilot batch contains an infrastructure failure")
     if all(sample.error is not None and not sample.scores for sample in samples):
         raise RuntimeError("pilot batch has a systemic infrastructure failure")
 
@@ -170,6 +176,8 @@ def build_pilot_commands(
                         f"token_limit={registration.token_limit_per_run}",
                         "-T",
                         f"token_limit_type={registration.token_limit_type}",
+                        "-T",
+                        f"message_limit={registration.message_limit_per_run}",
                         "-T",
                         f"time_limit={registration.time_limit_seconds}",
                         "-T",

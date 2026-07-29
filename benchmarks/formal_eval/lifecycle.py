@@ -41,6 +41,7 @@ class LifecycleFailureReason(StrEnum):
     READINESS_FAILED = "READINESS_FAILED"
     EVALUATION_NOT_STARTED = "EVALUATION_NOT_STARTED"
     MODEL_TIMEOUT = "MODEL_TIMEOUT"
+    MODEL_LIMIT = "MODEL_LIMIT"
     EVALUATION_FAILED = "EVALUATION_FAILED"
     SCORING_FAILURE = "SCORING_FAILURE"
 
@@ -191,6 +192,7 @@ def fail_evaluation(
     _require_phase(record, LifecyclePhase.EVALUATION_STARTED)
     if reason not in {
         LifecycleFailureReason.MODEL_TIMEOUT,
+        LifecycleFailureReason.MODEL_LIMIT,
         LifecycleFailureReason.EVALUATION_FAILED,
     }:
         raise ValueError("evaluation failure requires an evaluation reason")
@@ -233,6 +235,8 @@ def scoring_eligibility(value: object) -> ScoringEligibility:
     failure_code: FailureCode = (
         "MODEL_TIMEOUT"
         if reason == LifecycleFailureReason.MODEL_TIMEOUT
+        else "MODEL_LIMIT"
+        if reason == LifecycleFailureReason.MODEL_LIMIT
         else "INFRASTRUCTURE_FAILURE"
     )
     return ScoringEligibility(

@@ -31,6 +31,7 @@ from benchmarks.formal_eval.pilot_dispatch import (
 )
 from benchmarks.formal_eval.pilot_canary import (
     CANARY_BUDGET_CNY,
+    CANARY_HOST,
     CANARY_SANDBOX_TIMEOUT_SECONDS,
     CANARY_TOKEN_LIMIT,
     CANARY_TOKEN_LIMIT_TYPE,
@@ -91,7 +92,8 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
     assert envelope.total_upper_cny == pytest.approx(2.24966)
     assert envelope.total_upper_cny < CANARY_BUDGET_CNY
     assert command[command.index("--limit") + 1] == "1"
-    assert "host=codex" in command
+    assert CANARY_HOST == "claude_code"
+    assert "host=claude_code" in command
     assert "condition=treatment" in command
     assert "token_limit=35000" in command
     assert "token_limit=20000" not in command
@@ -163,6 +165,7 @@ def test_observed_cost_treats_cache_read_as_additional_input_usage(
 
 def test_pilot_canary_attestation_binds_run_commit_input_and_dependencies() -> None:
     dependencies = {
+        "anthropic": "0.120.2",
         "inspect-ai": "0.3.249",
         "inspect-sandboxes": "0.4.0",
         "inspect-swe": "0.2.66",
@@ -281,6 +284,7 @@ def test_pilot_dispatch_has_eight_non_retrying_bounded_batches(tmp_path: Path) -
     assert {command[command.index("--max-sandboxes") + 1] for command in commands} == {"2"}
     assert all("token_limit=35000" in command for command in commands)
     assert all("token_limit_type=(input*0.5)+output" in command for command in commands)
+    assert all("message_limit=12" in command for command in commands)
     assert all("time_limit=90" in command for command in commands)
     assert all("sandbox_timeout=150" in command for command in commands)
     assert {
@@ -317,6 +321,21 @@ def test_pilot_dispatch_stops_on_systemic_batch_failure() -> None:
         failed_samples[:-1] + [one_scored_sample],
         expected_sample_count=10,
     )
+
+
+def test_pilot_dispatch_stops_on_any_lifecycle_infrastructure_failure() -> None:
+    healthy = SimpleNamespace(error=None, scores={"join": 1}, model_usage={}, store={})
+    failed = SimpleNamespace(
+        error=None,
+        scores={"join": 0},
+        model_usage={},
+        store={
+            "joinlint.formal_eval.lifecycle.v1": {"infrastructure_status": "failed"}
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="contains an infrastructure failure"):
+        require_sample_batch_health([healthy] * 9 + [failed], expected_sample_count=10)
 
 
 def test_pilot_budget_report_fails_when_observed_total_exceeds_ceiling() -> None:
@@ -405,6 +424,7 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
     assert service.mem_limit == "2048m"
     assert inspect_task.token_limit == 35_000
     assert inspect_task.token_limit_type == "(input*0.5)+output"
+    assert inspect_task.message_limit == 12
     assert inspect_task.time_limit is None
     assert sandbox.config.extensions == {"x-modal": {"timeout": 150}}
 

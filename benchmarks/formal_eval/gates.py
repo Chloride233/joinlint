@@ -133,6 +133,7 @@ def diagnostic_canary_gate(
     conditions = Counter(row.condition for row in diagnostic)
     infrastructure_codes = {
         "MODEL_TIMEOUT",
+        "MODEL_LIMIT",
         "MCP_TOOL_ERROR",
         "INFRASTRUCTURE_FAILURE",
     }

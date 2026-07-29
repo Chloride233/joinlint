@@ -27,6 +27,7 @@ eval = [
   "openai==2.48.0",
 ]
 remote = [
+  "anthropic==0.120.2",
   "inspect-sandboxes==0.4.0",
   "inspect-swe==0.2.66",
   "modal==1.5.3",

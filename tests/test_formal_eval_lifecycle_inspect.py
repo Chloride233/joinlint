@@ -19,6 +19,9 @@ from benchmarks.formal_eval import inspect_task
 from benchmarks.formal_eval.lifecycle import (
     LIFECYCLE_STORE_KEY,
     LifecycleFailureReason,
+    allow_scoring,
+    complete_evaluation,
+    fail_evaluation,
     infrastructure_prepared,
     new_lifecycle,
     parse_lifecycle,
@@ -116,7 +119,7 @@ def test_readiness_forces_sandbox_tools_injection_before_agent_start(
 
     monkeypatch.setattr(inspect_task, "sandbox", lambda: ReadySandbox())
 
-    asyncio.run(inspect_task._run_readiness_probes())
+    asyncio.run(inspect_task._run_readiness_probes("codex"))
 
     assert calls[-1] == ("exec_remote", ("true",), False)
 
@@ -134,7 +137,66 @@ def test_readiness_reports_sandbox_tools_failure(
     monkeypatch.setattr(inspect_task, "sandbox", lambda: BrokenSandbox())
 
     with pytest.raises(RuntimeError, match="sandbox_tools_readiness_failed"):
-        asyncio.run(inspect_task._run_readiness_probes())
+        asyncio.run(inspect_task._run_readiness_probes("codex"))
+
+
+def test_readiness_probes_the_selected_host_bridge_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    class ReadySandbox:
+        async def exec(self, command: list[str], **kwargs: object) -> SimpleNamespace:
+            commands.append(command)
+            return SimpleNamespace(success=True)
+
+        async def exec_remote(self, command: list[str], *, stream: bool) -> SimpleNamespace:
+            return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: ReadySandbox())
+
+    asyncio.run(inspect_task._run_readiness_probes("claude_code"))
+
+    assert "import anthropic" in commands[0][2]
+
+
+def test_model_limit_after_first_request_is_not_infrastructure_failure() -> None:
+    record = readiness_passed(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=1,
+        now=NOW,
+    )
+    record = start_evaluation(record, now=NOW)
+    record = fail_evaluation(
+        record,
+        reason=LifecycleFailureReason.MODEL_LIMIT,
+        duration_seconds=2,
+        now=NOW,
+    )
+
+    eligibility = scoring_eligibility(record)
+
+    assert eligibility.failure_code == "MODEL_LIMIT"
+
+
+def test_sql_parse_failure_still_reports_treatment_tool_funnel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _eligible_state()
+    state.metadata = {"condition": "treatment", "expected_entities": ["cars", "trains"]}
+    monkeypatch.setattr(inspect_task, "_tool_events", lambda messages: [])
+    monkeypatch.setattr(
+        inspect_task,
+        "assess_trace",
+        lambda *args, **kwargs: SimpleNamespace(
+            model_dump=lambda mode: {"plan_called": True, "final_sql_validated": False}
+        ),
+    )
+
+    score = asyncio.run(inspect_task.formal_join_scorer()(state, Target("SELECT 1")))
+
+    assert score.metadata["failure_code"] == "SQL_PARSE_FAILED"
+    assert score.metadata["trace"]["plan_called"] is True
 
 
 def _state(*, store: dict[str, object]) -> TaskState:
@@ -167,6 +229,18 @@ def _ready_state() -> TaskState:
         duration_seconds=0,
         now=NOW,
     )
+    return _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
+
+
+def _eligible_state() -> TaskState:
+    record = readiness_passed(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=0,
+        now=NOW,
+    )
+    record = start_evaluation(record, now=NOW)
+    record = complete_evaluation(record, duration_seconds=1, now=NOW)
+    record = allow_scoring(record)
     return _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
 
 

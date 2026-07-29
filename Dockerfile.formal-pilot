@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/workspace/joinlint/src:/workspace/joinlint
 
 WORKDIR /opt/joinlint-host
-RUN python -m pip install --no-cache-dir inspect-swe==0.2.66
+RUN python -m pip install --no-cache-dir inspect-swe==0.2.66 anthropic==0.120.2
 COPY benchmarks/formal_eval/host_binaries.py ./host_binaries.py
 RUN python host_binaries.py install \
     --codex-version 0.144.1 \
