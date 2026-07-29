@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm_paid:
-        description: Confirm the approved one-task Modal and DeepSeek canary spend
+        description: Confirm the approved readiness or one-task canary spend
         required: true
         default: false
         type: boolean
@@ -28,12 +28,82 @@ on:
         required: true
         default: pilot-input.tar.gz
         type: string
+      readiness_only:
+        description: Run Modal infrastructure readiness without DeepSeek
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
+  readiness:
+    if: inputs.readiness_only == true
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    environment: formal-evaluation
+    steps:
+      - name: Require the exact approved no-model diagnostic
+        if: inputs.confirm_paid != true || inputs.budget_cny != '2.05'
+        run: exit 1
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pilot_commit }}
+      - name: Record checked-out commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e '.[dev,eval,remote]'
+      - name: Run no-model lifecycle and Modal compatibility tests
+        run: >-
+          python -m pytest -q
+          tests/test_formal_eval_lifecycle.py
+          tests/test_formal_eval_lifecycle_inspect.py
+          tests/test_formal_eval_modal_compat.py
+      - name: Run one no-model Modal readiness sample
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: >-
+          inspect eval
+          benchmarks/formal_eval/inspect_task.py@formal_modal_readiness_eval
+          --model mockllm/model
+          --log-dir modal-readiness-logs
+          --max-retries 0
+          --max-sandboxes 1
+          --display none
+          --no-fail-on-error
+          --score-on-error
+          -T database="$(pwd)/tests/fixtures/chinook/chinook.sqlite"
+          -T host=codex
+          -T agent_version=0.144.1
+          -T dockerfile="$(pwd)/Dockerfile.formal-pilot"
+          -T readiness_time_limit=30
+          -T sandbox_timeout=120
+      - name: Verify zero model usage and readiness attestation
+        run: >-
+          python -m benchmarks.formal_eval.modal_readiness
+          --log-dir modal-readiness-logs
+          --output modal-readiness-artifacts
+          --workflow-run-id "${{ github.run_id }}"
+          --joinlint-commit "${{ steps.commit.outputs.sha }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: joinlint-formal-modal-readiness
+          path: |
+            modal-readiness-artifacts
+            modal-readiness-logs
+          if-no-files-found: warn
+          retention-days: 30
+
   canary:
+    if: inputs.readiness_only != true
     runs-on: ubuntu-latest
     environment: formal-evaluation
     steps:

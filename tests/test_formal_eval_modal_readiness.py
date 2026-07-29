@@ -66,10 +66,11 @@ def test_modal_readiness_requires_zero_model_usage_and_attested_score(
 
 
 def test_modal_readiness_workflow_scopes_secrets_and_budget() -> None:
-    path = Path(".github/workflows/formal-modal-readiness.yml")
+    path = Path(".github/workflows/formal-pilot-canary.yml")
     workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     text = path.read_text(encoding="utf-8")
     job = workflow["jobs"]["readiness"]
+    canary = workflow["jobs"]["canary"]
     run_step = next(
         step
         for step in job["steps"]
@@ -77,9 +78,11 @@ def test_modal_readiness_workflow_scopes_secrets_and_budget() -> None:
     )
 
     assert job["environment"] == "formal-evaluation"
-    assert workflow["permissions"] == {"contents": "read"}
-    assert "inputs.confirm_modal_spend != true || inputs.budget_cny != '2.05'" in text
+    assert job["permissions"] == {"contents": "read"}
+    assert job["if"] == "inputs.readiness_only == true"
+    assert canary["if"] == "inputs.readiness_only != true"
+    assert "inputs.confirm_paid != true || inputs.budget_cny != '2.05'" in text
     assert set(run_step["env"]) == {"MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"}
     assert "mockllm/model" in run_step["run"]
-    assert "DEEPSEEK_API_KEY" not in text
-    assert "OPENAI_API_KEY" not in text
+    assert "DEEPSEEK_API_KEY" not in run_step["run"]
+    assert "OPENAI_API_KEY" not in run_step["run"]
