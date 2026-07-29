@@ -940,7 +940,7 @@ def _tool_result_payload(content: object) -> dict[str, Any] | None:
 def _tool_name(value: str) -> str | None:
     if value in {"get_join_plan", "validate_sql"}:
         return value
-    for prefix in ("JoinLint_", "JoinLint__"):
+    for prefix in ("JoinLint_", "JoinLint__", "mcp__JoinLint__"):
         candidate = value.removeprefix(prefix)
         if candidate in {"get_join_plan", "validate_sql"}:
             return candidate

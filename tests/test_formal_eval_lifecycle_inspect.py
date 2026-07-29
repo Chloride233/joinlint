@@ -213,6 +213,12 @@ def test_sql_parse_failure_still_reports_treatment_tool_funnel(
     assert score.metadata["trace"]["plan_called"] is True
 
 
+def test_claude_namespaced_joinlint_tools_are_recognized() -> None:
+    assert inspect_task._tool_name("mcp__JoinLint__get_join_plan") == "get_join_plan"
+    assert inspect_task._tool_name("mcp__JoinLint__validate_sql") == "validate_sql"
+    assert inspect_task._tool_name("mcp__EvaluationDatabase__execute_sql") is None
+
+
 def _state(*, store: dict[str, object]) -> TaskState:
     return TaskState(
         model="mockllm/model",
