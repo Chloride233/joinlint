@@ -78,6 +78,10 @@ the examples deliberately do not install or authorize one.
 
 ## MCP contract
 
+The response envelope is MCP schema v3. Join Proof objects remain immutable
+schema v2 objects, so this usability revision does not change relationship,
+evidence, or plan identity.
+
 `get_join_plan` accepts 2–8 request-local entity instances and returns at most
 four hops of current, exact, authorized physical relationships. If no safe
 path exists it returns `inconclusive`, never uncertain predicates. It
@@ -93,6 +97,16 @@ never rewrites SQL.
 
 Every response carries explicit `validated_scope` and `not_validated_scope`.
 Every SQL validation attests `execution_count: 0`.
+
+Every non-OK error and blocking finding also carries bounded recovery guidance:
+
+- `retryable` means the tool may be called again only after applying
+  `next_action`; it never authorizes retrying an unchanged request;
+- `next_action` is one stable action such as `replan`, `revise_sql`,
+  `specify_source`, `change_expected_grain`, `reduce_request`, or `stop`;
+- `affected_refs` and `blocking_relationship_ids` contain only sanitized,
+  bounded identifiers;
+- `stop` means the Agent must not execute the SQL or retry the same operation.
 
 ## Manual governance CLI
 

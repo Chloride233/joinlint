@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -15,6 +16,7 @@ from joinlint.mcp_contracts import (
     ValidateSQLRequest,
     ValidateSQLResponse,
     error_response,
+    mcp_finding,
 )
 from joinlint.runtime.cache import RuntimeCache
 from joinlint.runtime.domain import EntityRef, RuntimeFinding
@@ -55,14 +57,26 @@ def create_server(
                 cache=RuntimeCache(cache_root) if cache_root is not None else None,
             )
         return service
+
+    @asynccontextmanager
+    async def lifespan(_server):  # type: ignore[no-untyped-def]
+        try:
+            yield {}
+        finally:
+            if service is not None:
+                service.close()
+
     mcp = FastMCP(
         "JoinLint",
         instructions=(
             "Use get_join_plan before generating multi-table SQL, then call validate_sql "
             "with the final SQL and plan_id. JoinLint validates physical joins only. "
-            "Do not retry an unchanged request after an inconclusive result. "
+            "Follow error.guidance or finding.guidance exactly: retryable means retry only "
+            "after applying next_action, never retry an unchanged request, and stop means "
+            "do not execute or retry. "
             "JoinLint proof != query correctness."
         ),
+        lifespan=lifespan,
     )
 
     @mcp.tool(name="get_join_plan")
@@ -81,6 +95,8 @@ def create_server(
         unique key must remain one row per output row before aggregation. In a
         many-to-one join, the referencing child usually preserves that grain;
         aggregation, DISTINCT, and GROUP BY do not restore grain in Stage 1.
+        If planning is inconclusive, apply error.guidance.next_action. Do not
+        invent an edge or retry the unchanged request.
         """
         return _response(
             "get_join_plan",
@@ -103,7 +119,11 @@ def create_server(
         plan_id: str | None = None,
         expected_grain_ref: str | None = None,
     ) -> dict[str, object]:
-        """Validate a SQL join graph without executing SQL or judging answer correctness."""
+        """Validate a SQL join graph without executing SQL or judging answer correctness.
+
+        Execute SQL only when status is ok. For findings or errors, apply the
+        bounded guidance next_action; stop means do not execute or retry.
+        """
         return _response(
             "validate_sql",
             lambda: runtime_service().validate_sql(
@@ -150,7 +170,13 @@ def _response(
             response = ValidateSQLResponse(
                 status="findings",
                 findings=(
-                    RuntimeFinding(code=error.code, severity="blocking", message=error.code),
+                    mcp_finding(
+                        RuntimeFinding(
+                            code=error.code,
+                            severity="blocking",
+                            message=error.code,
+                        )
+                    ),
                 ),
             )
         else:
@@ -158,7 +184,14 @@ def _response(
     except ValidationError:
         response = error_response(command, "INVALID_ARGUMENT", inconclusive=False)
     except JoinLintError as error:
-        response = error_response(command, error.code, inconclusive=error.exit_code == 3)
+        response = error_response(
+            command,
+            error.code,
+            inconclusive=error.exit_code == 3,
+            affected_refs=error.affected_refs,
+            blocking_relationship_ids=error.blocking_relationship_ids,
+            freshness_reason=error.freshness_reason,  # type: ignore[arg-type]
+        )
     except Exception:
         response = error_response(command, "INTERNAL_ERROR", inconclusive=False)
     if len(response.model_dump_json(exclude_none=False).encode("utf-8")) > MAX_RESPONSE_BYTES:

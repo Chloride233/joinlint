@@ -119,7 +119,11 @@ def test_parent_grain_is_rejected_when_one_to_many_join_duplicates_it() -> None:
     assert captured.value.code == "GRAIN_INCOMPATIBLE"
 
 
-def test_compound_fanout_path_is_not_proved() -> None:
+def test_compound_fanout_path_is_not_proved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import joinlint.runtime.planner as planner
+
     graph = (
         authorized("a" * 64, "sales.orders", "sales.customers", max_children=3),
         authorized("c" * 64, "sales.items", "sales.orders", max_children=4),
@@ -129,11 +133,21 @@ def test_compound_fanout_path_is_not_proved() -> None:
         EntityRef(ref="orders", entity="sales.orders"),
         EntityRef(ref="items", entity="sales.items"),
     )
+    original = planner.grain_compatible
+    grain_checks = 0
+
+    def counted_grain_check(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal grain_checks
+        grain_checks += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(planner, "grain_compatible", counted_grain_check)
 
     with pytest.raises(JoinLintError) as captured:
         plan_join(refs, "customers", "items", 4, False, graph)
 
     assert captured.value.code == "COMPOUND_FANOUT"
+    assert grain_checks == 1
 
 
 def test_proof_lifecycle_is_current_stale_or_unverifiable() -> None:
@@ -312,3 +326,50 @@ def test_unsafe_early_candidates_do_not_hide_later_safe_proof() -> None:
     proof = plan_join(refs, "orders", "customers", 4, False, graph)
 
     assert proof.edges[0].relationship_id == "f" * 64
+
+
+def test_planner_search_budget_fails_closed_on_ambiguous_complete_graph() -> None:
+    graph = []
+    relationship_index = 1
+    for parent_index in range(7):
+        for child_index in range(parent_index + 1, 8):
+            graph.append(
+                authorized(
+                    f"{relationship_index:064x}",
+                    f"sales.e{child_index}",
+                    f"sales.e{parent_index}",
+                    max_children=2,
+                )
+            )
+            relationship_index += 1
+    refs = tuple(
+        EntityRef(ref=f"e{index}", entity=f"sales.e{index}")
+        for index in range(8)
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        plan_join(refs, "e0", "e0", 4, False, tuple(graph))
+
+    assert captured.value.code == "RESOURCE_LIMIT_EXCEEDED"
+
+
+def test_planner_candidate_budget_fails_closed_on_parallel_relationships() -> None:
+    graph = tuple(
+        authorized(
+            f"{index:064x}",
+            "sales.orders",
+            "sales.customers",
+            max_children=1,
+            child_columns=(f"customer_{index}",),
+        )
+        for index in range(1, 258)
+    )
+    refs = (
+        EntityRef(ref="orders", entity="sales.orders"),
+        EntityRef(ref="customers", entity="sales.customers"),
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        plan_join(refs, "orders", "orders", 4, False, graph)
+
+    assert captured.value.code == "RESOURCE_LIMIT_EXCEEDED"

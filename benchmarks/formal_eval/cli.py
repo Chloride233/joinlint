@@ -54,6 +54,11 @@ def main(argv: list[str] | None = None) -> int:
 
         run_inspect_smoke(arguments.project, arguments.output)
         return 0
+    if arguments.command == "guidance-smoke":
+        from benchmarks.formal_eval.guidance_diagnostic import run_guidance_diagnostic
+
+        run_guidance_diagnostic(arguments.output)
+        return 0
     if arguments.command == "preflight":
         from benchmarks.formal_eval.deterministic import DeterministicSuite
 
@@ -233,6 +238,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     inspect_smoke.add_argument("--project", type=Path, required=True)
     inspect_smoke.add_argument("--output", type=Path, required=True)
+
+    guidance_smoke = commands.add_parser(
+        "guidance-smoke",
+        help="run the non-evidentiary MCP v3 guidance ablation smoke",
+    )
+    guidance_smoke.add_argument("--output", type=Path, required=True)
 
     preflight = commands.add_parser("preflight", help="verify frozen formal inputs")
     preflight.add_argument("--preregistration", type=Path, required=True)

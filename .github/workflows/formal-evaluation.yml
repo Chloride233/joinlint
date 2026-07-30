@@ -91,12 +91,17 @@ jobs:
           python -m benchmarks.formal_eval.cli inspect-smoke
           --project tests/fixtures/chinook
           --output inspect-smoke
+      - name: Run non-evidentiary MCP v3 guidance ablation smoke
+        run: >-
+          python -m benchmarks.formal_eval.cli guidance-smoke
+          --output guidance-smoke
       - uses: actions/upload-artifact@v4
         with:
           name: formal-evaluation-pipeline-smoke
           path: |
             formal-smoke
             inspect-smoke/inspect-smoke.json
+            guidance-smoke/guidance-diagnostic.json
           if-no-files-found: error
 
   formal:

@@ -59,7 +59,9 @@ def test_oracle_mcp_uses_the_same_two_tool_contract() -> None:
         "SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id + 1",
     )
 
+    assert plan["schema_version"] == 3
     assert plan["status"] == "ok"
     assert plan["data"]["proof"]["claim_scope"] == "physical_join_only"
     assert valid["status"] == "ok"
     assert invalid["status"] == "findings"
+    assert invalid["findings"][0]["guidance"]["next_action"] == "revise_sql"

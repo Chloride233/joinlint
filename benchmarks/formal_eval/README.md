@@ -23,6 +23,8 @@ python -m benchmarks.formal_eval.cli fake-model \
 python -m benchmarks.formal_eval.cli inspect-smoke \
   --project tests/fixtures/chinook \
   --output /tmp/joinlint-inspect-smoke
+python -m benchmarks.formal_eval.cli guidance-smoke \
+  --output /tmp/joinlint-guidance-smoke
 python -m pytest tests/test_formal_eval_*.py -q
 ```
 
@@ -33,6 +35,11 @@ It is never product evidence.
 `inspect-smoke` additionally exercises the current two-tool MCP through Inspect
 AI's mock model and the formal trace scorer. It is a local wiring check, not a
 diagnostic canary and not formal Agent evidence.
+
+`guidance-smoke` runs four frozen non-OK response cases with and without MCP v3
+recovery guidance. Its scripted mock policy proves only that the ablation,
+submission contract, and scorer are wired correctly. Its arm difference is
+synthetic and must never be reported as evidence that a real model improves.
 
 ## Evaluation lifecycle boundary
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Callable, Iterable
+from typing import Iterable
 
 from joinlint.errors import JoinLintError
 from joinlint.runtime.domain import (
@@ -29,6 +29,17 @@ class CandidateEdge:
     max_matches: int
 
 
+@dataclass(frozen=True)
+class TreeSearchResult:
+    safe_trees: tuple[tuple[CandidateEdge, ...], ...]
+    has_tree: bool
+    has_grain_compatible_tree: bool
+
+
+MAX_CANDIDATE_EDGES = 512
+MAX_TREE_EXPANSIONS = 50_000
+
+
 def plan_join(
     entity_refs: tuple[EntityRef, ...],
     start_ref: str,
@@ -52,39 +63,42 @@ def plan_join(
         refs[expected].entity,
         entity_definitions,
     ):
-        raise JoinLintError("GRAIN_INCOMPATIBLE", "expected grain has no stable unique key", 3)
+        raise JoinLintError(
+            "GRAIN_INCOMPATIBLE",
+            "expected grain has no stable unique key",
+            3,
+            affected_refs=(expected,),
+        )
     source_ids = {relationship.definition.source_id for relationship in graph}
     if not source_ids:
-        raise JoinLintError("NO_VERIFIED_PATH", "no current authorized join proof exists", 3)
+        raise JoinLintError(
+            "NO_VERIFIED_PATH",
+            "no current authorized join proof exists",
+            3,
+            affected_refs=tuple(refs),
+        )
     if len(source_ids) != 1:
         raise JoinLintError("CROSS_SOURCE_UNSUPPORTED", "one source is required", 2)
     candidates = _candidate_edges(entity_refs, graph)
-    safe_trees = _spanning_trees(
+    search = _search_spanning_trees(
         refs,
         start_ref,
         max_depth,
         candidates,
-        limit=4,
-        accept=lambda tree: _tree_is_safe(expected, tree),
+        expected,
+        safe_limit=4 if include_alternatives else 1,
     )
-    if not safe_trees and not _spanning_trees(
-        refs, start_ref, max_depth, candidates, limit=1
-    ):
-        raise JoinLintError("NO_VERIFIED_PATH", "no current authorized join proof exists", 3)
-    if not safe_trees:
-        code = (
-            "COMPOUND_FANOUT"
-            if _spanning_trees(
-                refs,
-                start_ref,
-                max_depth,
-                candidates,
-                limit=1,
-                accept=lambda tree: grain_compatible(expected, tree),
-            )
-            else "GRAIN_INCOMPATIBLE"
+    safe_trees = search.safe_trees
+    if not safe_trees and not search.has_tree:
+        raise JoinLintError(
+            "NO_VERIFIED_PATH",
+            "no current authorized join proof exists",
+            3,
+            affected_refs=tuple(refs),
         )
-        raise JoinLintError(code, code, 3)
+    if not safe_trees:
+        code = "COMPOUND_FANOUT" if search.has_grain_compatible_tree else "GRAIN_INCOMPATIBLE"
+        raise JoinLintError(code, code, 3, affected_refs=(expected,))
     now = datetime.now(UTC).isoformat()
     snapshot_ids = {item.relationship.evidence.snapshot_id for item in safe_trees[0]}
     if len(snapshot_ids) != 1:
@@ -179,6 +193,7 @@ def _candidate_edges(
                             max_matches=relationship.evidence.measurements.max_parents_per_child,
                         )
                     )
+                    _check_candidate_budget(candidates)
                 if left.entity == parent_entity and right.entity == child_entity:
                     candidates.append(
                         CandidateEdge(
@@ -192,26 +207,42 @@ def _candidate_edges(
                             max_matches=relationship.evidence.measurements.max_children_per_parent,
                         )
                     )
+                    _check_candidate_budget(candidates)
     return tuple(sorted(candidates, key=_candidate_key))
 
 
-def _spanning_trees(
+def _search_spanning_trees(
     refs: dict[str, EntityRef],
     start_ref: str,
     max_depth: int,
     candidates: tuple[CandidateEdge, ...],
+    expected_grain_ref: str,
     *,
-    limit: int,
-    accept: Callable[[tuple[CandidateEdge, ...]], bool] | None = None,
-) -> list[tuple[CandidateEdge, ...]]:
-    results: list[tuple[CandidateEdge, ...]] = []
+    safe_limit: int,
+) -> TreeSearchResult:
+    safe_trees: list[tuple[CandidateEdge, ...]] = []
+    has_tree = False
+    has_grain_compatible_tree = False
+    expansions = 0
 
     def grow(connected: set[str], depths: dict[str, int], edges: tuple[CandidateEdge, ...]) -> None:
-        if len(results) >= limit:
+        nonlocal expansions, has_tree, has_grain_compatible_tree
+        expansions += 1
+        if expansions > MAX_TREE_EXPANSIONS:
+            raise JoinLintError(
+                "RESOURCE_LIMIT_EXCEEDED",
+                "join planning exceeded its search budget",
+                3,
+                affected_refs=tuple(refs),
+            )
+        if len(safe_trees) >= safe_limit:
             return
         if len(connected) == len(refs):
-            if accept is None or accept(edges):
-                results.append(edges)
+            has_tree = True
+            grain_is_compatible = grain_compatible(expected_grain_ref, edges)
+            has_grain_compatible_tree = has_grain_compatible_tree or grain_is_compatible
+            if grain_is_compatible and sum(edge.max_matches > 1 for edge in edges) <= 1:
+                safe_trees.append(edges)
             return
         options = [
             edge
@@ -228,12 +259,20 @@ def _spanning_trees(
             )
 
     grow({start_ref}, {start_ref: 0}, ())
-    return results
+    return TreeSearchResult(
+        safe_trees=tuple(safe_trees),
+        has_tree=has_tree,
+        has_grain_compatible_tree=has_grain_compatible_tree,
+    )
 
 
-def _tree_is_safe(expected_grain_ref: str, tree: tuple[CandidateEdge, ...]) -> bool:
-    fanout_edges = sum(edge.max_matches > 1 for edge in tree)
-    return fanout_edges <= 1 and grain_compatible(expected_grain_ref, tree)
+def _check_candidate_budget(candidates: list[CandidateEdge]) -> None:
+    if len(candidates) > MAX_CANDIDATE_EDGES:
+        raise JoinLintError(
+            "RESOURCE_LIMIT_EXCEEDED",
+            "join planning exceeded its candidate budget",
+            3,
+        )
 
 
 def _proof(

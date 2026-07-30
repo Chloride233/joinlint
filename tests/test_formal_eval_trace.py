@@ -7,10 +7,24 @@ from benchmarks.agent_join.sql_edges import canonical_edge
 from benchmarks.formal_eval.trace import ToolEvent, ValidationResponse, assess_trace
 
 
+def _guidance(
+    next_action: str = "stop",
+    *,
+    retryable: bool = False,
+) -> dict[str, object]:
+    return {
+        "retryable": retryable,
+        "next_action": next_action,
+        "affected_refs": [],
+        "blocking_relationship_ids": [],
+        "freshness_reason": None,
+    }
+
+
 def _plan_result(*, columns: tuple[list[str], list[str]] | None = None) -> dict[str, object]:
     left, right = columns or (["customer_id"], ["id"])
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "command": "get_join_plan",
         "status": "ok",
         "data": {
@@ -67,7 +81,7 @@ def _validation_result(
     *, blocking: bool = False, edges: list[list[str]] | None = None
 ) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "command": "validate_sql",
         "status": "findings" if blocking else "ok",
         "data": {
@@ -93,7 +107,14 @@ def _validation_result(
             "execution_count": 0,
         },
         "findings": (
-            [{"severity": "blocking", "code": "GRAIN_CHANGE", "message": "GRAIN_CHANGE"}]
+            [
+                {
+                    "severity": "blocking",
+                    "code": "GRAIN_CHANGE",
+                    "message": "GRAIN_CHANGE",
+                    "guidance": _guidance(),
+                }
+            ]
             if blocking
             else []
         ),
@@ -249,7 +270,12 @@ def test_trace_rejects_blocking_or_non_current_plan_edges() -> None:
     plan = _plan_result()
     plan["status"] = "findings"
     plan["findings"] = [
-        {"severity": "blocking", "code": "UNSAFE_PLAN", "message": "UNSAFE_PLAN"}
+        {
+            "severity": "blocking",
+            "code": "UNSAFE_PLAN",
+            "message": "UNSAFE_PLAN",
+            "guidance": _guidance(),
+        }
     ]
     events = [
         ToolEvent(
