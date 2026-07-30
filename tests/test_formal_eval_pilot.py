@@ -16,6 +16,8 @@ from benchmarks.formal_eval.contracts import (
 from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.manifest import verify_input_lock
 from benchmarks.formal_eval.pilot import (
+    PILOT_DATASET_RELEASE,
+    PILOT_GROUND_TRUTH_EXCLUSIONS,
     _input_lock,
     budget_envelope,
     build_pilot_calibration_spec,
@@ -59,6 +61,19 @@ from benchmarks.formal_eval.pilot_canary import (
 
 COMMIT = "a" * 40
 LINEAGE_ID = "b" * 64
+
+
+def test_pilot_v2_freezes_diagnostic_ground_truth_exclusions() -> None:
+    assert PILOT_DATASET_RELEASE.endswith("pilot-v2")
+    assert PILOT_GROUND_TRUTH_EXCLUSIONS == {
+        "bird-train-citeseer-04142": (
+            "question_requests_other_paper_but_gold_returns_source_paper_words"
+        ),
+        "bird-train-citeseer-04150": (
+            "question_requires_class_intersection_but_gold_uses_union"
+        ),
+        "bird-train-trains-00698": "question_requests_west_but_gold_filters_east",
+    }
 
 
 def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:

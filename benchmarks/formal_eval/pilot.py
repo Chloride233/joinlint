@@ -43,9 +43,14 @@ from benchmarks.formal_eval.manifest import (
 from benchmarks.formal_eval.run_plan import RunPlanV2, RunSpec, sample_id_for
 
 
-PILOT_DATASET_RELEASE = "bird-train-2023-07-11-declared-fk-pilot-v1"
+PILOT_DATASET_RELEASE = "bird-train-2023-07-11-declared-fk-pilot-v2"
 PILOT_ALLOCATION = {"citeseer": 8, "genes": 4, "trains": 8}
 PILOT_DOMAINS = {"citeseer": "research", "genes": "biology", "trains": "transportation"}
+PILOT_GROUND_TRUTH_EXCLUSIONS = {
+    "bird-train-citeseer-04142": "question_requests_other_paper_but_gold_returns_source_paper_words",
+    "bird-train-citeseer-04150": "question_requires_class_intersection_but_gold_uses_union",
+    "bird-train-trains-00698": "question_requests_west_but_gold_filters_east",
+}
 MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000667
 PILOT_ASSIGNMENT_DESIGN = "balanced_diagonal_crossover_v1"
@@ -266,6 +271,7 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
         record["database_id"]: record for record in source_manifest["selected_databases"]
     }
     candidates: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    observed_ground_truth_exclusions: set[str] = set()
     for raw in raw_tasks:
         database_id = raw.get("db_id")
         if database_id not in PILOT_ALLOCATION:
@@ -276,8 +282,13 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
             "train",
             table_rows[database_id],
         )
+        if candidate is not None and candidate["task_id"] in PILOT_GROUND_TRUTH_EXCLUSIONS:
+            observed_ground_truth_exclusions.add(candidate["task_id"])
+            continue
         if candidate is not None and candidate["all_edges_declared_fk"]:
             candidates[database_id].append(candidate)
+    if observed_ground_truth_exclusions != set(PILOT_GROUND_TRUTH_EXCLUSIONS):
+        raise ValueError("pilot ground-truth exclusions do not match the frozen source")
 
     database_paths = {
         database_id: train_subset / selected_database_records[database_id]["path"]
@@ -391,6 +402,7 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
             "allocation": PILOT_ALLOCATION,
             "uses_joinlint_output": False,
             "relationship_scope": "declared_fk_only",
+            "ground_truth_exclusions": dict(sorted(PILOT_GROUND_TRUTH_EXCLUSIONS.items())),
             "databases": database_records,
         }
         _write_canonical(staging / "source-manifest.json", source)

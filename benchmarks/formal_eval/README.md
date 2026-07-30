@@ -136,6 +136,14 @@ cache-hit, uncached-input, cache-write, and output usage. Cache reads can be
 cheap in CNY while still consuming the Inspect context limit; both facts are
 reported rather than collapsed into one token number.
 
+Pilot dataset v2 excludes three BIRD Train tasks whose question and gold SQL
+contradict each other: `citeseer-04142`, `citeseer-04150`, and `trains-00698`.
+The exclusions and stable reasons are frozen in the source manifest. They were
+found during diagnostic calibration, so the v1 calibration is retained as a
+failed diagnostic and is never combined with v2 or confirmatory results. The
+remaining allocation is selected again by the unchanged deterministic rule;
+no JoinLint output is used to choose replacements.
+
 ## Bounded independent pilot
 
 `formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.
