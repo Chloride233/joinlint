@@ -902,10 +902,13 @@ def _sample_model_limit_exceeded() -> bool:
         limits = sample_limits()
     except RuntimeError:
         return False
-    return any(
-        limit.limit is not None and limit.usage >= limit.limit
-        for limit in (limits.token, limits.message, limits.turn)
-    )
+    for limit in (limits.token, limits.message, limits.turn):
+        try:
+            if limit.limit is not None and limit.usage >= limit.limit:
+                return True
+        except NotImplementedError:
+            continue
+    return False
 
 
 def _tool_events(messages: list[object]) -> list[ToolEvent]:

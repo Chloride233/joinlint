@@ -27,6 +27,7 @@ from benchmarks.formal_eval.pilot import (
 )
 from benchmarks.formal_eval.pilot_calibration import (
     CALIBRATION_BUDGET_CNY,
+    CALIBRATION_TOKEN_LIMITS,
     InfrastructureAttestation,
     attest_calibration_samples,
     build_calibration_commands,
@@ -129,7 +130,7 @@ def test_pilot_calibration_freezes_two_highest_depth_tasks() -> None:
     assert specification.task_ids == ("task-1", "task-3")
 
 
-def test_pilot_calibration_uses_exact_formal_resource_contract(
+def test_pilot_calibration_uses_frozen_host_candidate_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -161,12 +162,16 @@ def test_pilot_calibration_uses_exact_formal_resource_contract(
 
     assert CALIBRATION_BUDGET_CNY == 4.0
     assert envelope.run_count == 8
-    assert envelope.model_cost_upper_cny == pytest.approx(1.12)
+    assert envelope.model_cost_upper_cny == pytest.approx(1.52)
     assert envelope.modal_compute_upper_cny == pytest.approx(0.31728)
-    assert envelope.total_upper_cny == pytest.approx(3.43728)
+    assert envelope.total_upper_cny == pytest.approx(3.83728)
     assert len(commands) == 4
     assert all("condition=treatment" in command for command in commands)
-    assert all("token_limit=35000" in command for command in commands)
+    for command in commands:
+        host = next(
+            value.removeprefix("host=") for value in command if value.startswith("host=")
+        )
+        assert f"token_limit={CALIBRATION_TOKEN_LIMITS[host]}" in command
     assert all("message_limit=12" in command for command in commands)
     assert all("time_limit=90" in command for command in commands)
     assert all("sandbox_timeout=150" in command for command in commands)

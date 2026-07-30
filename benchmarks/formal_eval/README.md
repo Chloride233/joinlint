@@ -92,9 +92,11 @@ another full Pilot.
 The sealed input freezes two task IDs using the deterministic
 `highest_join_depth_then_task_id_v1` rule. Each task runs in treatment on both
 model tiers and both hosts, producing eight samples. Unlike the legacy canary,
-calibration uses the exact Pilot limits without overrides: 35,000 native
-price-weighted tokens, 12 messages, 90 seconds after the first model request,
-and a 150-second Modal sandbox.
+calibration freezes the observed host-aware candidate limits: 35,000 native
+price-weighted tokens for Codex and 60,000 for Claude Code, plus 12 messages,
+90 seconds after the first model request, and a 150-second Modal sandbox. A
+passing candidate calibration cannot authorize the full Pilot until the formal
+registration uses the same limits and its budget envelope is approved.
 
 Calibration emits three separate attestations. Infrastructure attestation
 requires every model/host/task cell to prepare the selected host binary.
@@ -104,7 +106,7 @@ attestation requires both scorer artifacts, scoring eligibility, and a
 parseable final submission. All three must pass before `formal-pilot.yml`
 accepts the calibration run.
 
-The eight-run ceiling is CNY 4.00: a modeled CNY 1.12 token upper bound, CNY
+The eight-run ceiling is CNY 4.00: a modeled CNY 1.52 token upper bound, CNY
 0.31728 Modal-compute upper bound, and CNY 2.00 image-build reserve. Dispatch
 also requires the previously accumulated investigation spend and cumulative
 campaign budget; both values are recorded in the attestation. The weighted

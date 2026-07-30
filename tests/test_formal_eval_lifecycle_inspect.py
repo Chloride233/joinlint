@@ -193,6 +193,31 @@ def test_native_sample_limit_usage_detects_generic_bridge_error(
     assert inspect_task._sample_model_limit_exceeded() is True
 
 
+def test_native_sample_limit_usage_skips_unsupported_message_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnsupportedMessageLimit:
+        limit = 12
+
+        @property
+        def usage(self) -> float:
+            raise NotImplementedError
+
+    below = SimpleNamespace(limit=35_000, usage=20_000)
+    unused = SimpleNamespace(limit=None, usage=0)
+    monkeypatch.setattr(
+        inspect_task,
+        "sample_limits",
+        lambda: SimpleNamespace(
+            token=below,
+            message=UnsupportedMessageLimit(),
+            turn=unused,
+        ),
+    )
+
+    assert inspect_task._sample_model_limit_exceeded() is False
+
+
 def test_sql_parse_failure_still_reports_treatment_tool_funnel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -31,6 +31,10 @@ from joinlint.contracts import canonical_json
 
 
 CALIBRATION_BUDGET_CNY = 4.0
+CALIBRATION_TOKEN_LIMITS: dict[Host, int] = {
+    "codex": 35_000,
+    "claude_code": 60_000,
+}
 REMOTE_DEPENDENCIES = ("anthropic", "inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
 
 
@@ -43,13 +47,19 @@ class CalibrationBudgetEnvelope(StrictModel):
 
 
 class CalibrationResourceContract(StrictModel):
-    token_limit: Literal[35_000] = 35_000
+    token_limit_by_host: dict[Host, int]
     token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
     message_limit: Literal[12] = 12
     evaluation_timeout_seconds: Literal[90] = 90
     sandbox_timeout_seconds: Literal[150] = 150
     cpu_cores: Literal[0.5] = 0.5
     memory_mib: Literal[2048] = 2048
+
+    @model_validator(mode="after")
+    def require_frozen_host_limits(self) -> CalibrationResourceContract:
+        if self.token_limit_by_host != CALIBRATION_TOKEN_LIMITS:
+            raise ValueError("calibration token limits do not match the frozen host contract")
+        return self
 
 
 class InfrastructureCell(StrictModel):
@@ -186,12 +196,9 @@ def calibration_budget_envelope(
             model.pricing_cny.input_cache_miss_per_million_cny / 0.5,
             model.pricing_cny.output_per_million_cny,
         )
-        model_upper += (
-            len(registration.hosts)
-            * 2
-            * registration.token_limit_per_run
-            * weighted_rate
-            / 1_000_000
+        model_upper += sum(
+            2 * CALIBRATION_TOKEN_LIMITS[host] * weighted_rate / 1_000_000
+            for host in registration.hosts
         )
     modal_usd = run_count * registration.modal_sandbox_timeout_seconds * (
         registration.cpu_cores * MODAL_CPU_USD_PER_CORE_SECOND
@@ -233,6 +240,11 @@ def build_calibration_commands(
             index for index, value in enumerate(command) if value.startswith("task_partition=")
         )
         command[partition_index] = f"task_ids={task_ids}"
+        host = next(
+            value.removeprefix("host=") for value in command if value.startswith("host=")
+        )
+        token_index = command.index(f"token_limit={registration.token_limit_per_run}")
+        command[token_index] = f"token_limit={CALIBRATION_TOKEN_LIMITS[host]}"
         commands.append(command)
     if len(commands) != 4:
         raise ValueError("pilot calibration does not cover all four model/host cells")
@@ -293,7 +305,7 @@ def run_calibration(
         status="passed" if passed else "failed",
         calibration_task_ids=specification.task_ids,
         resource_contract=CalibrationResourceContract(
-            token_limit=registration.token_limit_per_run,
+            token_limit_by_host=CALIBRATION_TOKEN_LIMITS,
             token_limit_type=registration.token_limit_type,
             message_limit=registration.message_limit_per_run,
             evaluation_timeout_seconds=registration.time_limit_seconds,
@@ -521,6 +533,11 @@ def verify_calibration_attestation(
     specification = load_pilot_calibration_spec(root, manifest)
     if report.calibration_task_ids != specification.task_ids:
         raise ValueError("calibration attestation task IDs mismatch")
+    formal_limits = {
+        host: registration.token_limit_per_run for host in registration.hosts
+    }
+    if report.resource_contract.token_limit_by_host != formal_limits:
+        raise ValueError("calibration resource contract does not match the formal Pilot")
     expected_keys = {
         (model.returned_id, host, task_id)
         for model in registration.models
