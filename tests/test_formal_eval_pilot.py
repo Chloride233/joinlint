@@ -172,7 +172,7 @@ def test_pilot_calibration_uses_frozen_host_candidate_contract(
             value.removeprefix("host=") for value in command if value.startswith("host=")
         )
         assert f"token_limit={CALIBRATION_TOKEN_LIMITS[host]}" in command
-    assert all("message_limit=12" in command for command in commands)
+    assert all("message_limit=20" in command for command in commands)
     assert all("time_limit=90" in command for command in commands)
     assert all("sandbox_timeout=150" in command for command in commands)
     assert all(not any(value.startswith("task_partition=") for value in command) for command in commands)
@@ -459,7 +459,7 @@ def test_pilot_dispatch_has_eight_non_retrying_bounded_batches(tmp_path: Path) -
     assert {command[command.index("--max-sandboxes") + 1] for command in commands} == {"2"}
     assert all("token_limit=35000" in command for command in commands)
     assert all("token_limit_type=(input*0.5)+output" in command for command in commands)
-    assert all("message_limit=12" in command for command in commands)
+    assert all("message_limit=20" in command for command in commands)
     assert all("time_limit=90" in command for command in commands)
     assert all("sandbox_timeout=150" in command for command in commands)
     assert {
@@ -599,7 +599,7 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
     assert service.mem_limit == "2048m"
     assert inspect_task.token_limit == 35_000
     assert inspect_task.token_limit_type == "(input*0.5)+output"
-    assert inspect_task.message_limit == 12
+    assert inspect_task.message_limit == 20
     assert inspect_task.time_limit is None
     assert sandbox.config.extensions == {"x-modal": {"timeout": 150}}
 

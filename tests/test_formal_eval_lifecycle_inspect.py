@@ -9,9 +9,11 @@ import pytest
 pytest.importorskip("inspect_ai")
 
 from inspect_ai.agent import AgentState, agent
-from inspect_ai.model import ModelOutput
+from inspect_ai.event import SampleLimitEvent
+from inspect_ai.model import ChatMessageAssistant, ChatMessageTool, ModelOutput
 from inspect_ai.scorer import Target
 from inspect_ai.solver import TaskState
+from inspect_ai.tool import ToolCall
 from inspect_ai.util import store
 from inspect_ai.util._store import init_subtask_store
 
@@ -47,7 +49,9 @@ def test_semantic_scorers_do_not_parse_output_without_lifecycle_eligibility(
     def forbidden_semantic_logic(*args: object, **kwargs: object) -> None:
         raise AssertionError("semantic SQL logic must not run")
 
-    monkeypatch.setattr(inspect_task, "extract_submission", forbidden_semantic_logic)
+    monkeypatch.setattr(
+        inspect_task, "_extract_submission_tool_call", forbidden_semantic_logic
+    )
     state = _state(store={})
 
     score = asyncio.run(scorer_factory()(state, Target("SELECT 1")))  # type: ignore[operator]
@@ -218,6 +222,68 @@ def test_native_sample_limit_usage_skips_unsupported_message_usage(
     assert inspect_task._sample_model_limit_exceeded() is False
 
 
+def test_native_sample_limit_event_detects_unsupported_message_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnsupportedMessageLimit:
+        limit = 20
+
+        @property
+        def usage(self) -> float:
+            raise NotImplementedError
+
+    below = SimpleNamespace(limit=35_000, usage=20_000)
+    unused = SimpleNamespace(limit=None, usage=0)
+    monkeypatch.setattr(
+        inspect_task,
+        "sample_limits",
+        lambda: SimpleNamespace(
+            token=below,
+            message=UnsupportedMessageLimit(),
+            turn=unused,
+        ),
+    )
+    event = SampleLimitEvent(
+        type="message",
+        limit=20,
+        message="Message limit reached. count: 20; limit: 20",
+    )
+    history = SimpleNamespace(recent_events=lambda count: [event])
+    monkeypatch.setattr(inspect_task, "transcript", lambda: SimpleNamespace(history=history))
+
+    assert inspect_task._sample_model_limit_exceeded() is True
+
+
+def test_formal_join_scorer_uses_successful_submission_tool_call() -> None:
+    state = _eligible_state()
+    state.metadata = {
+        "condition": "control",
+        "allowed_graphs": [[]],
+        "schema": {},
+        "oracle_has_safe_path": True,
+    }
+    state.messages = _submission_messages("submit-one", "SELECT 1", "")
+
+    score = asyncio.run(inspect_task.formal_join_scorer()(state, Target("SELECT 1")))
+
+    assert score.value == 1
+    assert score.metadata["join_correct_task_completion"] is True
+
+
+def test_formal_join_scorer_rejects_duplicate_submission_tool_calls() -> None:
+    state = _eligible_state()
+    state.metadata = {"condition": "control"}
+    state.messages = [
+        *_submission_messages("submit-one", "SELECT 1", ""),
+        *_submission_messages("submit-two", "SELECT 2", ""),
+    ]
+
+    score = asyncio.run(inspect_task.formal_join_scorer()(state, Target("SELECT 1")))
+
+    assert score.value == 0
+    assert score.metadata["failure_code"] == "SQL_PARSE_FAILED"
+
+
 def test_sql_parse_failure_still_reports_treatment_tool_funnel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -267,6 +333,26 @@ def _state(*, store: dict[str, object]) -> TaskState:
         metadata={},
         store=store,
     )
+
+
+def _submission_messages(call_id: str, sql: str, warning: str) -> list[object]:
+    return [
+        ChatMessageAssistant(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id=call_id,
+                    function="mcp__EvaluationDatabase__submit_sql",
+                    arguments={"sql": sql, "warning": warning},
+                )
+            ],
+        ),
+        ChatMessageTool(
+            content='{"status":"ok"}',
+            tool_call_id=call_id,
+            function="mcp__EvaluationDatabase__submit_sql",
+        ),
+    ]
 
 
 def _pending_state() -> TaskState:

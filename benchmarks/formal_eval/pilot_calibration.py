@@ -49,7 +49,7 @@ class CalibrationBudgetEnvelope(StrictModel):
 class CalibrationResourceContract(StrictModel):
     token_limit_by_host: dict[Host, int]
     token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
-    message_limit: Literal[12] = 12
+    message_limit: Literal[20] = 20
     evaluation_timeout_seconds: Literal[90] = 90
     sandbox_timeout_seconds: Literal[150] = 150
     cpu_cores: Literal[0.5] = 0.5

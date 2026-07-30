@@ -67,7 +67,7 @@ class PilotRegistration(StrictModel):
     )
     token_limit_per_run: Literal[35_000] = 35_000
     token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
-    message_limit_per_run: Literal[12] = 12
+    message_limit_per_run: Literal[20] = 20
     time_limit_seconds: Literal[90] = 90
     modal_sandbox_timeout_seconds: Literal[150] = 150
     modal_image_builder_version: Literal["2025.06 Stable"] = "2025.06 Stable"

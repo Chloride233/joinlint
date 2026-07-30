@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from benchmarks.formal_eval.database_mcp import execute_readonly_sql
+from benchmarks.formal_eval.database_mcp import execute_readonly_sql, submit_sql_payload
 from benchmarks.formal_eval.oracle_mcp import OracleDocument, plan_oracle, validate_oracle_sql
 
 
@@ -27,6 +27,10 @@ def test_evaluation_database_tool_is_read_only_and_bounded(tmp_path: Path) -> No
         "status": "error",
         "code": "RESULT_LIMIT_EXCEEDED",
     }
+
+
+def test_submission_payload_acknowledges_without_echoing_sql() -> None:
+    assert submit_sql_payload("SELECT secret FROM records", "") == {"status": "ok"}
 
 
 def test_oracle_mcp_uses_the_same_two_tool_contract() -> None:

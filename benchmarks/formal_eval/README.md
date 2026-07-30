@@ -93,7 +93,7 @@ The sealed input freezes two task IDs using the deterministic
 `highest_join_depth_then_task_id_v1` rule. Each task runs in treatment on both
 model tiers and both hosts, producing eight samples. Unlike the legacy canary,
 calibration freezes the observed host-aware candidate limits: 35,000 native
-price-weighted tokens for Codex and 60,000 for Claude Code, plus 12 messages,
+price-weighted tokens for Codex and 60,000 for Claude Code, plus 20 messages,
 90 seconds after the first model request, and a 150-second Modal sandbox. A
 passing candidate calibration cannot authorize the full Pilot until the formal
 registration uses the same limits and its budget envelope is approved.
@@ -135,7 +135,7 @@ sample has the native price-weighted token limit exercised by the required
 four-cell calibration, `(input*0.5)+output:35000`, a 60-second readiness limit,
 and a 90-second
 evaluation limit that starts at the first model request; each Modal sandbox has
-a platform-level 150-second automatic timeout. A 12-message limit bounds
+a platform-level 150-second automatic timeout. A 20-message limit bounds
 runaway host exploration before the token ceiling. The existing 0.5 CPU and 2 GiB
 memory allocation remains unchanged rather than introducing an unmeasured
 memory reduction. The workspace Image Builder is

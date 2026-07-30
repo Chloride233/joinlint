@@ -9,6 +9,8 @@ from anyio import Event, create_task_group, fail_after, move_on_after, sleep
 from inspect_ai import Task, task
 from inspect_ai.agent import Agent, as_solver
 from inspect_ai.dataset import Sample
+from inspect_ai.event import SampleLimitEvent
+from inspect_ai.log import TranscriptHistoryUnavailableError, transcript
 from inspect_ai.model import (
     ChatMessageAssistant,
     ChatMessageTool,
@@ -31,7 +33,8 @@ from inspect_ai.util import (
 )
 from pydantic import TypeAdapter
 from benchmarks.agent_join.execution import execution_matches
-from benchmarks.agent_join.sql_edges import extract_join_edges, extract_submission, score_join_graph
+from benchmarks.agent_join.contracts import Submission
+from benchmarks.agent_join.sql_edges import extract_join_edges, score_join_graph
 from benchmarks.formal_eval.contracts import (
     Condition,
     FormalManifestV2,
@@ -63,7 +66,7 @@ from benchmarks.formal_eval.trace import ToolEvent, assess_trace
 from joinlint.contracts import canonical_json
 
 
-BASE_PROMPT = """You are evaluating one SQLite question. Use the EvaluationDatabase execute_sql tool for data access. Return exactly one JSON object with string fields sql and warning. sql must contain one read-only SELECT, or be empty only when no safe join exists. Do not include Markdown."""
+BASE_PROMPT = """You are evaluating one SQLite question. Use the EvaluationDatabase execute_sql tool for data access. Submit exactly once with the EvaluationDatabase submit_sql tool as your final action. Its sql argument must contain one read-only SELECT, or be empty only when no safe join exists; warning must be empty for submitted SQL and explain a safe abstention otherwise. Do not rely on the text of your final reply for submission."""
 HARNESS_PROMPT = """Before generating multi-table SQL, call JoinLint get_join_plan. Each entity_refs item must be exactly {"ref":"orders","entity":"orders"}: ref is a unique request-local alias and entity is the physical table name. Include every intended table instance plus start_ref and expected_grain_ref. Use only returned proof predicates. Do not call execute_sql for schema or row exploration. Call JoinLint validate_sql with the exact final SQL and returned plan_id, then call execute_sql only after validation passes. Do not execute SQL when planning or validation is error, inconclusive, stale, unavailable, or blocking. JoinLint proof is not query correctness."""
 
 
@@ -111,7 +114,7 @@ def formal_pilot_eval(
     task_ids: str | list[str] = "",
     token_limit: int = 35_000,
     token_limit_type: str = "(input*0.5)+output",
-    message_limit: int = 12,
+    message_limit: int = 20,
     time_limit: int = 90,
     sandbox_timeout: int = 150,
     cpu: float = 0.5,
@@ -335,10 +338,9 @@ def formal_join_scorer() -> Scorer:
             return blocked
         metadata = state.metadata or {}
         condition = str(metadata["condition"])
-        completion = state.output.completion if state.output is not None else ""
         try:
-            submission = extract_submission(completion)
-        except (ValueError, json.JSONDecodeError):
+            submission = _extract_submission_tool_call(state.messages)
+        except ValueError:
             payload: dict[str, Any] = {"failure_code": "SQL_PARSE_FAILED"}
             if condition in {"treatment", "oracle_mcp", "no_harness"}:
                 trace = assess_trace(
@@ -435,10 +437,9 @@ def formal_execution_scorer() -> Scorer:
         if blocked is not None:
             return blocked
         metadata = state.metadata or {}
-        completion = state.output.completion if state.output is not None else ""
         try:
-            sql = extract_submission(completion).sql
-        except (ValueError, json.JSONDecodeError):
+            sql = _extract_submission_tool_call(state.messages).sql
+        except ValueError:
             return Score(
                 value=0,
                 metadata=_semantic_metadata({"error_code": "SQL_PARSE_FAILED"}),
@@ -899,6 +900,15 @@ def _is_model_limit_error(error: Exception) -> bool:
 
 def _sample_model_limit_exceeded() -> bool:
     try:
+        recent = transcript().history.recent_events(50)
+    except (RuntimeError, TranscriptHistoryUnavailableError):
+        recent = ()
+    if any(
+        isinstance(event, SampleLimitEvent) and event.type in {"token", "message", "turn"}
+        for event in recent
+    ):
+        return True
+    try:
         limits = sample_limits()
     except RuntimeError:
         return False
@@ -909,6 +919,49 @@ def _sample_model_limit_exceeded() -> bool:
         except NotImplementedError:
             continue
     return False
+
+
+def _extract_submission_tool_call(messages: list[object]) -> Submission:
+    calls = []
+    results: dict[str, ChatMessageTool] = {}
+    for message in messages:
+        if isinstance(message, ChatMessageAssistant):
+            calls.extend(
+                call
+                for call in message.tool_calls or []
+                if _is_submission_tool(call.function)
+            )
+        elif (
+            isinstance(message, ChatMessageTool)
+            and message.tool_call_id is not None
+            and _is_submission_tool(message.function or "")
+        ):
+            if message.tool_call_id in results:
+                raise ValueError("duplicate submission result")
+            results[message.tool_call_id] = message
+    if len(calls) != 1:
+        raise ValueError("exactly one submission call is required")
+    call = calls[0]
+    result = results.get(call.id)
+    if result is None or result.error is not None:
+        raise ValueError("submission call did not complete")
+    payload = _tool_result_payload(result.content)
+    if payload != {"status": "ok"}:
+        raise ValueError("submission acknowledgement is invalid")
+    return Submission.model_validate(call.arguments)
+
+
+def _is_submission_tool(value: str) -> bool:
+    if value == "submit_sql":
+        return True
+    return any(
+        value == f"{prefix}submit_sql"
+        for prefix in (
+            "EvaluationDatabase_",
+            "EvaluationDatabase__",
+            "mcp__EvaluationDatabase__",
+        )
+    )
 
 
 def _tool_events(messages: list[object]) -> list[ToolEvent]:

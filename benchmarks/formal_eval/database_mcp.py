@@ -51,6 +51,11 @@ def execute_readonly_sql(
         connection.close()
 
 
+def submit_sql_payload(sql: str, warning: str) -> dict[str, str]:
+    del sql, warning
+    return {"status": "ok"}
+
+
 def create_database_server(database: Path) -> FastMCP:
     mcp = FastMCP("EvaluationDatabase")
 
@@ -58,6 +63,11 @@ def create_database_server(database: Path) -> FastMCP:
     def execute_sql(sql: str) -> dict[str, object]:
         """Execute one bounded read-only SQLite SELECT for the evaluation task."""
         return execute_readonly_sql(database, sql)
+
+    @mcp.tool(name="submit_sql")
+    def submit_sql(sql: str, warning: str) -> dict[str, str]:
+        """Submit the final SQL and warning to the evaluator without executing it."""
+        return submit_sql_payload(sql, warning)
 
     return mcp
 
@@ -72,4 +82,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
