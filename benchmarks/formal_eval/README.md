@@ -87,7 +87,8 @@ reached scoring; it does not authorize a full Pilot dispatch.
 
 ## Sealed four-cell calibration
 
-`formal-pilot-calibration.yml` is the required gate before another full Pilot.
+The `calibration` mode of `formal-pilot-canary.yml` is the required gate before
+another full Pilot.
 The sealed input freezes two task IDs using the deterministic
 `highest_join_depth_then_task_id_v1` rule. Each task runs in treatment on both
 model tiers and both hosts, producing eight samples. Unlike the legacy canary,

@@ -79,7 +79,7 @@ def test_modal_readiness_workflow_scopes_secrets_and_budget() -> None:
 
     assert job["environment"] == "formal-evaluation"
     assert job["permissions"] == {"contents": "read"}
-    assert job["if"] == "inputs.readiness_only == true"
+    assert job["if"] == "inputs.readiness_only == true && inputs.calibration != true"
     assert canary["if"] == "inputs.readiness_only != true"
     assert job["steps"][1]["with"]["ref"] == "${{ github.sha }}"
     assert "inputs.confirm_paid != true || inputs.budget_cny != '2.05'" in text

@@ -33,13 +33,28 @@ on:
         required: true
         default: false
         type: boolean
+      calibration:
+        description: Run the sealed eight-sample four-cell calibration
+        required: true
+        default: false
+        type: boolean
+      campaign_budget_cny:
+        description: Approved cumulative investigation budget in CNY
+        required: false
+        default: ""
+        type: string
+      campaign_spend_before_cny:
+        description: Cumulative investigation spend before this run in CNY
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   readiness:
-    if: inputs.readiness_only == true
+    if: inputs.readiness_only == true && inputs.calibration != true
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -108,8 +123,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: formal-evaluation
     steps:
-      - name: Require the exact approved paid canary
-        if: inputs.confirm_paid != true || inputs.budget_cny != '2.25'
+      - name: Require the exact approved paid diagnostic
+        if: >-
+          inputs.confirm_paid != true ||
+          (inputs.calibration == true && inputs.budget_cny != '4') ||
+          (inputs.calibration != true && inputs.budget_cny != '2.25')
         run: exit 1
       - uses: actions/checkout@v4
         with:
@@ -144,6 +162,7 @@ jobs:
           --root benchmarks/formal_eval/sealed/pilot-v1
           --current-commit "${{ steps.pilot_commit.outputs.sha }}"
       - name: Run one-task canary
+        if: inputs.calibration != true
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -156,21 +175,57 @@ jobs:
           --log-dir pilot-canary-logs
           --output pilot-canary-artifacts
           --workflow-run-id "${{ github.run_id }}"
+      - name: Run sealed four-cell calibration
+        if: inputs.calibration == true
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: https://api.deepseek.com
+          CAMPAIGN_BUDGET_CNY: ${{ inputs.campaign_budget_cny }}
+          CAMPAIGN_SPEND_BEFORE_CNY: ${{ inputs.campaign_spend_before_cny }}
+        run: >-
+          python -m benchmarks.formal_eval.pilot_calibration
+          run
+          --root benchmarks/formal_eval/sealed/pilot-v1
+          --log-dir pilot-calibration-logs
+          --output pilot-calibration-artifacts
+          --workflow-run-id "${{ github.run_id }}"
+          --campaign-budget-cny "$CAMPAIGN_BUDGET_CNY"
+          --campaign-spend-before-cny "$CAMPAIGN_SPEND_BEFORE_CNY"
       - name: Scan sanitized canary artifacts
-        if: always()
+        if: always() && inputs.calibration != true
         run: >-
           python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-canary-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && inputs.calibration != true
         with:
           name: joinlint-formal-pilot-canary-sanitized
           path: pilot-canary-artifacts
           if-no-files-found: warn
           retention-days: 90
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && inputs.calibration != true
         with:
           name: joinlint-formal-pilot-canary-private-logs
           path: pilot-canary-logs
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Scan sanitized calibration artifacts
+        if: always() && inputs.calibration == true
+        run: >-
+          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-calibration-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.calibration == true
+        with:
+          name: joinlint-formal-pilot-calibration-sanitized
+          path: pilot-calibration-artifacts
+          if-no-files-found: warn
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.calibration == true
+        with:
+          name: joinlint-formal-pilot-calibration-private-logs
+          path: pilot-calibration-logs
           if-no-files-found: warn
           retention-days: 30

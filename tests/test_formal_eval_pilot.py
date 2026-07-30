@@ -697,7 +697,8 @@ def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:
 
     assert job["environment"] == "formal-evaluation"
     assert workflow["permissions"]["contents"] == "write"
-    assert "inputs.confirm_paid != true || inputs.budget_cny != '2.25'" in text
+    assert "inputs.confirm_paid != true" in text
+    assert "inputs.calibration != true && inputs.budget_cny != '2.25'" in text
     step_names = [step.get("name") for step in job["steps"]]
     assert step_names.index("Run no-model lifecycle gate") < step_names.index(
         "Run one-task canary"
@@ -717,16 +718,20 @@ def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:
 
 
 def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() -> None:
-    workflow_path = Path(".github/workflows/formal-pilot-calibration.yml")
+    workflow_path = Path(".github/workflows/formal-pilot-canary.yml")
     workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     text = workflow_path.read_text(encoding="utf-8")
-    job = workflow["jobs"]["calibration"]
+    job = workflow["jobs"]["canary"]
 
     assert job["environment"] == "formal-evaluation"
-    assert "inputs.confirm_paid != true || inputs.budget_cny != '4'" in text
+    assert workflow["on"]["workflow_dispatch"]["inputs"]["calibration"]["default"] == (
+        "false"
+    )
+    assert "inputs.calibration == true && inputs.budget_cny != '4'" in text
     run_step = next(
         step for step in job["steps"] if step.get("name") == "Run sealed four-cell calibration"
     )
+    assert run_step["if"] == "inputs.calibration == true"
     assert set(run_step["env"]) == {
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",

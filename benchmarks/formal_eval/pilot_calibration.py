@@ -487,9 +487,9 @@ def verify_calibration_attestation_values(
         raise ValueError("pilot calibration did not pass all three attestations")
     if report.workflow_run_id != expected_run_id or run_metadata.get("id") != expected_run_id:
         raise ValueError("calibration attestation run ID mismatch")
-    if run_metadata.get("name") != "formal-pilot-calibration" or run_metadata.get(
+    if run_metadata.get("name") != "formal-pilot-canary" or run_metadata.get(
         "path"
-    ) != ".github/workflows/formal-pilot-calibration.yml":
+    ) != ".github/workflows/formal-pilot-canary.yml":
         raise ValueError("calibration attestation came from an unexpected workflow")
     if run_metadata.get("event") != "workflow_dispatch" or run_metadata.get(
         "conclusion"
