@@ -29,7 +29,7 @@ on:
         default: pilot-input.tar.gz
         type: string
       readiness_only:
-        description: Run Modal infrastructure readiness without DeepSeek
+        description: Run both Modal host-context checks without DeepSeek
         required: true
         default: false
         type: boolean
@@ -61,7 +61,7 @@ jobs:
     environment: formal-evaluation
     steps:
       - name: Require the exact approved no-model diagnostic
-        if: inputs.confirm_paid != true || inputs.budget_cny != '2.05'
+        if: inputs.confirm_paid != true || inputs.budget_cny != '2.10'
         run: exit 1
       - uses: actions/checkout@v4
         with:
@@ -79,17 +79,18 @@ jobs:
           python -m pytest -q
           tests/test_formal_eval_lifecycle.py
           tests/test_formal_eval_lifecycle_inspect.py
+          tests/test_formal_eval_modal_readiness.py
           tests/test_formal_eval_modal_compat.py
-      - name: Run one no-model Modal readiness sample
+      - name: Run no-model Codex host-context sample
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           PYTHONPATH: ${{ github.workspace }}
         run: >-
           inspect eval
-          benchmarks/formal_eval/inspect_task.py@formal_modal_readiness_eval
+          benchmarks/formal_eval/inspect_task.py@formal_host_context_eval
           --model mockllm/model
-          --log-dir modal-readiness-logs
+          --log-dir modal-readiness-logs/codex
           --max-retries 0
           --max-sandboxes 1
           --display none
@@ -100,8 +101,31 @@ jobs:
           -T agent_version=0.144.1
           -T dockerfile="$(pwd)/Dockerfile.formal-pilot"
           -T readiness_time_limit=60
+          -T evaluation_time_limit=30
           -T sandbox_timeout=120
-      - name: Verify zero model usage and readiness attestation
+      - name: Run no-model Claude host-context sample
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: >-
+          inspect eval
+          benchmarks/formal_eval/inspect_task.py@formal_host_context_eval
+          --model mockllm/model
+          --log-dir modal-readiness-logs/claude-code
+          --max-retries 0
+          --max-sandboxes 1
+          --display none
+          --no-fail-on-error
+          --score-on-error
+          -T database="$(pwd)/tests/fixtures/chinook/chinook.sqlite"
+          -T host=claude_code
+          -T agent_version=2.1.212
+          -T dockerfile="$(pwd)/Dockerfile.formal-pilot"
+          -T readiness_time_limit=60
+          -T evaluation_time_limit=30
+          -T sandbox_timeout=120
+      - name: Verify zero provider tokens and both host-context attestations
         run: >-
           python -m benchmarks.formal_eval.modal_readiness
           --log-dir modal-readiness-logs

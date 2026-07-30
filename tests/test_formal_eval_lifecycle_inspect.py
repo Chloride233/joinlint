@@ -10,7 +10,13 @@ pytest.importorskip("inspect_ai")
 
 from inspect_ai.agent import AgentState, agent
 from inspect_ai.event import SampleLimitEvent
-from inspect_ai.model import ChatMessageAssistant, ChatMessageTool, ModelOutput
+from inspect_ai.model import (
+    ChatMessageAssistant,
+    ChatMessageTool,
+    GenerateConfig,
+    ModelOutput,
+    get_model,
+)
 from inspect_ai.scorer import Target
 from inspect_ai.solver import TaskState
 from inspect_ai.tool import ToolCall
@@ -407,6 +413,55 @@ def test_host_context_profile_accepts_only_required_mcp_and_bounded_codex_tools(
             "treatment",
             claude_tools[:-1],
         )
+
+
+def test_host_context_probe_short_circuits_before_provider_model() -> None:
+    state = _pending_state()
+    init_subtask_store(state.store)
+    tools = [
+        SimpleNamespace(name=name)
+        for name in (
+            "execute_sql",
+            "submit_sql",
+            "get_join_plan",
+            "validate_sql",
+            "update_plan",
+        )
+    ]
+    context_filter = inspect_task._host_context_filter(
+        "codex",
+        "treatment",
+        short_circuit=True,
+    )
+
+    output = asyncio.run(
+        context_filter(
+            get_model("mockllm/model"),
+            [],
+            tools,
+            None,
+            GenerateConfig(),
+        )
+    )
+
+    assert output is not None
+    assert output.usage is None
+    assert output.completion == "Host context profile accepted."
+    observation = state.store.get(inspect_task.HOST_CONTEXT_STORE_KEY)
+    assert observation["tool_names"] == (
+        "execute_sql",
+        "get_join_plan",
+        "submit_sql",
+        "update_plan",
+        "validate_sql",
+    )
+    record = parse_lifecycle(state.store.get(LIFECYCLE_STORE_KEY))
+    assert record.evaluation_status == "started"
+    record = complete_evaluation(record, duration_seconds=1, now=NOW)
+    write_lifecycle(state.store, allow_scoring(record))
+    score = asyncio.run(inspect_task.formal_host_context_scorer()(state, Target("")))
+    assert score.value == 1
+    assert score.metadata["provider_short_circuited"] is True
 
 
 def test_solver_uses_pure_frozen_host_context_options() -> None:

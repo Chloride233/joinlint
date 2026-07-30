@@ -68,6 +68,7 @@ from joinlint.contracts import canonical_json
 
 BASE_PROMPT = """You are evaluating one SQLite question. Use the EvaluationDatabase execute_sql tool for data access. Submit exactly once with the EvaluationDatabase submit_sql tool as your final action. Its sql argument must contain one read-only SELECT, or be empty only when no safe join exists; warning must be empty for submitted SQL and explain a safe abstention otherwise. Do not rely on the text of your final reply for submission."""
 HARNESS_PROMPT = """The schema is already provided, so your first tool call must be JoinLint get_join_plan. Call get_join_plan exactly once after choosing every intended physical table instance. Each entity_refs item must be exactly {"ref":"orders","entity":"orders"}: ref is a unique request-local alias and entity is the physical table name; repeat an entity only for a genuine self join. Set expected_grain_ref to the instance whose unique key must remain one row per output row before aggregation. For a many-to-one join, the referencing child normally preserves its grain; aggregation, DISTINCT, and GROUP BY do not restore grain in Stage 1. If planning returns GRAIN_INCOMPATIBLE, COMPOUND_FANOUT, NO_VERIFIED_PATH, or any other non-ok status, do not retry variants or guess: submit empty SQL with the stable code in warning. Use only returned proof predicates. Call JoinLint validate_sql with the exact final SQL and returned plan_id, then call execute_sql only after validation passes. If validation is not ok, do not execute and submit empty SQL with the stable code. JoinLint proof is not query correctness."""
+HOST_CONTEXT_STORE_KEY = "joinlint.formal_eval.host_context.v1"
 
 CODEX_CONTEXT_CONFIG_OVERRIDES = {
     "features.apps": "false",
@@ -226,19 +227,24 @@ def _normalized_pilot_task_ids(value: str | list[str]) -> tuple[str, ...]:
 
 
 @task
-def formal_modal_readiness_eval(
+def formal_host_context_eval(
     database: str,
     host: Host,
     agent_version: str,
     dockerfile: str,
     readiness_time_limit: int = 60,
+    evaluation_time_limit: int = 30,
     sandbox_timeout: int = 120,
 ) -> Task:
-    if readiness_time_limit <= 0 or sandbox_timeout <= readiness_time_limit:
-        raise ValueError("readiness resource limits must be positive")
+    if (
+        readiness_time_limit <= 0
+        or evaluation_time_limit <= 0
+        or sandbox_timeout <= readiness_time_limit + evaluation_time_limit
+    ):
+        raise ValueError("host-context resource limits must be positive and bounded")
     database_path = Path(database).resolve(strict=True)
     if database_path.is_symlink() or not database_path.is_file():
-        raise ValueError("readiness database must be one regular file")
+        raise ValueError("host-context database must be one regular file")
     install_modal_filesystem_compat()
     service = ComposeService(
         build=ComposeBuild(context=".", dockerfile=dockerfile),
@@ -250,19 +256,29 @@ def formal_modal_readiness_eval(
     return Task(
         dataset=[
             Sample(
-                id="modal-readiness",
-                input="Infrastructure readiness only; no model request is permitted.",
+                id=f"host-context-{host}",
+                input="Validate the frozen host tool surface and stop.",
                 target="",
-                files={"/workspace/data/database.sqlite": str(database_path)},
+                files={
+                    "/workspace/data/database.sqlite": str(database_path),
+                },
+                metadata={"host": host, "agent_version": agent_version},
             )
         ],
-        solver=infrastructure_readiness(host, agent_version, readiness_time_limit),
-        scorer=formal_modal_readiness_scorer(),
+        solver=_solver(
+            host,
+            "treatment",
+            agent_version,
+            strict_pilot=True,
+            readiness_time_limit=readiness_time_limit,
+            evaluation_time_limit=evaluation_time_limit,
+            context_probe=True,
+        ),
+        scorer=formal_host_context_scorer(),
         config=GenerateConfig(max_tokens=1, cache=False),
         sandbox=("modal", _compose_config(service, sandbox_timeout)),
-        token_limit=1,
         time_limit=None,
-        name="jl-readiness",
+        name="jl-context",
     )
 
 
@@ -354,25 +370,35 @@ def _compose_config(
 
 
 @scorer(metrics=[mean()])
-def formal_modal_readiness_scorer() -> Scorer:
+def formal_host_context_scorer() -> Scorer:
     async def score(state: TaskState, target: Target) -> Score:
         del target
         record = _require_lifecycle(state)
+        observation = state.store.get(HOST_CONTEXT_STORE_KEY)
+        observed = observation if isinstance(observation, dict) else {}
+        tool_names = observed.get("tool_names")
         passed = (
-            record.infrastructure_prepared_at is not None
-            and record.host_binary_sha256 is not None
-            and record.failure_reason is None
+            record.scoring_eligible
+            and observed.get("host") == record.host
+            and observed.get("condition") == "treatment"
+            and observed.get("provider_short_circuited") is True
+            and isinstance(tool_names, tuple)
+            and len(tool_names) >= 4
         )
         return Score(
             value=1 if passed else 0,
             metadata={
-                "score_kind": "infrastructure_readiness",
+                "score_kind": "host_context_readiness",
                 "readiness_attested": passed,
                 "host": record.host,
                 "agent_version": record.agent_version,
                 "host_binary_sha256": record.host_binary_sha256,
                 "infrastructure_preparation_duration_seconds": (
                     record.infrastructure_preparation_duration_seconds
+                ),
+                "tool_names": tool_names if isinstance(tool_names, tuple) else (),
+                "provider_short_circuited": (
+                    observed.get("provider_short_circuited") is True
                 ),
                 "failure_reason": record.failure_reason,
                 "failure_detail": record.failure_detail,
@@ -618,6 +644,7 @@ def _solver(
     strict_pilot: bool = False,
     readiness_time_limit: int = 120,
     evaluation_time_limit: int = 120,
+    context_probe: bool = False,
 ):  # type: ignore[no-untyped-def]
     from inspect_swe import claude_code, codex_cli
 
@@ -663,7 +690,7 @@ def _solver(
     prompt = BASE_PROMPT
     if condition in {"treatment", "oracle_mcp"}:
         prompt += "\n\n" + HARNESS_PROMPT
-    context_filter = _host_context_filter(host, condition)
+    context_filter = _host_context_filter(host, condition, short_circuit=context_probe)
     if host == "codex":
         agent = codex_cli(
             version="sandbox",
@@ -925,7 +952,12 @@ async def _mark_evaluation_started(
     return None
 
 
-def _host_context_filter(host: Host, condition: Condition):  # type: ignore[no-untyped-def]
+def _host_context_filter(
+    host: Host,
+    condition: Condition,
+    *,
+    short_circuit: bool = False,
+):  # type: ignore[no-untyped-def]
     async def enforce(
         model: Model,
         messages: list[object],
@@ -933,14 +965,29 @@ def _host_context_filter(host: Host, condition: Condition):  # type: ignore[no-u
         tool_choice: object,
         config: GenerateConfig,
     ) -> ModelOutput | GenerateInput | None:
-        _require_host_tool_surface(host, condition, tools)
-        return await _mark_evaluation_started(
+        tool_names = _require_host_tool_surface(host, condition, tools)
+        store().set(
+            HOST_CONTEXT_STORE_KEY,
+            {
+                "host": host,
+                "condition": condition,
+                "tool_names": tool_names,
+                "provider_short_circuited": short_circuit,
+            },
+        )
+        await _mark_evaluation_started(
             model,
             messages,
             tools,
             tool_choice,
             config,
         )
+        if short_circuit:
+            return ModelOutput.from_content(
+                model=str(model),
+                content="Host context profile accepted.",
+            )
+        return None
 
     return enforce
 
@@ -949,7 +996,7 @@ def _require_host_tool_surface(
     host: Host,
     condition: Condition,
     tools: list[object],
-) -> None:
+) -> tuple[str, ...]:
     names = {_host_tool_name(tool) for tool in tools}
     if None in names:
         raise HostContextDriftError("host_tool_surface_missing_name")
@@ -963,6 +1010,7 @@ def _require_host_tool_surface(
             f"missing={','.join(sorted(missing)) or '-'};"
             f"unexpected={','.join(sorted(unexpected)) or '-'}"
         )
+    return tuple(sorted(name for name in names if name is not None))
 
 
 def _required_mcp_tool_names(host: Host, condition: Condition) -> set[str]:

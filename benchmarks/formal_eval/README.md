@@ -74,10 +74,12 @@ shim fails closed when the pinned adapter version changes so an upstream upgrade
 must be reviewed rather than silently inheriting the patch.
 
 The `readiness_only` mode of `formal-pilot-canary.yml` is the manual, no-model
-precursor to a paid Agent canary. It uses the exact Pilot Dockerfile and lifecycle
-limits, exposes only Modal credentials, rejects any model usage, and emits a
-commit-bound readiness report. Its exact CNY 2.05 approval covers the CNY
-0.031728 sandbox-compute upper bound plus the existing CNY 2.00 image-build reserve.
+precursor to a paid Agent canary. It starts both pinned hosts with the exact Pilot
+Dockerfile and MCP configuration, intercepts each first bridged request before
+the provider model, and attests the reduced tool surface with zero provider
+tokens. It exposes only Modal credentials and emits a commit-bound readiness
+report. Its exact CNY 2.10 approval covers the CNY 0.063456 two-sandbox compute
+upper bound plus the existing CNY 2.00 image-build reserve.
 The paid one-task canary uses a 150-second sandbox envelope so its independently
 measured 60-second readiness window does not consume the 90-second evaluation
 window. Pilot v3 targets Claude Code with the cost-efficient model so the host
