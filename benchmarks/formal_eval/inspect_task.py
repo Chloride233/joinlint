@@ -1009,6 +1009,13 @@ def _tool_result_payload(content: object) -> dict[str, Any] | None:
             text = blocks[0]
     if text is None:
         return None
+    lines = text.split("\n", maxsplit=2)
+    if (
+        len(lines) == 3
+        and lines[0].startswith("Wall time: ")
+        and lines[1] == "Output:"
+    ):
+        text = lines[2]
     try:
         value = json.loads(text)
     except json.JSONDecodeError:

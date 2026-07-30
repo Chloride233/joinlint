@@ -310,6 +310,16 @@ def test_claude_namespaced_joinlint_tools_are_recognized() -> None:
     assert inspect_task._tool_name("mcp__EvaluationDatabase__execute_sql") is None
 
 
+def test_codex_bridge_tool_result_envelope_is_parsed() -> None:
+    assert inspect_task._tool_result_payload(
+        'Wall time: 0.0065 seconds\nOutput:\n{"status":"ok"}'
+    ) == {"status": "ok"}
+
+
+def test_unrecognized_tool_result_envelope_is_not_parsed() -> None:
+    assert inspect_task._tool_result_payload('Output:\n{"status":"ok"}') is None
+
+
 def test_pilot_task_ids_accept_inspect_list_normalization() -> None:
     assert inspect_task._normalized_pilot_task_ids("task-a,task-b") == (
         "task-a",
