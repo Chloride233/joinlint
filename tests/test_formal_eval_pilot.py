@@ -28,10 +28,14 @@ from benchmarks.formal_eval.pilot import (
 from benchmarks.formal_eval.pilot_calibration import (
     CALIBRATION_BUDGET_CNY,
     CALIBRATION_TOKEN_LIMITS,
+    CalibrationResourceContract,
     InfrastructureAttestation,
+    PilotCalibrationReport,
     attest_calibration_samples,
     build_calibration_commands,
     calibration_budget_envelope,
+    calibration_readiness_status,
+    usage_breakdown,
 )
 from benchmarks.formal_eval.pilot_dispatch import (
     build_pilot_commands,
@@ -180,11 +184,13 @@ def test_pilot_calibration_uses_frozen_host_candidate_contract(
     assert all(expected_task_ids in command for command in commands)
 
 
-def test_pilot_calibration_attests_infrastructure_harness_and_scoring() -> None:
+def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -> None:
     from benchmarks.formal_eval.lifecycle import (
         allow_scoring,
         complete_evaluation,
+        fail_evaluation,
         infrastructure_prepared,
+        LifecycleFailureReason,
         new_lifecycle,
         readiness_passed,
         start_evaluation,
@@ -221,7 +227,14 @@ def test_pilot_calibration_attests_infrastructure_harness_and_scoring() -> None:
                 samples.append(
                     SimpleNamespace(
                         metadata={"host": host, "task_id": task_id},
-                        model_usage={model.returned_id: object()},
+                        model_usage={
+                            model.returned_id: SimpleNamespace(
+                                input_tokens=984,
+                                input_tokens_cache_read=43_008,
+                                input_tokens_cache_write=None,
+                                output_tokens=482,
+                            )
+                        },
                         store={
                             "joinlint.formal_eval.lifecycle.v1": host_lifecycle.model_dump(
                                 mode="json"
@@ -238,24 +251,116 @@ def test_pilot_calibration_attests_infrastructure_harness_and_scoring() -> None:
                     )
                 )
 
-    infrastructure, harness, scoring = attest_calibration_samples(
+    infrastructure, resource, harness, scoring = (
+        attest_calibration_samples(
+            samples,
+            registration=registration,
+            task_ids=task_ids,
+        )
+    )
+
+    assert infrastructure.status == "passed"
+    assert resource.status == "passed"
+    assert harness.status == "passed"
+    assert scoring.status == "passed"
+    assert len(infrastructure.cells) == len(resource.cells) == 8
+    assert len(harness.cells) == len(scoring.cells) == 8
+    assert {summary.observed_cache_read_floor_tokens for summary in resource.hosts} == {
+        43_008
+    }
+    assert {summary.target_headroom_tokens for summary in resource.hosts} == {5_000}
+    assert calibration_readiness_status(
+        infrastructure=infrastructure,
+        resource=resource,
+        scoring=scoring,
+        within_budget=True,
+    ) == "passed"
+
+    report_values = {
+        "calibration_task_ids": task_ids,
+        "resource_contract": CalibrationResourceContract(
+            token_limit_by_host=CALIBRATION_TOKEN_LIMITS
+        ),
+        "infrastructure": infrastructure,
+        "harness": harness,
+        "scoring": scoring,
+        "actual_model_cost_cny": 0.1,
+        "modal_compute_upper_cny": 0.2,
+        "modal_image_build_reserve_cny": 2.0,
+        "total_cost_upper_cny": 2.3,
+        "campaign_spend_before_cny": 8.0,
+        "campaign_budget_cny": 20.0,
+        "campaign_total_upper_cny": 10.3,
+        "workflow_run_id": 123,
+        "joinlint_commit": COMMIT,
+        "input_lock_sha256": "c" * 64,
+        "dependency_versions": {},
+    }
+    legacy_report = PilotCalibrationReport(
+        schema_version=1,
+        status="passed",
+        **report_values,
+    )
+    assert legacy_report.readiness_status is None
+
+    trace["plan_called"] = False
+    _, still_sufficient, failed_harness, still_available = attest_calibration_samples(
         samples,
         registration=registration,
         task_ids=task_ids,
     )
-
-    assert infrastructure.status == "passed"
-    assert harness.status == "passed"
-    assert scoring.status == "passed"
-    assert len(infrastructure.cells) == len(harness.cells) == len(scoring.cells) == 8
+    assert failed_harness.status == "failed"
+    assert still_sufficient.status == "passed"
+    assert still_available.status == "passed"
+    separated_report = PilotCalibrationReport(
+        schema_version=2,
+        status="failed",
+        readiness_status="passed",
+        resource=still_sufficient,
+        **{**report_values, "harness": failed_harness},
+    )
+    assert separated_report.status == "failed"
+    assert separated_report.readiness_status == "passed"
+    trace["plan_called"] = True
 
     samples[0].scores["formal_join_scorer"].metadata["failure_code"] = "SQL_PARSE_FAILED"
-    _, _, failed_scoring = attest_calibration_samples(
+    _, _, _, failed_scoring = attest_calibration_samples(
         samples,
         registration=registration,
         task_ids=task_ids,
     )
     assert failed_scoring.status == "failed"
+    assert calibration_readiness_status(
+        infrastructure=infrastructure,
+        resource=resource,
+        scoring=failed_scoring,
+        within_budget=True,
+    ) == "passed"
+
+    limited = new_lifecycle("codex", registration.host_versions["codex"])
+    limited = infrastructure_prepared(
+        limited,
+        duration_seconds=1,
+        host_binary_sha256="c" * 64,
+    )
+    limited = readiness_passed(limited, duration_seconds=1)
+    limited = start_evaluation(limited)
+    limited = fail_evaluation(
+        limited,
+        reason=LifecycleFailureReason.MODEL_LIMIT,
+        detail="weighted token limit reached",
+        duration_seconds=1,
+    )
+    samples[0].store["joinlint.formal_eval.lifecycle.v1"] = limited.model_dump(mode="json")
+    _, limited_resource, _, _ = attest_calibration_samples(
+        samples,
+        registration=registration,
+        task_ids=task_ids,
+    )
+    assert limited_resource.status == "failed"
+    limited_cell = next(cell for cell in limited_resource.cells if cell.model_limit_reached)
+    assert limited_cell.resource_sufficient is False
+    assert limited_cell.usage is not None
 
     with pytest.raises(ValueError, match="status is inconsistent"):
         InfrastructureAttestation(status="passed", cells=())
@@ -317,8 +422,16 @@ def test_observed_cost_treats_cache_read_as_additional_input_usage(
         output_tokens=482,
     )
     cost = model_usage_cost_cny(usage, registration.models[0].pricing_cny)
+    breakdown = usage_breakdown(usage, registration.models[0].pricing_cny)
 
     assert cost == pytest.approx(0.0069192)
+    assert breakdown.uncached_input_tokens == 984
+    assert breakdown.cache_read_input_tokens == 43_008
+    assert breakdown.cache_write_input_tokens == 0
+    assert breakdown.context_input_tokens == 43_992
+    assert breakdown.inspect_weighted_tokens == 22_478
+    assert breakdown.calculated_cost_cny == pytest.approx(cost)
+    assert breakdown.cache_read_ratio == pytest.approx(43_008 / 43_992)
 
 
 def test_pilot_canary_attestation_binds_run_commit_input_and_dependencies() -> None:

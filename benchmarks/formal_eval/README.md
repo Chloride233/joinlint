@@ -98,13 +98,19 @@ price-weighted tokens for Codex and 60,000 for Claude Code, plus 20 messages,
 passing candidate calibration cannot authorize the full Pilot until the formal
 registration uses the same limits and its budget envelope is approved.
 
-Calibration emits three separate attestations. Infrastructure attestation
-requires every model/host/task cell to prepare the selected host binary.
-Harness attestation requires complete entity planning, a usable proof, exact
-final-SQL validation, successful proof binding, and MCP grounding. Scoring
-attestation requires both scorer artifacts, scoring eligibility, and a
-parseable final submission. All three must pass before `formal-pilot.yml`
-accepts the calibration run.
+Calibration schema v2 separates readiness evidence from the observed product
+outcome. Infrastructure attestation requires every model/host/task cell to
+prepare the selected host binary. Resource attestation records uncached input,
+cache read, cache write, output, Inspect-weighted usage, headroom, and frozen-price
+cost for every cell; it fails on a model/time limit or insufficient headroom.
+Scoring-pipeline readiness requires both scorer artifacts even when the model
+never produced a parseable submission. Harness and scoring attestations remain
+product observations: they report planning, proof binding, MCP grounding,
+scoring eligibility, and parseability, but cannot make an under-resourced run
+look ready or preselect tasks that already work. The legacy overall `status`
+remains fail-closed for the current Pilot gate, while `readiness_status` exposes
+the independent infrastructure/resource/scoring-pipeline result. Schema v1
+artifacts remain parseable and do not gain a retroactive readiness claim.
 
 The eight-run ceiling is CNY 4.00: a modeled CNY 1.52 token upper bound, CNY
 0.31728 Modal-compute upper bound, and CNY 2.00 image-build reserve. Dispatch
@@ -112,7 +118,9 @@ also requires the previously accumulated investigation spend and cumulative
 campaign budget; both values are recorded in the attestation. The weighted
 token expression remains a conservative prompt-complexity limit, not a
 cache-aware monetary meter. Actual model cost is calculated separately from
-cache-hit, uncached-input, and output usage.
+cache-hit, uncached-input, cache-write, and output usage. Cache reads can be
+cheap in CNY while still consuming the Inspect context limit; both facts are
+reported rather than collapsed into one token number.
 
 ## Bounded independent pilot
 

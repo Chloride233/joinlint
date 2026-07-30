@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import subprocess
 from importlib.metadata import version
@@ -12,7 +13,11 @@ from pydantic import Field, model_validator
 
 from benchmarks.formal_eval.contracts import Host, InputLockV2, StrictModel
 from benchmarks.formal_eval.dispatch import inspect_subprocess_environment
-from benchmarks.formal_eval.lifecycle import LIFECYCLE_STORE_KEY, parse_lifecycle
+from benchmarks.formal_eval.lifecycle import (
+    LIFECYCLE_STORE_KEY,
+    LifecycleFailureReason,
+    parse_lifecycle,
+)
 from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.manifest import load_document
 from benchmarks.formal_eval.pilot import (
@@ -24,6 +29,7 @@ from benchmarks.formal_eval.pilot import (
 )
 from benchmarks.formal_eval.pilot_dispatch import (
     build_pilot_commands,
+    model_usage_cost_cny,
     observed_model_cost_cny,
     require_batch_health,
 )
@@ -35,6 +41,7 @@ CALIBRATION_TOKEN_LIMITS: dict[Host, int] = {
     "codex": 35_000,
     "claude_code": 60_000,
 }
+TARGET_HEADROOM_RATIO = 0.2
 REMOTE_DEPENDENCIES = ("anthropic", "inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
 
 
@@ -59,6 +66,113 @@ class CalibrationResourceContract(StrictModel):
     def require_frozen_host_limits(self) -> CalibrationResourceContract:
         if self.token_limit_by_host != CALIBRATION_TOKEN_LIMITS:
             raise ValueError("calibration token limits do not match the frozen host contract")
+        return self
+
+
+class UsageBreakdown(StrictModel):
+    uncached_input_tokens: int = Field(ge=0)
+    cache_read_input_tokens: int = Field(ge=0)
+    cache_write_input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    context_input_tokens: int = Field(ge=0)
+    inspect_weighted_tokens: float = Field(ge=0)
+    calculated_cost_cny: float = Field(ge=0)
+    cache_read_ratio: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def require_consistent_totals(self) -> UsageBreakdown:
+        context = (
+            self.uncached_input_tokens
+            + self.cache_read_input_tokens
+            + self.cache_write_input_tokens
+        )
+        weighted = context * 0.5 + self.output_tokens
+        ratio = self.cache_read_input_tokens / context if context else 0.0
+        if self.context_input_tokens != context:
+            raise ValueError("context input token total is inconsistent")
+        if self.inspect_weighted_tokens != weighted:
+            raise ValueError("Inspect weighted token total is inconsistent")
+        if not math.isclose(self.cache_read_ratio, ratio, rel_tol=0, abs_tol=1e-12):
+            raise ValueError("cache-read ratio is inconsistent")
+        if not math.isfinite(self.calculated_cost_cny):
+            raise ValueError("calculated model cost must be finite")
+        return self
+
+
+class ResourceCell(StrictModel):
+    model_id: str
+    host: Host
+    task_id: str
+    configured_token_limit: int = Field(gt=0)
+    observed_weighted_tokens: float | None = Field(default=None, ge=0)
+    headroom_tokens: float | None = None
+    lifecycle_reason: LifecycleFailureReason | None = None
+    model_limit_reached: bool
+    time_limit_reached: bool
+    resource_sufficient: bool
+    usage: UsageBreakdown | None = None
+
+    @model_validator(mode="after")
+    def require_consistent_resource_state(self) -> ResourceCell:
+        if (self.usage is None) != (self.observed_weighted_tokens is None):
+            raise ValueError("resource usage and observed weighted tokens must appear together")
+        if (self.usage is None) != (self.headroom_tokens is None):
+            raise ValueError("resource usage and headroom must appear together")
+        if self.usage is not None:
+            if self.observed_weighted_tokens != self.usage.inspect_weighted_tokens:
+                raise ValueError("observed weighted tokens do not match usage")
+            expected_headroom = self.configured_token_limit - self.observed_weighted_tokens
+            if self.headroom_tokens != expected_headroom:
+                raise ValueError("resource headroom is inconsistent")
+        sufficient = (
+            self.usage is not None
+            and self.observed_weighted_tokens <= self.configured_token_limit
+            and not self.model_limit_reached
+            and not self.time_limit_reached
+        )
+        if self.resource_sufficient != sufficient:
+            raise ValueError("resource sufficiency is inconsistent")
+        if self.model_limit_reached != (
+            self.lifecycle_reason == LifecycleFailureReason.MODEL_LIMIT
+        ):
+            raise ValueError("model-limit flag is inconsistent")
+        if self.time_limit_reached != (
+            self.lifecycle_reason == LifecycleFailureReason.MODEL_TIMEOUT
+        ):
+            raise ValueError("time-limit flag is inconsistent")
+        return self
+
+
+class ResourceHostSummary(StrictModel):
+    host: Host
+    cell_count: int = Field(ge=0)
+    configured_token_limit: int = Field(gt=0)
+    peak_observed_weighted_tokens: float | None = Field(default=None, ge=0)
+    minimum_headroom_tokens: float | None = None
+    observed_cache_read_floor_tokens: int | None = Field(default=None, ge=0)
+    target_headroom_ratio: Literal[0.2] = TARGET_HEADROOM_RATIO
+    target_headroom_tokens: int | None = Field(default=None, ge=0)
+    limit_censored: bool
+
+
+class ResourceAttestation(StrictModel):
+    status: Literal["passed", "failed"]
+    cells: tuple[ResourceCell, ...]
+    hosts: tuple[ResourceHostSummary, ...]
+
+    @model_validator(mode="after")
+    def require_consistent_status(self) -> ResourceAttestation:
+        complete = len(self.cells) == 8 and len({_cell_key(cell) for cell in self.cells}) == 8
+        passed = complete and all(cell.resource_sufficient for cell in self.cells)
+        if (self.status == "passed") != passed:
+            raise ValueError("resource attestation status is inconsistent")
+        host_names = tuple(summary.host for summary in self.hosts)
+        cell_hosts = tuple(sorted({cell.host for cell in self.cells}))
+        if host_names != cell_hosts:
+            raise ValueError("resource host summaries must be unique and sorted")
+        expected_hosts = _resource_host_summaries(list(self.cells), host_names)
+        if self.hosts != expected_hosts:
+            raise ValueError("resource host summaries are inconsistent")
         return self
 
 
@@ -147,11 +261,13 @@ class ScoringAttestation(StrictModel):
 
 
 class PilotCalibrationReport(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     status: Literal["passed", "failed"]
+    readiness_status: Literal["passed", "failed"] | None = None
     calibration_task_ids: tuple[str, str]
     resource_contract: CalibrationResourceContract
     infrastructure: InfrastructureAttestation
+    resource: ResourceAttestation | None = None
     harness: HarnessAttestation
     scoring: ScoringAttestation
     actual_model_cost_cny: float
@@ -169,18 +285,81 @@ class PilotCalibrationReport(StrictModel):
 
     @model_validator(mode="after")
     def require_consistent_status_and_budget(self) -> PilotCalibrationReport:
-        passed = all(
+        legacy_passed = all(
             attestation.status == "passed"
             for attestation in (self.infrastructure, self.harness, self.scoring)
         )
-        passed = (
-            passed
+        legacy_passed = (
+            legacy_passed
             and self.total_cost_upper_cny <= self.approved_run_budget_cny
             and self.campaign_total_upper_cny <= self.campaign_budget_cny
         )
-        if (self.status == "passed") != passed:
+        if (self.status == "passed") != legacy_passed:
             raise ValueError("pilot calibration report status is inconsistent")
+        if self.schema_version == 1:
+            if any(
+                value is not None
+                for value in (self.readiness_status, self.resource)
+            ):
+                raise ValueError("schema v1 cannot contain resource readiness fields")
+            return self
+        if self.resource is None:
+            raise ValueError("schema v2 requires a resource attestation")
+        readiness = calibration_readiness_status(
+            infrastructure=self.infrastructure,
+            resource=self.resource,
+            scoring=self.scoring,
+            within_budget=(
+                self.total_cost_upper_cny <= self.approved_run_budget_cny
+                and self.campaign_total_upper_cny <= self.campaign_budget_cny
+            ),
+        )
+        if self.readiness_status != readiness:
+            raise ValueError("pilot calibration readiness status is inconsistent")
         return self
+
+
+def calibration_readiness_status(
+    *,
+    infrastructure: InfrastructureAttestation,
+    resource: ResourceAttestation,
+    scoring: ScoringAttestation,
+    within_budget: bool,
+) -> Literal["passed", "failed"]:
+    passed = (
+        infrastructure.status == "passed"
+        and resource.status == "passed"
+        and scoring_pipeline_available(scoring)
+        and within_budget
+    )
+    return "passed" if passed else "failed"
+
+
+def scoring_pipeline_available(scoring: ScoringAttestation) -> bool:
+    required = {"formal_join_scorer", "formal_execution_scorer"}
+    return (
+        len(scoring.cells) == 8
+        and len({_cell_key(cell) for cell in scoring.cells}) == 8
+        and all(required <= set(cell.scorer_artifacts) for cell in scoring.cells)
+    )
+
+
+def usage_breakdown(usage: Any, pricing: Any) -> UsageBreakdown:
+    uncached_input = int(usage.input_tokens or 0)
+    cache_read = int(usage.input_tokens_cache_read or 0)
+    cache_write = int(usage.input_tokens_cache_write or 0)
+    output = int(usage.output_tokens or 0)
+    context = uncached_input + cache_read + cache_write
+    return UsageBreakdown(
+        uncached_input_tokens=uncached_input,
+        cache_read_input_tokens=cache_read,
+        cache_write_input_tokens=cache_write,
+        output_tokens=output,
+        context_input_tokens=context,
+        inspect_weighted_tokens=context * 0.5 + output,
+        calculated_cost_cny=model_usage_cost_cny(usage, pricing),
+        cache_read_ratio=cache_read / context if context else 0.0,
+    )
 
 
 def calibration_budget_envelope(
@@ -289,7 +468,7 @@ def run_calibration(
         + envelope.modal_compute_upper_cny
         + envelope.modal_image_build_reserve_cny
     )
-    infrastructure, harness, scoring = verify_calibration_logs(
+    infrastructure, resource, harness, scoring = verify_calibration_logs(
         log_dir,
         registration=registration,
         task_ids=specification.task_ids,
@@ -301,8 +480,18 @@ def run_calibration(
     campaign_total = campaign_spend_before_cny + total_upper
     if total_upper > CALIBRATION_BUDGET_CNY or campaign_total > campaign_budget_cny:
         passed = False
+    readiness_status = calibration_readiness_status(
+        infrastructure=infrastructure,
+        resource=resource,
+        scoring=scoring,
+        within_budget=(
+            total_upper <= CALIBRATION_BUDGET_CNY
+            and campaign_total <= campaign_budget_cny
+        ),
+    )
     report = PilotCalibrationReport(
         status="passed" if passed else "failed",
+        readiness_status=readiness_status,
         calibration_task_ids=specification.task_ids,
         resource_contract=CalibrationResourceContract(
             token_limit_by_host=CALIBRATION_TOKEN_LIMITS,
@@ -314,6 +503,7 @@ def run_calibration(
             memory_mib=registration.memory_mib,
         ),
         infrastructure=infrastructure,
+        resource=resource,
         harness=harness,
         scoring=scoring,
         actual_model_cost_cny=actual_model_cost,
@@ -339,7 +529,12 @@ def verify_calibration_logs(
     *,
     registration: PilotRegistration,
     task_ids: tuple[str, str],
-) -> tuple[InfrastructureAttestation, HarnessAttestation, ScoringAttestation]:
+) -> tuple[
+    InfrastructureAttestation,
+    ResourceAttestation,
+    HarnessAttestation,
+    ScoringAttestation,
+]:
     from inspect_ai.log import list_eval_logs, read_eval_log
 
     samples = [
@@ -359,9 +554,15 @@ def attest_calibration_samples(
     *,
     registration: PilotRegistration,
     task_ids: tuple[str, str],
-) -> tuple[InfrastructureAttestation, HarnessAttestation, ScoringAttestation]:
+) -> tuple[
+    InfrastructureAttestation,
+    ResourceAttestation,
+    HarnessAttestation,
+    ScoringAttestation,
+]:
     expected_models = {model.returned_id for model in registration.models}
     infrastructure_cells: list[InfrastructureCell] = []
+    resource_cells: list[ResourceCell] = []
     harness_cells: list[HarnessCell] = []
     scoring_cells: list[ScoringCell] = []
     observed_keys: set[tuple[str, str, str]] = set()
@@ -384,10 +585,12 @@ def attest_calibration_samples(
             )
             scoring_eligible = lifecycle.scoring_eligible
             digest = lifecycle.host_binary_sha256
+            lifecycle_reason = lifecycle.failure_reason
         except (TypeError, ValueError):
             prepared = False
             scoring_eligible = False
             digest = None
+            lifecycle_reason = None
         scores = sample.scores or {}
         scorer_artifacts = tuple(sorted(scores))
         join_score = scores.get("formal_join_scorer")
@@ -415,6 +618,48 @@ def attest_calibration_samples(
                 task_id=task_id,
                 prepared=prepared,
                 host_binary_sha256=digest,
+            )
+        )
+        usage = sample.model_usage.get(model_id) if model_id else None
+        model = next(
+            (candidate for candidate in registration.models if candidate.returned_id == model_id),
+            None,
+        )
+        breakdown = (
+            usage_breakdown(usage, model.pricing_cny)
+            if usage is not None and model is not None
+            else None
+        )
+        configured_limit = CALIBRATION_TOKEN_LIMITS.get(host, 1)  # type: ignore[arg-type]
+        observed_weighted = (
+            breakdown.inspect_weighted_tokens if breakdown is not None else None
+        )
+        headroom = (
+            configured_limit - observed_weighted
+            if observed_weighted is not None
+            else None
+        )
+        model_limit_reached = lifecycle_reason == LifecycleFailureReason.MODEL_LIMIT
+        time_limit_reached = lifecycle_reason == LifecycleFailureReason.MODEL_TIMEOUT
+        resource_cells.append(
+            ResourceCell(
+                model_id=model_id,
+                host=host,  # type: ignore[arg-type]
+                task_id=task_id,
+                configured_token_limit=configured_limit,
+                observed_weighted_tokens=observed_weighted,
+                headroom_tokens=headroom,
+                lifecycle_reason=lifecycle_reason,
+                model_limit_reached=model_limit_reached,
+                time_limit_reached=time_limit_reached,
+                resource_sufficient=(
+                    breakdown is not None
+                    and observed_weighted is not None
+                    and observed_weighted <= configured_limit
+                    and not model_limit_reached
+                    and not time_limit_reached
+                ),
+                usage=breakdown,
             )
         )
         harness_cells.append(
@@ -449,9 +694,11 @@ def attest_calibration_samples(
     }
     complete = observed_keys == expected_keys
     infrastructure_cells.sort(key=_cell_key)
+    resource_cells.sort(key=_cell_key)
     harness_cells.sort(key=_cell_key)
     scoring_cells.sort(key=_cell_key)
     infrastructure_passed = complete and all(cell.prepared for cell in infrastructure_cells)
+    resource_passed = complete and all(cell.resource_sufficient for cell in resource_cells)
     harness_passed = complete and all(
         cell.plan_called
         and cell.plan_usable
@@ -473,6 +720,11 @@ def attest_calibration_samples(
         InfrastructureAttestation(
             status="passed" if infrastructure_passed else "failed",
             cells=tuple(infrastructure_cells),
+        ),
+        ResourceAttestation(
+            status="passed" if resource_passed else "failed",
+            cells=tuple(resource_cells),
+            hosts=_resource_host_summaries(resource_cells, registration.hosts),
         ),
         HarnessAttestation(
             status="passed" if harness_passed else "failed",
@@ -551,6 +803,13 @@ def verify_calibration_attestation(
     ):
         if {(cell.model_id, cell.host, cell.task_id) for cell in cells} != expected_keys:
             raise ValueError("calibration attestation matrix mismatch")
+    if report.schema_version == 2:
+        if report.resource is None:
+            raise ValueError("calibration resource readiness is missing")
+        if {
+            (cell.model_id, cell.host, cell.task_id) for cell in report.resource.cells
+        } != expected_keys:
+            raise ValueError("calibration resource readiness matrix mismatch")
     run_metadata = json.loads(run_metadata_path.read_bytes())
     if not isinstance(run_metadata, dict):
         raise ValueError("calibration run metadata must be an object")
@@ -574,7 +833,49 @@ def _input_lock_sha256(root: Path) -> str:
     return digest_value(lock.model_dump(mode="json"))
 
 
-def _cell_key(cell: InfrastructureCell | HarnessCell | ScoringCell) -> tuple[bytes, bytes, bytes]:
+def _resource_host_summaries(
+    cells: list[ResourceCell],
+    hosts: tuple[Host, ...],
+) -> tuple[ResourceHostSummary, ...]:
+    summaries: list[ResourceHostSummary] = []
+    for host in sorted(set(hosts)):
+        selected = [cell for cell in cells if cell.host == host]
+        observed = [cell for cell in selected if cell.usage is not None]
+        weighted = [cell.observed_weighted_tokens for cell in observed]
+        headroom = [cell.headroom_tokens for cell in observed]
+        cache_read = [cell.usage.cache_read_input_tokens for cell in observed if cell.usage]
+        peak = max(value for value in weighted if value is not None) if weighted else None
+        minimum_headroom = (
+            min(value for value in headroom if value is not None) if headroom else None
+        )
+        target_headroom = (
+            math.ceil((peak * TARGET_HEADROOM_RATIO) / 1_000) * 1_000
+            if peak is not None
+            else None
+        )
+        summaries.append(
+            ResourceHostSummary(
+                host=host,
+                cell_count=len(selected),
+                configured_token_limit=CALIBRATION_TOKEN_LIMITS[host],
+                peak_observed_weighted_tokens=peak,
+                minimum_headroom_tokens=minimum_headroom,
+                observed_cache_read_floor_tokens=min(cache_read) if cache_read else None,
+                target_headroom_tokens=target_headroom,
+                limit_censored=any(
+                    cell.usage is None
+                    or cell.model_limit_reached
+                    or cell.time_limit_reached
+                    for cell in selected
+                ),
+            )
+        )
+    return tuple(summaries)
+
+
+def _cell_key(
+    cell: InfrastructureCell | ResourceCell | HarnessCell | ScoringCell,
+) -> tuple[bytes, bytes, bytes]:
     return (
         cell.model_id.encode("utf-8"),
         cell.host.encode("utf-8"),
