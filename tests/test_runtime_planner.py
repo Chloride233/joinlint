@@ -116,7 +116,7 @@ def test_parent_grain_is_rejected_when_one_to_many_join_duplicates_it() -> None:
     with pytest.raises(JoinLintError) as captured:
         plan_join(refs, "customers", "customers", 4, False, graph)
 
-    assert captured.value.code == "NO_VERIFIED_PATH"
+    assert captured.value.code == "GRAIN_INCOMPATIBLE"
 
 
 def test_compound_fanout_path_is_not_proved() -> None:
@@ -133,7 +133,7 @@ def test_compound_fanout_path_is_not_proved() -> None:
     with pytest.raises(JoinLintError) as captured:
         plan_join(refs, "customers", "items", 4, False, graph)
 
-    assert captured.value.code == "NO_VERIFIED_PATH"
+    assert captured.value.code == "COMPOUND_FANOUT"
 
 
 def test_proof_lifecycle_is_current_stale_or_unverifiable() -> None:
@@ -221,7 +221,7 @@ def test_expected_grain_requires_a_non_null_unique_key() -> None:
             entity_definitions=definitions,
         )
 
-    assert captured.value.code == "NO_VERIFIED_PATH"
+    assert captured.value.code == "GRAIN_INCOMPATIBLE"
 
 
 def test_planner_preserves_composite_relationship_grouping() -> None:
@@ -291,3 +291,24 @@ def test_planner_returns_at_most_three_explicit_alternatives() -> None:
     proof = plan_join(refs, "orders", "orders", 4, True, graph)
 
     assert len(proof.alternatives) == 3
+
+
+def test_unsafe_early_candidates_do_not_hide_later_safe_proof() -> None:
+    graph = tuple(
+        authorized(
+            character * 64,
+            "sales.orders",
+            "sales.customers",
+            max_children=2 if character != "f" else 1,
+            child_columns=(f"customer_{character}",),
+        )
+        for character in ("a", "c", "d", "e", "f")
+    )
+    refs = (
+        EntityRef(ref="orders", entity="sales.orders"),
+        EntityRef(ref="customers", entity="sales.customers"),
+    )
+
+    proof = plan_join(refs, "orders", "customers", 4, False, graph)
+
+    assert proof.edges[0].relationship_id == "f" * 64

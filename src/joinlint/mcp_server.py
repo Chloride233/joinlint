@@ -60,6 +60,7 @@ def create_server(
         instructions=(
             "Use get_join_plan before generating multi-table SQL, then call validate_sql "
             "with the final SQL and plan_id. JoinLint validates physical joins only. "
+            "Do not retry an unchanged request after an inconclusive result. "
             "JoinLint proof != query correctness."
         ),
     )
@@ -76,7 +77,10 @@ def create_server(
 
         Each entity_refs item is exactly {"ref": "orders", "entity": "orders"}.
         ref is request-local; entity is the physical table name. This proof does
-        not prove query correctness.
+        not prove query correctness. expected_grain_ref is the instance whose
+        unique key must remain one row per output row before aggregation. In a
+        many-to-one join, the referencing child usually preserves that grain;
+        aggregation, DISTINCT, and GROUP BY do not restore grain in Stage 1.
         """
         return _response(
             "get_join_plan",

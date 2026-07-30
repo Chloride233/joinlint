@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Iterable
+from typing import Callable, Iterable
 
 from joinlint.errors import JoinLintError
 from joinlint.runtime.domain import (
@@ -52,17 +52,39 @@ def plan_join(
         refs[expected].entity,
         entity_definitions,
     ):
-        raise JoinLintError("NO_VERIFIED_PATH", "expected grain has no stable unique key", 3)
+        raise JoinLintError("GRAIN_INCOMPATIBLE", "expected grain has no stable unique key", 3)
     source_ids = {relationship.definition.source_id for relationship in graph}
     if not source_ids:
         raise JoinLintError("NO_VERIFIED_PATH", "no current authorized join proof exists", 3)
     if len(source_ids) != 1:
         raise JoinLintError("CROSS_SOURCE_UNSUPPORTED", "one source is required", 2)
     candidates = _candidate_edges(entity_refs, graph)
-    trees = _spanning_trees(refs, start_ref, max_depth, candidates, limit=4)
-    safe_trees = [tree for tree in trees if _tree_is_safe(expected, tree)]
-    if not safe_trees:
+    safe_trees = _spanning_trees(
+        refs,
+        start_ref,
+        max_depth,
+        candidates,
+        limit=4,
+        accept=lambda tree: _tree_is_safe(expected, tree),
+    )
+    if not safe_trees and not _spanning_trees(
+        refs, start_ref, max_depth, candidates, limit=1
+    ):
         raise JoinLintError("NO_VERIFIED_PATH", "no current authorized join proof exists", 3)
+    if not safe_trees:
+        code = (
+            "COMPOUND_FANOUT"
+            if _spanning_trees(
+                refs,
+                start_ref,
+                max_depth,
+                candidates,
+                limit=1,
+                accept=lambda tree: grain_compatible(expected, tree),
+            )
+            else "GRAIN_INCOMPATIBLE"
+        )
+        raise JoinLintError(code, code, 3)
     now = datetime.now(UTC).isoformat()
     snapshot_ids = {item.relationship.evidence.snapshot_id for item in safe_trees[0]}
     if len(snapshot_ids) != 1:
@@ -180,6 +202,7 @@ def _spanning_trees(
     candidates: tuple[CandidateEdge, ...],
     *,
     limit: int,
+    accept: Callable[[tuple[CandidateEdge, ...]], bool] | None = None,
 ) -> list[tuple[CandidateEdge, ...]]:
     results: list[tuple[CandidateEdge, ...]] = []
 
@@ -187,7 +210,8 @@ def _spanning_trees(
         if len(results) >= limit:
             return
         if len(connected) == len(refs):
-            results.append(edges)
+            if accept is None or accept(edges):
+                results.append(edges)
             return
         options = [
             edge

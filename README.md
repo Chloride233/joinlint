@@ -80,7 +80,10 @@ the examples deliberately do not install or authorize one.
 
 `get_join_plan` accepts 2–8 request-local entity instances and returns at most
 four hops of current, exact, authorized physical relationships. If no safe
-path exists it returns `inconclusive`, never uncertain predicates.
+path exists it returns `inconclusive`, never uncertain predicates. It
+distinguishes a missing authorized path (`NO_VERIFIED_PATH`) from an unsafe
+requested grain (`GRAIN_INCOMPATIBLE`) and compound fan-out
+(`COMPOUND_FANOUT`) so an Agent can stop instead of retrying equivalent plans.
 
 `validate_sql` parses one SQLite `SELECT`/`WITH`, normalizes aliases, CTEs,
 subqueries, self joins, composite predicates, INNER/LEFT joins, and WHERE

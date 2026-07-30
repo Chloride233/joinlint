@@ -51,6 +51,34 @@ def test_mcp_exposes_exactly_two_stage1_tools(tmp_path: Path) -> None:
     assert "sql" in validate.inputSchema["properties"]
     assert all(tool.inputSchema["additionalProperties"] is False for tool in tools)
     assert all("execute" not in tool.name and "schema" not in tool.name for tool in tools)
+    assert "referencing child" in plan.description
+    assert "aggregation" in plan.description
+
+
+def test_plan_reports_grain_incompatibility_separately_from_missing_path(
+    tmp_path: Path,
+) -> None:
+    make_database(tmp_path / "data.sqlite")
+    server = create_server(tmp_path, ("data.sqlite",), cache_root=tmp_path / "cache")
+
+    result = asyncio.run(
+        server.call_tool(
+            "get_join_plan",
+            {
+                "entity_refs": [
+                    {"ref": "customers", "entity": "customers"},
+                    {"ref": "orders", "entity": "orders"},
+                ],
+                "start_ref": "customers",
+                "expected_grain_ref": "customers",
+            },
+        )
+    )
+
+    response = GetJoinPlanResponse.model_validate(result[1])
+    assert response.status == "inconclusive"
+    assert response.error is not None
+    assert response.error.code == "GRAIN_INCOMPATIBLE"
 
 
 def test_two_call_flow_returns_current_proof_and_bound_validation(tmp_path: Path) -> None:
