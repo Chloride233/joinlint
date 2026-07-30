@@ -47,7 +47,6 @@ PILOT_DATASET_RELEASE = "bird-train-2023-07-11-declared-fk-pilot-v3"
 PILOT_ALLOCATION = {"citeseer": 8, "genes": 4, "trains": 8}
 PILOT_DOMAINS = {"citeseer": "research", "genes": "biology", "trains": "transportation"}
 PILOT_GROUND_TRUTH_EXCLUSIONS = {
-    "bird-train-citeseer-04141": "question_ambiguously_invokes_paper_citations_but_gold_uses_content_only",
     "bird-train-citeseer-04142": "question_requests_other_paper_but_gold_returns_source_paper_words",
     "bird-train-citeseer-04143": "question_ambiguously_invokes_cites_table_but_gold_uses_content_only",
     "bird-train-citeseer-04150": "question_requires_class_intersection_but_gold_uses_union",

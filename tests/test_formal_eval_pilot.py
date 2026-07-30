@@ -67,9 +67,6 @@ LINEAGE_ID = "b" * 64
 def test_pilot_v3_freezes_diagnostic_ground_truth_exclusions() -> None:
     assert PILOT_DATASET_RELEASE.endswith("pilot-v3")
     assert PILOT_GROUND_TRUTH_EXCLUSIONS == {
-        "bird-train-citeseer-04141": (
-            "question_ambiguously_invokes_paper_citations_but_gold_uses_content_only"
-        ),
         "bird-train-citeseer-04142": (
             "question_requests_other_paper_but_gold_returns_source_paper_words"
         ),
