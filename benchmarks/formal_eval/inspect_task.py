@@ -669,26 +669,38 @@ def _solver(
             version="sandbox",
             system_prompt=prompt,
             mcp_servers=servers,
-            web_search="disabled",
-            goals=False,
-            config_overrides=CODEX_CONTEXT_CONFIG_OVERRIDES,
-            retry_refusals=0 if strict_pilot else None,
             filter=context_filter,
+            **_codex_host_options(strict_pilot),
         )
     else:
         agent = claude_code(
             version="sandbox",
             system_prompt=prompt,
             mcp_servers=servers,
-            disallowed_tools=list(CLAUDE_DISALLOWED_BUILTIN_TOOLS),
-            retry_refusals=0 if strict_pilot else 3,
-            retry_uncaught_errors=0 if strict_pilot else 3,
             filter=context_filter,
+            **_claude_host_options(strict_pilot),
         )
     return chain(
         infrastructure_readiness(host, agent_version, readiness_time_limit),
         evaluation_lifecycle(agent, readiness_time_limit, evaluation_time_limit),
     )
+
+
+def _codex_host_options(strict_pilot: bool) -> dict[str, Any]:
+    return {
+        "web_search": "disabled",
+        "goals": False,
+        "config_overrides": dict(CODEX_CONTEXT_CONFIG_OVERRIDES),
+        "retry_refusals": 0 if strict_pilot else None,
+    }
+
+
+def _claude_host_options(strict_pilot: bool) -> dict[str, Any]:
+    return {
+        "disallowed_tools": list(CLAUDE_DISALLOWED_BUILTIN_TOOLS),
+        "retry_refusals": 0 if strict_pilot else 3,
+        "retry_uncaught_errors": 0 if strict_pilot else 3,
+    }
 
 
 @solver

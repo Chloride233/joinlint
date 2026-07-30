@@ -409,33 +409,21 @@ def test_host_context_profile_accepts_only_required_mcp_and_bounded_codex_tools(
         )
 
 
-@pytest.mark.parametrize("host", ["codex", "claude_code"])
-def test_solver_applies_the_frozen_host_context_profile(
-    host: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import inspect_swe
+def test_solver_uses_pure_frozen_host_context_options() -> None:
+    codex = inspect_task._codex_host_options(strict_pilot=True)
+    claude = inspect_task._claude_host_options(strict_pilot=True)
 
-    captured: dict[str, object] = {}
-
-    def fake_agent(**kwargs: object) -> object:
-        captured.update(kwargs)
-        return _never_started_agent()
-
-    monkeypatch.setattr(inspect_swe, "codex_cli", fake_agent)
-    monkeypatch.setattr(inspect_swe, "claude_code", fake_agent)
-
-    inspect_task._solver(host, "treatment", "test-version", strict_pilot=True)  # type: ignore[arg-type]
-
-    if host == "codex":
-        assert captured["config_overrides"] == inspect_task.CODEX_CONTEXT_CONFIG_OVERRIDES
-        assert captured["goals"] is False
-        assert captured["web_search"] == "disabled"
-    else:
-        assert captured["disallowed_tools"] == list(
-            inspect_task.CLAUDE_DISALLOWED_BUILTIN_TOOLS
-        )
-    assert callable(captured["filter"])
+    assert codex == {
+        "web_search": "disabled",
+        "goals": False,
+        "config_overrides": inspect_task.CODEX_CONTEXT_CONFIG_OVERRIDES,
+        "retry_refusals": 0,
+    }
+    assert claude == {
+        "disallowed_tools": list(inspect_task.CLAUDE_DISALLOWED_BUILTIN_TOOLS),
+        "retry_refusals": 0,
+        "retry_uncaught_errors": 0,
+    }
 
 
 def _state(*, store: dict[str, object]) -> TaskState:
