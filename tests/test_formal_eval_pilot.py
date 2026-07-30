@@ -538,6 +538,22 @@ def test_pilot_campaign_budget_includes_prior_investigation_spend() -> None:
     assert unsafe.passed is False
 
 
+def test_pilot_campaign_preflight_uses_frozen_cost_envelope() -> None:
+    registration = frozen_pilot_registration(COMMIT)
+    frozen_upper = budget_envelope(registration).total_upper_cny
+
+    report = pilot_campaign_budget(
+        campaign_budget_cny=28.12,
+        campaign_spend_before_cny=10.56,
+        pilot_cost_upper_cny=frozen_upper,
+    )
+
+    assert frozen_upper == pytest.approx(16.3728)
+    assert frozen_upper < registration.budget_cny
+    assert report.campaign_total_upper_cny == pytest.approx(26.9328)
+    assert report.passed is True
+
+
 def test_pilot_run_plan_is_twenty_tasks_and_80_balanced_crossover_runs() -> None:
     registration = frozen_pilot_registration(COMMIT)
     plan = build_pilot_run_plan(_manifest(20), registration, LINEAGE_ID)

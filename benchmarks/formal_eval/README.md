@@ -159,8 +159,9 @@ The workflow accepts only the exact CNY 20 approval. The frozen worst-case
 resource envelope is CNY 16.3728: CNY 11.20 for model tokens, CNY 3.1728 for
 150-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. It also
 requires the cumulative investigation budget and the spend observed before the
-Pilot; dispatch stops unless that prior spend plus the full CNY 20 run ceiling
-fits inside the campaign budget. Each
+Pilot; dispatch stops unless that prior spend plus the frozen CNY 16.3728 cost
+envelope fits inside the campaign budget. The CNY 20 per-run hard stop remains
+unchanged, so unused approval headroom is not counted as spend twice. Each
 sample has the native price-weighted token limit exercised by the required
 four-cell calibration, `(input*0.5)+output:35000`, a 60-second readiness limit,
 and a 90-second

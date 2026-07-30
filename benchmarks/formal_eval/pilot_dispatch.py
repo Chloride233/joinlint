@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     campaign_before = pilot_campaign_budget(
         campaign_budget_cny=arguments.campaign_budget_cny,
         campaign_spend_before_cny=arguments.campaign_spend_before_cny,
-        pilot_cost_upper_cny=registration.budget_cny,
+        pilot_cost_upper_cny=envelope.total_upper_cny,
     )
     if not campaign_before.passed:
         raise ValueError("pilot could exceed the approved cumulative campaign budget")
