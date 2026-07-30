@@ -58,7 +58,7 @@ PILOT_ASSIGNMENT_DESIGN = "balanced_diagonal_crossover_v1"
 
 
 class PilotRegistration(StrictModel):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[3, 4] = 4
     evaluation_id: str
     dataset_release: str
     seed: int = Field(ge=0)
@@ -72,6 +72,7 @@ class PilotRegistration(StrictModel):
         "balanced_diagonal_crossover_v1"
     )
     token_limit_per_run: Literal[35_000] = 35_000
+    token_accounting_ceiling_per_run: int | None = None
     token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
     message_limit_per_run: Literal[20] = 20
     time_limit_seconds: Literal[90] = 90
@@ -85,6 +86,10 @@ class PilotRegistration(StrictModel):
 
     @model_validator(mode="after")
     def require_frozen_matrix_and_budget(self) -> PilotRegistration:
+        if self.schema_version == 4 and self.token_accounting_ceiling_per_run != 45_000:
+            raise ValueError("pilot token accounting ceiling must be 45,000")
+        if self.schema_version == 3 and self.token_accounting_ceiling_per_run is not None:
+            raise ValueError("legacy pilot registration cannot define an accounting ceiling")
         if {model.tier for model in self.models} != {"high_capability", "cost_efficient"}:
             raise ValueError("pilot requires one model from each tier")
         if len({model.id for model in self.models}) != 2:
@@ -184,6 +189,7 @@ def frozen_pilot_registration(commit: str) -> PilotRegistration:
         host_versions={"codex": "0.144.1", "claude_code": "2.1.212"},
         joinlint_commit=commit,
         assignment_design=PILOT_ASSIGNMENT_DESIGN,
+        token_accounting_ceiling_per_run=45_000,
     )
 
 
@@ -217,7 +223,7 @@ def model_batch_upper_costs(registration: PilotRegistration) -> tuple[float, ...
         )
         batch_cost = (
             tasks_per_batch
-            * registration.token_limit_per_run
+            * _token_accounting_ceiling(registration)
             * weighted_unit_rate
             / 1_000_000
         )
@@ -225,6 +231,10 @@ def model_batch_upper_costs(registration: PilotRegistration) -> tuple[float, ...
             for _condition in ("control", "treatment"):
                 costs.append(batch_cost)
     return tuple(costs)
+
+
+def _token_accounting_ceiling(registration: PilotRegistration) -> int:
+    return registration.token_accounting_ceiling_per_run or registration.token_limit_per_run
 
 
 def pilot_budget_checkpoint(

@@ -109,28 +109,29 @@ another full Pilot.
 The sealed input freezes two task IDs from distinct databases using the deterministic
 `highest_join_depth_distinct_database_then_task_id_v2` rule. Each task runs in treatment on both
 model tiers and both hosts, producing eight samples. Calibration uses the exact
-formal contract: 35,000 native price-weighted tokens on each host, plus 20 messages,
-90 seconds after the first model request, and a 150-second Modal sandbox. The
-formal workflow rejects an attestation unless these limits match its registration
-and the frozen budget envelope remains approved.
+formal contract: a 35,000 native price-weighted runtime stop line and a 45,000
+accounting ceiling on each host, plus 20 messages, 90 seconds after the first
+model request, and a 150-second Modal sandbox. The formal workflow rejects an
+attestation unless these limits match its registration and the frozen budget
+envelope remains approved.
 
-Calibration schema v3 separates readiness evidence from the observed product
+Calibration schema v4 separates readiness evidence from the observed product
 outcome. Infrastructure attestation requires every model/host/task cell to
 prepare the selected host binary. Resource attestation records uncached input,
 cache read, cache write, output, Inspect-weighted usage, headroom, and frozen-price
 cost for every cell. It retains limit-censored product outcomes, while the schema
-v3 authorization check independently requires complete accounting inside the
+v4 authorization check independently requires complete accounting inside the
 frozen token/cost envelope. A message, turn, token, or time limit therefore remains
 an Agent outcome rather than becoming an infrastructure failure.
 Scoring-pipeline readiness requires both scorer artifacts even when the model
 never produced a parseable submission. Harness and scoring attestations remain
 product observations: they report planning, proof binding, MCP grounding,
 scoring eligibility, and parseability, but do not authorize or block the Pilot.
-Schema v3 authorizes only from infrastructure/resource/scoring-pipeline readiness
+Schema v4 authorizes only from infrastructure/resource/scoring-pipeline readiness
 and budget status, so a product failure cannot preselect tasks that already work.
-Schema v1/v2 artifacts remain parseable but cannot authorize the current Pilot.
+Schema v1-v3 artifacts remain parseable but cannot authorize the current Pilot.
 
-The eight-run ceiling is CNY 4.00: a modeled CNY 1.12 token upper bound, CNY
+The eight-run ceiling is CNY 4.00: a modeled CNY 1.44 token upper bound, CNY
 0.31728 Modal-compute upper bound, and CNY 2.00 image-build reserve. Dispatch
 also requires the previously accumulated investigation spend and cumulative
 campaign budget; both values are recorded in the attestation. The weighted
@@ -161,14 +162,18 @@ the Pilot as a full-factorial effect study. There are no repetitions. Pilot
 tasks and outputs never enter the confirmatory effect estimate.
 
 The workflow accepts only the exact CNY 20 approval. The frozen worst-case
-resource envelope is CNY 16.3728: CNY 11.20 for model tokens, CNY 3.1728 for
+resource envelope is CNY 19.5728: CNY 14.40 for model tokens, CNY 3.1728 for
 150-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. It also
 requires the cumulative investigation budget and the spend observed before the
-Pilot; dispatch stops unless that prior spend plus the frozen CNY 16.3728 cost
+Pilot; dispatch stops unless that prior spend plus the frozen CNY 19.5728 cost
 envelope fits inside the campaign budget. The CNY 20 per-run hard stop remains
 unchanged, so unused approval headroom is not counted as spend twice. Each
 sample has the native price-weighted token limit exercised by the required
-four-cell calibration, `(input*0.5)+output:35000`, a 60-second readiness limit,
+four-cell calibration, `(input*0.5)+output:35000`, with a separate 45,000
+accounting ceiling. Inspect checks the runtime stop line after a model response;
+the 10,000-token accounting reserve is nearly twice the largest 5,123-token
+single-response increment observed in the sealed calibration. Each sample has a
+60-second readiness limit,
 and a 90-second
 evaluation limit that starts at the first model request; each Modal sandbox has
 a platform-level 150-second automatic timeout. A 20-message limit bounds

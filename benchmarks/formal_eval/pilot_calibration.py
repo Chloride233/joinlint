@@ -41,6 +41,10 @@ CALIBRATION_TOKEN_LIMITS: dict[Host, int] = {
     "codex": 35_000,
     "claude_code": 35_000,
 }
+CALIBRATION_TOKEN_ACCOUNTING_CEILINGS: dict[Host, int] = {
+    "codex": 45_000,
+    "claude_code": 45_000,
+}
 TARGET_HEADROOM_RATIO = 0.2
 REMOTE_DEPENDENCIES = ("anthropic", "inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
 
@@ -55,6 +59,7 @@ class CalibrationBudgetEnvelope(StrictModel):
 
 class CalibrationResourceContract(StrictModel):
     token_limit_by_host: dict[Host, int]
+    token_accounting_ceiling_by_host: dict[Host, int] | None = None
     token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
     message_limit: Literal[20] = 20
     evaluation_timeout_seconds: Literal[90] = 90
@@ -66,6 +71,12 @@ class CalibrationResourceContract(StrictModel):
     def require_frozen_host_limits(self) -> CalibrationResourceContract:
         if self.token_limit_by_host != CALIBRATION_TOKEN_LIMITS:
             raise ValueError("calibration token limits do not match the frozen host contract")
+        if (
+            self.token_accounting_ceiling_by_host is not None
+            and self.token_accounting_ceiling_by_host
+            != CALIBRATION_TOKEN_ACCOUNTING_CEILINGS
+        ):
+            raise ValueError("calibration accounting ceilings do not match the frozen contract")
         return self
 
 
@@ -261,7 +272,7 @@ class ScoringAttestation(StrictModel):
 
 
 class PilotCalibrationReport(StrictModel):
-    schema_version: Literal[1, 2, 3] = 3
+    schema_version: Literal[1, 2, 3, 4] = 4
     status: Literal["passed", "failed"]
     readiness_status: Literal["passed", "failed"] | None = None
     calibration_task_ids: tuple[str, str]
@@ -304,7 +315,13 @@ class PilotCalibrationReport(StrictModel):
                 raise ValueError("schema v1 cannot contain resource readiness fields")
             return self
         if self.resource is None:
-            raise ValueError("schema v2/v3 requires a resource attestation")
+            raise ValueError("schema v2+ requires a resource attestation")
+        if (
+            self.schema_version == 4
+            and self.resource_contract.token_accounting_ceiling_by_host
+            != CALIBRATION_TOKEN_ACCOUNTING_CEILINGS
+        ):
+            raise ValueError("schema v4 requires the frozen accounting ceilings")
         readiness = (
             calibration_readiness_status(
                 infrastructure=self.infrastructure,
@@ -318,6 +335,11 @@ class PilotCalibrationReport(StrictModel):
                 resource=self.resource,
                 scoring=self.scoring,
                 within_budget=within_budget,
+                accounting_ceiling_by_host=(
+                    CALIBRATION_TOKEN_LIMITS
+                    if self.schema_version == 3
+                    else CALIBRATION_TOKEN_ACCOUNTING_CEILINGS
+                ),
             )
         )
         if self.readiness_status != readiness:
@@ -350,24 +372,32 @@ def calibration_authorization_status(
     resource: ResourceAttestation,
     scoring: ScoringAttestation,
     within_budget: bool,
+    accounting_ceiling_by_host: dict[Host, int] = CALIBRATION_TOKEN_ACCOUNTING_CEILINGS,
 ) -> Literal["passed", "failed"]:
     passed = (
         infrastructure.status == "passed"
-        and resource_pipeline_available(resource)
+        and resource_pipeline_available(
+            resource,
+            accounting_ceiling_by_host=accounting_ceiling_by_host,
+        )
         and scoring_pipeline_available(scoring)
         and within_budget
     )
     return "passed" if passed else "failed"
 
 
-def resource_pipeline_available(resource: ResourceAttestation) -> bool:
+def resource_pipeline_available(
+    resource: ResourceAttestation,
+    *,
+    accounting_ceiling_by_host: dict[Host, int],
+) -> bool:
     return (
         len(resource.cells) == 8
         and len({_cell_key(cell) for cell in resource.cells}) == 8
         and all(
             cell.usage is not None
             and cell.observed_weighted_tokens is not None
-            and cell.observed_weighted_tokens <= cell.configured_token_limit
+            and cell.observed_weighted_tokens <= accounting_ceiling_by_host[cell.host]
             for cell in resource.cells
         )
     )
@@ -414,7 +444,10 @@ def calibration_budget_envelope(
             model.pricing_cny.output_per_million_cny,
         )
         model_upper += sum(
-            2 * CALIBRATION_TOKEN_LIMITS[host] * weighted_rate / 1_000_000
+            2
+            * CALIBRATION_TOKEN_ACCOUNTING_CEILINGS[host]
+            * weighted_rate
+            / 1_000_000
             for host in registration.hosts
         )
     modal_usd = run_count * registration.modal_sandbox_timeout_seconds * (
@@ -527,6 +560,7 @@ def run_calibration(
         calibration_task_ids=specification.task_ids,
         resource_contract=CalibrationResourceContract(
             token_limit_by_host=CALIBRATION_TOKEN_LIMITS,
+            token_accounting_ceiling_by_host=CALIBRATION_TOKEN_ACCOUNTING_CEILINGS,
             token_limit_type=registration.token_limit_type,
             message_limit=registration.message_limit_per_run,
             evaluation_timeout_seconds=registration.time_limit_seconds,
@@ -814,7 +848,7 @@ def verify_calibration_attestation(
     if registration.joinlint_commit != current_commit:
         raise ValueError("checked-out JoinLint commit does not match the pilot registration")
     report = PilotCalibrationReport.model_validate_json(attestation_path.read_bytes())
-    if report.schema_version != 3:
+    if report.schema_version != 4:
         raise ValueError("pilot calibration attestation schema is not current")
     specification = load_pilot_calibration_spec(root, manifest)
     if report.calibration_task_ids != specification.task_ids:
@@ -824,6 +858,15 @@ def verify_calibration_attestation(
     }
     if report.resource_contract.token_limit_by_host != formal_limits:
         raise ValueError("calibration resource contract does not match the formal Pilot")
+    formal_accounting_ceilings = {
+        host: registration.token_accounting_ceiling_per_run
+        for host in registration.hosts
+    }
+    if (
+        report.resource_contract.token_accounting_ceiling_by_host
+        != formal_accounting_ceilings
+    ):
+        raise ValueError("calibration accounting contract does not match the formal Pilot")
     expected_keys = {
         (model.returned_id, host, task_id)
         for model in registration.models
@@ -837,7 +880,7 @@ def verify_calibration_attestation(
     ):
         if {(cell.model_id, cell.host, cell.task_id) for cell in cells} != expected_keys:
             raise ValueError("calibration attestation matrix mismatch")
-    if report.schema_version == 2:
+    if report.schema_version >= 2:
         if report.resource is None:
             raise ValueError("calibration resource readiness is missing")
         if {

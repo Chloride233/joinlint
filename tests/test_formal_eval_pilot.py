@@ -29,6 +29,7 @@ from benchmarks.formal_eval.pilot import (
 )
 from benchmarks.formal_eval.pilot_calibration import (
     CALIBRATION_BUDGET_CNY,
+    CALIBRATION_TOKEN_ACCOUNTING_CEILINGS,
     CALIBRATION_TOKEN_LIMITS,
     CalibrationResourceContract,
     InfrastructureAttestation,
@@ -86,10 +87,13 @@ def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:
     envelope = budget_envelope(registration)
 
     assert envelope.run_count == 80
-    assert envelope.model_cost_upper_cny == pytest.approx(11.2)
+    assert registration.schema_version == 4
+    assert registration.token_limit_per_run == 35_000
+    assert registration.token_accounting_ceiling_per_run == 45_000
+    assert envelope.model_cost_upper_cny == pytest.approx(14.4)
     assert envelope.modal_compute_upper_cny == pytest.approx(3.1728)
     assert envelope.modal_image_build_reserve_cny == 2.0
-    assert envelope.total_upper_cny == pytest.approx(16.3728)
+    assert envelope.total_upper_cny == pytest.approx(19.5728)
     assert envelope.total_upper_cny < registration.budget_cny == 20.0
     assert registration.modal_image_builder_version == "2025.06 Stable"
     assert {model.family for model in registration.models} == {"deepseek-v4"}
@@ -98,7 +102,7 @@ def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:
         "cost_efficient",
     }
     assert model_batch_upper_costs(registration) == pytest.approx(
-        (2.1, 2.1, 2.1, 2.1, 0.7, 0.7, 0.7, 0.7)
+        (2.7, 2.7, 2.7, 2.7, 0.9, 0.9, 0.9, 0.9)
     )
 
 
@@ -190,10 +194,14 @@ def test_pilot_calibration_uses_exact_formal_resource_contract(
     assert CALIBRATION_TOKEN_LIMITS == {
         host: registration.token_limit_per_run for host in registration.hosts
     }
+    assert CALIBRATION_TOKEN_ACCOUNTING_CEILINGS == {
+        host: registration.token_accounting_ceiling_per_run
+        for host in registration.hosts
+    }
     assert envelope.run_count == 8
-    assert envelope.model_cost_upper_cny == pytest.approx(1.12)
+    assert envelope.model_cost_upper_cny == pytest.approx(1.44)
     assert envelope.modal_compute_upper_cny == pytest.approx(0.31728)
-    assert envelope.total_upper_cny == pytest.approx(3.43728)
+    assert envelope.total_upper_cny == pytest.approx(3.75728)
     assert len(commands) == 4
     assert all("condition=treatment" in command for command in commands)
     for command in commands:
@@ -377,6 +385,13 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
         duration_seconds=1,
     )
     samples[0].store["joinlint.formal_eval.lifecycle.v1"] = limited.model_dump(mode="json")
+    limited_model = next(iter(samples[0].model_usage))
+    samples[0].model_usage[limited_model] = SimpleNamespace(
+        input_tokens=2_775,
+        input_tokens_cache_read=68_352,
+        input_tokens_cache_write=None,
+        output_tokens=1_354,
+    )
     limited_infrastructure, limited_resource, limited_harness, limited_scoring = (
         attest_calibration_samples(
             samples,
@@ -388,6 +403,12 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
     limited_cell = next(cell for cell in limited_resource.cells if cell.model_limit_reached)
     assert limited_cell.resource_sufficient is False
     assert limited_cell.usage is not None
+    assert limited_cell.observed_weighted_tokens == 36_917.5
+    assert limited_cell.observed_weighted_tokens > limited_cell.configured_token_limit
+    assert (
+        limited_cell.observed_weighted_tokens
+        < CALIBRATION_TOKEN_ACCOUNTING_CEILINGS[limited_cell.host]
+    )
     assert next(
         summary for summary in limited_resource.hosts if summary.host == limited_cell.host
     ).limit_censored
@@ -399,12 +420,16 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
         within_budget=True,
     ) == "passed"
     censored_report = PilotCalibrationReport(
-        schema_version=3,
+        schema_version=4,
         status="passed",
         readiness_status="passed",
         resource=limited_resource,
         **{
             **report_values,
+            "resource_contract": CalibrationResourceContract(
+                token_limit_by_host=CALIBRATION_TOKEN_LIMITS,
+                token_accounting_ceiling_by_host=CALIBRATION_TOKEN_ACCOUNTING_CEILINGS,
+            ),
             "infrastructure": limited_infrastructure,
             "harness": limited_harness,
             "scoring": limited_scoring,
@@ -551,9 +576,9 @@ def test_pilot_budget_checkpoint_stops_before_an_unsafe_next_batch() -> None:
     )
 
     assert safe.safe_to_continue is True
-    assert safe.projected_total_upper_cny == pytest.approx(16.3728)
+    assert safe.projected_total_upper_cny == pytest.approx(18.9728)
     assert unsafe.safe_to_continue is False
-    assert unsafe.projected_total_upper_cny == pytest.approx(20.2728)
+    assert unsafe.projected_total_upper_cny == pytest.approx(22.8728)
 
 
 def test_pilot_campaign_budget_includes_prior_investigation_spend() -> None:
@@ -578,14 +603,14 @@ def test_pilot_campaign_preflight_uses_frozen_cost_envelope() -> None:
     frozen_upper = budget_envelope(registration).total_upper_cny
 
     report = pilot_campaign_budget(
-        campaign_budget_cny=28.12,
+        campaign_budget_cny=40,
         campaign_spend_before_cny=10.56,
         pilot_cost_upper_cny=frozen_upper,
     )
 
-    assert frozen_upper == pytest.approx(16.3728)
+    assert frozen_upper == pytest.approx(19.5728)
     assert frozen_upper < registration.budget_cny
-    assert report.campaign_total_upper_cny == pytest.approx(26.9328)
+    assert report.campaign_total_upper_cny == pytest.approx(30.1328)
     assert report.passed is True
 
 
