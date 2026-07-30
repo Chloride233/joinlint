@@ -21,7 +21,7 @@ from inspect_ai.model import (
 )
 from inspect_ai.scorer import Score, Scorer, Target, mean, scorer
 from inspect_ai.solver import Generate, Solver, TaskState, chain, solver
-from inspect_ai.tool import MCPServerConfigStdio
+from inspect_ai.tool import MCPServerConfigStdio, ToolCall
 from inspect_ai.util import (
     ComposeBuild,
     ComposeConfig,
@@ -69,6 +69,7 @@ from joinlint.contracts import canonical_json
 BASE_PROMPT = """You are evaluating one SQLite question. Use the EvaluationDatabase execute_sql tool for data access. Submit exactly once with the EvaluationDatabase submit_sql tool as your final action. Its sql argument must contain one read-only SELECT, or be empty only when no safe join exists; warning must be empty for submitted SQL and explain a safe abstention otherwise. Do not rely on the text of your final reply for submission."""
 HARNESS_PROMPT = """The schema is already provided, so your first tool call must be JoinLint get_join_plan. Call get_join_plan exactly once after choosing every intended physical table instance. Each entity_refs item must be exactly {"ref":"orders","entity":"orders"}: ref is a unique request-local alias and entity is the physical table name; repeat an entity only for a genuine self join. Set expected_grain_ref to the instance whose unique key must remain one row per output row before aggregation. For a many-to-one join, the referencing child normally preserves its grain; aggregation, DISTINCT, and GROUP BY do not restore grain in Stage 1. If planning returns GRAIN_INCOMPATIBLE, COMPOUND_FANOUT, NO_VERIFIED_PATH, or any other non-ok status, do not retry variants or guess: submit empty SQL with the stable code in warning. Use only returned proof predicates. Call JoinLint validate_sql with the exact final SQL and returned plan_id, then call execute_sql only after validation passes. If validation is not ok, do not execute and submit empty SQL with the stable code. JoinLint proof is not query correctness."""
 HOST_CONTEXT_STORE_KEY = "joinlint.formal_eval.host_context.v1"
+MCP_READINESS_HANDSHAKE_STORE_KEY = "joinlint.formal_eval.mcp_readiness_handshake.v1"
 
 CODEX_CONTEXT_CONFIG_OVERRIDES = {
     "features.apps": "false",
@@ -90,6 +91,8 @@ CLAUDE_DISALLOWED_BUILTIN_TOOLS = (
     "Edit",
     "EnterWorktree",
     "ExitWorktree",
+    "Glob",
+    "Grep",
     "ListMcpResourcesTool",
     "NotebookEdit",
     "Read",
@@ -965,6 +968,26 @@ def _host_context_filter(
         tool_choice: object,
         config: GenerateConfig,
     ) -> ModelOutput | GenerateInput | None:
+        if _claude_mcp_wait_required(host, condition, tools):
+            active_store = store()
+            if active_store.get(MCP_READINESS_HANDSHAKE_STORE_KEY) is not None:
+                raise HostContextDriftError("host_mcp_readiness_handshake_repeated")
+            active_store.set(MCP_READINESS_HANDSHAKE_STORE_KEY, True)
+            return ModelOutput.from_message(
+                ChatMessageAssistant(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            id="joinlint-mcp-readiness-1",
+                            function="WaitForMcpServers",
+                            arguments={
+                                "servers": ["EvaluationDatabase", "JoinLint"]
+                            },
+                        )
+                    ],
+                ),
+                stop_reason="tool_calls",
+            )
         tool_names = _require_host_tool_surface(host, condition, tools)
         store().set(
             HOST_CONTEXT_STORE_KEY,
@@ -972,6 +995,9 @@ def _host_context_filter(
                 "host": host,
                 "condition": condition,
                 "tool_names": tool_names,
+                "mcp_readiness_handshake_performed": (
+                    store().get(MCP_READINESS_HANDSHAKE_STORE_KEY) is True
+                ),
                 "provider_short_circuited": short_circuit,
             },
         )
@@ -990,6 +1016,25 @@ def _host_context_filter(
         return None
 
     return enforce
+
+
+def _claude_mcp_wait_required(
+    host: Host,
+    condition: Condition,
+    tools: list[object],
+) -> bool:
+    if host != "claude_code":
+        return False
+    names = {_host_tool_name(tool) for tool in tools}
+    if None in names:
+        raise HostContextDriftError("host_tool_surface_missing_name")
+    required = _required_mcp_tool_names(host, condition)
+    if required <= names:
+        return False
+    pending_names = required | {"Glob", "Grep", "WaitForMcpServers"}
+    if "WaitForMcpServers" not in names or not names <= pending_names:
+        return False
+    return True
 
 
 def _require_host_tool_surface(

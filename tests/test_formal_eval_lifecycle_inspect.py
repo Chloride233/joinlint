@@ -464,6 +464,100 @@ def test_host_context_probe_short_circuits_before_provider_model() -> None:
     assert score.metadata["provider_short_circuited"] is True
 
 
+def test_claude_host_context_waits_once_for_mcp_before_scoring() -> None:
+    state = _pending_state(host="claude_code", agent_version="2.1.212")
+    init_subtask_store(state.store)
+    context_filter = inspect_task._host_context_filter(
+        "claude_code",
+        "treatment",
+        short_circuit=True,
+    )
+    pending_tools = [
+        SimpleNamespace(name=name)
+        for name in ("Glob", "Grep", "WaitForMcpServers")
+    ]
+
+    wait_output = asyncio.run(
+        context_filter(
+            get_model("mockllm/model"),
+            [],
+            pending_tools,
+            None,
+            GenerateConfig(),
+        )
+    )
+
+    assert wait_output is not None
+    assert wait_output.usage is None
+    assert wait_output.message.tool_calls == [
+        ToolCall(
+            id="joinlint-mcp-readiness-1",
+            function="WaitForMcpServers",
+            arguments={"servers": ["EvaluationDatabase", "JoinLint"]},
+        )
+    ]
+    assert parse_lifecycle(
+        state.store.get(LIFECYCLE_STORE_KEY)
+    ).evaluation_status == "not_started"
+
+    ready_tools = [
+        SimpleNamespace(name=name)
+        for name in (
+            "mcp__EvaluationDatabase__execute_sql",
+            "mcp__EvaluationDatabase__submit_sql",
+            "mcp__JoinLint__get_join_plan",
+            "mcp__JoinLint__validate_sql",
+        )
+    ]
+    ready_output = asyncio.run(
+        context_filter(
+            get_model("mockllm/model"),
+            [],
+            ready_tools,
+            None,
+            GenerateConfig(),
+        )
+    )
+
+    assert ready_output is not None
+    assert ready_output.completion == "Host context profile accepted."
+    observation = state.store.get(inspect_task.HOST_CONTEXT_STORE_KEY)
+    assert observation["mcp_readiness_handshake_performed"] is True
+    assert parse_lifecycle(
+        state.store.get(LIFECYCLE_STORE_KEY)
+    ).evaluation_status == "started"
+
+
+def test_claude_host_context_rejects_repeated_mcp_wait() -> None:
+    state = _pending_state(host="claude_code", agent_version="2.1.212")
+    init_subtask_store(state.store)
+    context_filter = inspect_task._host_context_filter(
+        "claude_code",
+        "treatment",
+    )
+    pending_tools = [SimpleNamespace(name="WaitForMcpServers")]
+
+    asyncio.run(
+        context_filter(
+            get_model("mockllm/model"),
+            [],
+            pending_tools,
+            None,
+            GenerateConfig(),
+        )
+    )
+    with pytest.raises(RuntimeError, match="host_mcp_readiness_handshake_repeated"):
+        asyncio.run(
+            context_filter(
+                get_model("mockllm/model"),
+                [],
+                pending_tools,
+                None,
+                GenerateConfig(),
+            )
+        )
+
+
 def test_solver_uses_pure_frozen_host_context_options() -> None:
     codex = inspect_task._codex_host_options(strict_pilot=True)
     claude = inspect_task._claude_host_options(strict_pilot=True)
@@ -479,6 +573,7 @@ def test_solver_uses_pure_frozen_host_context_options() -> None:
         "retry_refusals": 0,
         "retry_uncaught_errors": 0,
     }
+    assert {"Glob", "Grep"} <= set(inspect_task.CLAUDE_DISALLOWED_BUILTIN_TOOLS)
 
 
 def _state(*, store: dict[str, object]) -> TaskState:
@@ -515,9 +610,12 @@ def _submission_messages(call_id: str, sql: str, warning: str) -> list[object]:
     ]
 
 
-def _pending_state() -> TaskState:
+def _pending_state(
+    host: str = "codex",
+    agent_version: str = "0.144.1",
+) -> TaskState:
     record = infrastructure_prepared(
-        new_lifecycle("codex", "0.144.1", now=NOW),
+        new_lifecycle(host, agent_version, now=NOW),  # type: ignore[arg-type]
         duration_seconds=0,
         host_binary_sha256="a" * 64,
         now=NOW,
