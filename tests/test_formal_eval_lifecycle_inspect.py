@@ -219,6 +219,17 @@ def test_claude_namespaced_joinlint_tools_are_recognized() -> None:
     assert inspect_task._tool_name("mcp__EvaluationDatabase__execute_sql") is None
 
 
+def test_pilot_task_ids_accept_inspect_list_normalization() -> None:
+    assert inspect_task._normalized_pilot_task_ids("task-a,task-b") == (
+        "task-a",
+        "task-b",
+    )
+    assert inspect_task._normalized_pilot_task_ids(["task-a", "task-b"]) == (
+        "task-a",
+        "task-b",
+    )
+
+
 def _state(*, store: dict[str, object]) -> TaskState:
     return TaskState(
         model="mockllm/model",
