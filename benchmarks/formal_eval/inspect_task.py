@@ -69,6 +69,59 @@ from joinlint.contracts import canonical_json
 BASE_PROMPT = """You are evaluating one SQLite question. Use the EvaluationDatabase execute_sql tool for data access. Submit exactly once with the EvaluationDatabase submit_sql tool as your final action. Its sql argument must contain one read-only SELECT, or be empty only when no safe join exists; warning must be empty for submitted SQL and explain a safe abstention otherwise. Do not rely on the text of your final reply for submission."""
 HARNESS_PROMPT = """The schema is already provided, so your first tool call must be JoinLint get_join_plan. Call get_join_plan exactly once after choosing every intended physical table instance. Each entity_refs item must be exactly {"ref":"orders","entity":"orders"}: ref is a unique request-local alias and entity is the physical table name; repeat an entity only for a genuine self join. Set expected_grain_ref to the instance whose unique key must remain one row per output row before aggregation. For a many-to-one join, the referencing child normally preserves its grain; aggregation, DISTINCT, and GROUP BY do not restore grain in Stage 1. If planning returns GRAIN_INCOMPATIBLE, COMPOUND_FANOUT, NO_VERIFIED_PATH, or any other non-ok status, do not retry variants or guess: submit empty SQL with the stable code in warning. Use only returned proof predicates. Call JoinLint validate_sql with the exact final SQL and returned plan_id, then call execute_sql only after validation passes. If validation is not ok, do not execute and submit empty SQL with the stable code. JoinLint proof is not query correctness."""
 
+CODEX_CONTEXT_CONFIG_OVERRIDES = {
+    "features.apps": "false",
+    "features.computer_use": "false",
+    "features.default_mode_request_user_input": "false",
+    "features.image_generation": "false",
+    "features.multi_agent": "false",
+    "features.plugins": "false",
+    "features.shell_tool": "false",
+    "features.unified_exec": "false",
+    "features.workspace_dependencies": "false",
+}
+CLAUDE_DISALLOWED_BUILTIN_TOOLS = (
+    "Agent",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "Edit",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListMcpResourcesTool",
+    "NotebookEdit",
+    "Read",
+    "ReadMcpResourceDirTool",
+    "ReadMcpResourceTool",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskOutput",
+    "TaskStop",
+    "TaskUpdate",
+    "WebFetch",
+    "WebSearch",
+    "Workflow",
+    "Write",
+)
+CODEX_ALLOWED_BUILTIN_TOOLS = {
+    "list_mcp_resource_templates",
+    "list_mcp_resources",
+    "read_mcp_resource",
+    "request_user_input",
+    "update_plan",
+    "view_image",
+}
+
+
+class HostContextDriftError(RuntimeError):
+    pass
+
 
 @task
 def formal_agent_eval(
@@ -610,6 +663,7 @@ def _solver(
     prompt = BASE_PROMPT
     if condition in {"treatment", "oracle_mcp"}:
         prompt += "\n\n" + HARNESS_PROMPT
+    context_filter = _host_context_filter(host, condition)
     if host == "codex":
         agent = codex_cli(
             version="sandbox",
@@ -617,18 +671,19 @@ def _solver(
             mcp_servers=servers,
             web_search="disabled",
             goals=False,
+            config_overrides=CODEX_CONTEXT_CONFIG_OVERRIDES,
             retry_refusals=0 if strict_pilot else None,
-            filter=_mark_evaluation_started,
+            filter=context_filter,
         )
     else:
         agent = claude_code(
             version="sandbox",
             system_prompt=prompt,
             mcp_servers=servers,
-            disallowed_tools=["WebSearch"],
+            disallowed_tools=list(CLAUDE_DISALLOWED_BUILTIN_TOOLS),
             retry_refusals=0 if strict_pilot else 3,
             retry_uncaught_errors=0 if strict_pilot else 3,
-            filter=_mark_evaluation_started,
+            filter=context_filter,
         )
     return chain(
         infrastructure_readiness(host, agent_version, readiness_time_limit),
@@ -714,6 +769,11 @@ def evaluation_lifecycle(
             record = _require_lifecycle(state)
             if not _evaluation_has_started(state):
                 tasks.cancel_scope.cancel()
+                reason = (
+                    LifecycleFailureReason.HOST_CONTEXT_DRIFT
+                    if isinstance(agent_error, HostContextDriftError)
+                    else LifecycleFailureReason.EVALUATION_NOT_STARTED
+                )
                 detail = (
                     _safe_failure_detail(agent_error)
                     if agent_error is not None
@@ -723,7 +783,7 @@ def evaluation_lifecycle(
                 )
                 record = readiness_failed(
                     record,
-                    reason=LifecycleFailureReason.EVALUATION_NOT_STARTED,
+                    reason=reason,
                     duration_seconds=elapsed_seconds_since(record.readiness_started_at),
                     detail=detail,
                 )
@@ -851,6 +911,72 @@ async def _mark_evaluation_started(
         write_lifecycle(active_store, record)
         write_lifecycle(active_store, start_evaluation(record))
     return None
+
+
+def _host_context_filter(host: Host, condition: Condition):  # type: ignore[no-untyped-def]
+    async def enforce(
+        model: Model,
+        messages: list[object],
+        tools: list[object],
+        tool_choice: object,
+        config: GenerateConfig,
+    ) -> ModelOutput | GenerateInput | None:
+        _require_host_tool_surface(host, condition, tools)
+        return await _mark_evaluation_started(
+            model,
+            messages,
+            tools,
+            tool_choice,
+            config,
+        )
+
+    return enforce
+
+
+def _require_host_tool_surface(
+    host: Host,
+    condition: Condition,
+    tools: list[object],
+) -> None:
+    names = {_host_tool_name(tool) for tool in tools}
+    if None in names:
+        raise HostContextDriftError("host_tool_surface_missing_name")
+    required = _required_mcp_tool_names(host, condition)
+    allowed = required | (CODEX_ALLOWED_BUILTIN_TOOLS if host == "codex" else set())
+    missing = required - names
+    unexpected = names - allowed
+    if missing or unexpected:
+        raise HostContextDriftError(
+            "host_tool_surface_mismatch:"
+            f"missing={','.join(sorted(missing)) or '-'};"
+            f"unexpected={','.join(sorted(unexpected)) or '-'}"
+        )
+
+
+def _required_mcp_tool_names(host: Host, condition: Condition) -> set[str]:
+    if host == "codex":
+        names = {"execute_sql", "submit_sql"}
+        if condition in {"treatment", "oracle_mcp", "no_harness"}:
+            names |= {"get_join_plan", "validate_sql"}
+        return names
+    names = {
+        "mcp__EvaluationDatabase__execute_sql",
+        "mcp__EvaluationDatabase__submit_sql",
+    }
+    if condition in {"treatment", "oracle_mcp", "no_harness"}:
+        names |= {
+            "mcp__JoinLint__get_join_plan",
+            "mcp__JoinLint__validate_sql",
+        }
+    return names
+
+
+def _host_tool_name(tool: object) -> str | None:
+    if isinstance(tool, dict):
+        value = tool.get("name")
+    else:
+        value = getattr(tool, "name", None)
+    return value if isinstance(value, str) and value else None
 
 
 def _lifecycle_score(state: TaskState) -> Score | None:

@@ -42,6 +42,9 @@
   Code versions, JoinLint commit, Harness and policy versions, image digest,
   seed, sample size, and dataset release in schema-v2 preregistration. Disclose
   that this is one provider family with two tiers, not cross-family replication.
+- Verify the pinned host context profile exposes the required database and
+  JoinLint MCP tools while rejecting unapproved shell, file, web, sub-agent,
+  scheduling, and workspace tools before the first provider model call.
 - Verify the input lock covers every sealed corpus, SQL label, task payload,
   database, independent pilot row, and raw deterministic performance fixture.
 - Verify preflight reports at least 12 confirmatory databases, 60 natural tasks,

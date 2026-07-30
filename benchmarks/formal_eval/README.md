@@ -36,22 +36,27 @@ diagnostic canary and not formal Agent evidence.
 
 ## Evaluation lifecycle boundary
 
-Formal Agent tasks use four separate stages:
+Formal Agent tasks use five separate stages:
 
 1. infrastructure preparation verifies the image-installed host CLI, checks
    that JoinLint imports and the uploaded SQLite database opens read-only, and
    forces one remote command so Inspect sandbox-tools are injected and running;
 2. Agent bridge and MCP preparation remain infrastructure work and reuse the
    readiness-attested sandbox-tools service;
-3. readiness is attested and evaluation starts only at the first bridged model
-   request;
-4. semantic scorers run only after evaluation completes.
+3. the pinned host context profile removes unneeded shell, file, web, sub-agent,
+   scheduling, and workspace tools; the first bridged request must expose the
+   exact required MCP tools and no unapproved tools before readiness is attested;
+4. evaluation starts only after that tool-surface check passes at the first
+   bridged model request;
+5. semantic scorers run only after evaluation completes.
 
 Each stage records its own status and duration in the Inspect sample store.
 Readiness failures and Agents that never reach a first model request produce a
 task outcome with `INFRASTRUCTURE_FAILURE`; they are never interpreted as SQL
 parse failures. A timeout after the first model request remains `MODEL_TIMEOUT`.
 Message, turn, or token exhaustion after that boundary remains `MODEL_LIMIT`.
+Tool-surface drift is a readiness failure and stops before the provider model is
+called, so a host upgrade cannot silently restore a large coding-agent context.
 The no-model lifecycle test is a mandatory workflow gate. The legacy one-cell
 Pilot canary is operational evidence only; it is not accepted as evidence that
 the full Pilot matrix or its resource contract is ready.

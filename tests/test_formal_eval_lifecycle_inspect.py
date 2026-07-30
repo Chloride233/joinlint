@@ -107,6 +107,20 @@ def test_agent_stopping_before_first_model_boundary_is_infrastructure_outcome() 
     assert scoring_eligibility(record).failure_code == "INFRASTRUCTURE_FAILURE"
 
 
+def test_host_context_drift_is_a_distinct_pre_model_readiness_failure() -> None:
+    state = _pending_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(_host_context_drift_agent(), 1, 1)(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.HOST_CONTEXT_DRIFT
+    assert record.evaluation_status == "not_started"
+    assert scoring_eligibility(record).failure_code == "INFRASTRUCTURE_FAILURE"
+
+
 def test_readiness_forces_sandbox_tools_injection_before_agent_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -338,6 +352,92 @@ def test_treatment_harness_is_single_plan_and_fail_closed() -> None:
     assert "GRAIN_INCOMPATIBLE" in inspect_task.HARNESS_PROMPT
 
 
+def test_host_context_profile_disables_unneeded_builtin_tools() -> None:
+    assert inspect_task.CODEX_CONTEXT_CONFIG_OVERRIDES == {
+        "features.apps": "false",
+        "features.computer_use": "false",
+        "features.default_mode_request_user_input": "false",
+        "features.image_generation": "false",
+        "features.multi_agent": "false",
+        "features.plugins": "false",
+        "features.shell_tool": "false",
+        "features.unified_exec": "false",
+        "features.workspace_dependencies": "false",
+    }
+    assert {"Bash", "Read", "Write", "Agent", "WebSearch"} <= set(
+        inspect_task.CLAUDE_DISALLOWED_BUILTIN_TOOLS
+    )
+
+
+def test_host_context_profile_accepts_only_required_mcp_and_bounded_codex_tools() -> None:
+    codex_tools = [
+        SimpleNamespace(name=name)
+        for name in (
+            "execute_sql",
+            "submit_sql",
+            "get_join_plan",
+            "validate_sql",
+            "update_plan",
+            "request_user_input",
+            "view_image",
+        )
+    ]
+    inspect_task._require_host_tool_surface("codex", "treatment", codex_tools)
+
+    claude_tools = [
+        SimpleNamespace(name=name)
+        for name in (
+            "mcp__EvaluationDatabase__execute_sql",
+            "mcp__EvaluationDatabase__submit_sql",
+            "mcp__JoinLint__get_join_plan",
+            "mcp__JoinLint__validate_sql",
+        )
+    ]
+    inspect_task._require_host_tool_surface("claude_code", "treatment", claude_tools)
+
+    with pytest.raises(RuntimeError, match="unexpected=exec_command"):
+        inspect_task._require_host_tool_surface(
+            "codex",
+            "treatment",
+            [*codex_tools, SimpleNamespace(name="exec_command")],
+        )
+    with pytest.raises(RuntimeError, match="missing=mcp__JoinLint__validate_sql"):
+        inspect_task._require_host_tool_surface(
+            "claude_code",
+            "treatment",
+            claude_tools[:-1],
+        )
+
+
+@pytest.mark.parametrize("host", ["codex", "claude_code"])
+def test_solver_applies_the_frozen_host_context_profile(
+    host: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import inspect_swe
+
+    captured: dict[str, object] = {}
+
+    def fake_agent(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return _never_started_agent()
+
+    monkeypatch.setattr(inspect_swe, "codex_cli", fake_agent)
+    monkeypatch.setattr(inspect_swe, "claude_code", fake_agent)
+
+    inspect_task._solver(host, "treatment", "test-version", strict_pilot=True)  # type: ignore[arg-type]
+
+    if host == "codex":
+        assert captured["config_overrides"] == inspect_task.CODEX_CONTEXT_CONFIG_OVERRIDES
+        assert captured["goals"] is False
+        assert captured["web_search"] == "disabled"
+    else:
+        assert captured["disallowed_tools"] == list(
+            inspect_task.CLAUDE_DISALLOWED_BUILTIN_TOOLS
+        )
+    assert callable(captured["filter"])
+
+
 def _state(*, store: dict[str, object]) -> TaskState:
     return TaskState(
         model="mockllm/model",
@@ -418,5 +518,14 @@ def _started_agent():  # type: ignore[no-untyped-def]
 def _never_started_agent():  # type: ignore[no-untyped-def]
     async def execute(agent_state: AgentState) -> AgentState:
         return agent_state
+
+    return execute
+
+
+@agent
+def _host_context_drift_agent():  # type: ignore[no-untyped-def]
+    async def execute(agent_state: AgentState) -> AgentState:
+        del agent_state
+        raise inspect_task.HostContextDriftError("host_tool_surface_mismatch")
 
     return execute

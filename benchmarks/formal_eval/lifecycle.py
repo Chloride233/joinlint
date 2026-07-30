@@ -39,6 +39,7 @@ class LifecycleFailureReason(StrEnum):
     IMAGE_PREPARATION_FAILED = "IMAGE_PREPARATION_FAILED"
     SANDBOX_PROVISION_FAILED = "SANDBOX_PROVISION_FAILED"
     READINESS_FAILED = "READINESS_FAILED"
+    HOST_CONTEXT_DRIFT = "HOST_CONTEXT_DRIFT"
     EVALUATION_NOT_STARTED = "EVALUATION_NOT_STARTED"
     MODEL_TIMEOUT = "MODEL_TIMEOUT"
     MODEL_LIMIT = "MODEL_LIMIT"
@@ -136,6 +137,7 @@ def readiness_failed(
         LifecycleFailureReason.IMAGE_PREPARATION_FAILED,
         LifecycleFailureReason.SANDBOX_PROVISION_FAILED,
         LifecycleFailureReason.READINESS_FAILED,
+        LifecycleFailureReason.HOST_CONTEXT_DRIFT,
         LifecycleFailureReason.EVALUATION_NOT_STARTED,
     }:
         raise ValueError("readiness failure requires an infrastructure reason")
