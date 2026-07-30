@@ -175,6 +175,13 @@ def test_pilot_calibration_uses_exact_formal_resource_contract(
     assert all(expected_task_ids in command for command in commands)
 
 
+def test_pilot_task_ids_accept_inspect_list_normalization() -> None:
+    from benchmarks.formal_eval.inspect_task import _normalized_pilot_task_ids
+
+    assert _normalized_pilot_task_ids("task-a,task-b") == ("task-a", "task-b")
+    assert _normalized_pilot_task_ids(["task-a", "task-b"]) == ("task-a", "task-b")
+
+
 def test_pilot_calibration_attests_infrastructure_harness_and_scoring() -> None:
     from benchmarks.formal_eval.lifecycle import (
         allow_scoring,

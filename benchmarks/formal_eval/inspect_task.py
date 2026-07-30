@@ -108,7 +108,7 @@ def formal_pilot_eval(
     dockerfile: str,
     lineage_id: str,
     task_partition: str = "",
-    task_ids: str = "",
+    task_ids: str | list[str] = "",
     token_limit: int = 35_000,
     token_limit_type: str = "(input*0.5)+output",
     message_limit: int = 12,
@@ -119,7 +119,7 @@ def formal_pilot_eval(
 ) -> Task:
     if condition not in {"control", "treatment"}:
         raise ValueError("pilot supports only control and treatment")
-    requested_task_ids = tuple(value for value in task_ids.split(",") if value)
+    requested_task_ids = _normalized_pilot_task_ids(task_ids)
     if len(requested_task_ids) != len(set(requested_task_ids)):
         raise ValueError("pilot task-ID set must not contain duplicates")
     if (task_partition in {"even", "odd"}) == bool(requested_task_ids):
@@ -158,6 +158,15 @@ def formal_pilot_eval(
         task_ids=requested_task_ids,
         message_limit=message_limit,
     )
+
+
+def _normalized_pilot_task_ids(value: str | list[str]) -> tuple[str, ...]:
+    if value == "" or value == []:
+        return ()
+    values = value if isinstance(value, list) else value.split(",")
+    if any(not isinstance(item, str) or not item for item in values):
+        raise ValueError("pilot task IDs must be non-empty strings")
+    return tuple(values)
 
 
 @task
