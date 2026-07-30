@@ -115,11 +115,13 @@ def infrastructure_prepared(
     now: datetime | None = None,
 ) -> LifecycleRecord:
     _require_phase(record, LifecyclePhase.INFRASTRUCTURE_PENDING)
+    prepared_at = now or _utc_now()
     return record.model_copy(
         update={
-            "infrastructure_prepared_at": now or _utc_now(),
+            "infrastructure_prepared_at": prepared_at,
             "infrastructure_preparation_duration_seconds": duration_seconds,
             "host_binary_sha256": host_binary_sha256,
+            "readiness_started_at": prepared_at,
         }
     )
 

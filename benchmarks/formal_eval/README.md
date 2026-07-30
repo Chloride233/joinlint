@@ -57,7 +57,10 @@ Formal Agent tasks use five separate stages:
    bridged model request;
 5. semantic scorers run only after evaluation completes.
 
-Each stage records its own status and duration in the Inspect sample store.
+Each stage records its own status and duration in the Inspect sample store. The
+Agent-readiness clock starts only after host-binary and sandbox probes complete;
+infrastructure preparation no longer consumes the separate pre-model readiness
+window. The Modal sandbox timeout remains the global bound across both phases.
 Readiness failures and Agents that never reach a first model request produce a
 task outcome with `INFRASTRUCTURE_FAILURE`; they are never interpreted as SQL
 parse failures. A timeout after the first model request remains `MODEL_TIMEOUT`.

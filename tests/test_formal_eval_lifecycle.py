@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -29,16 +29,19 @@ def test_evaluation_cannot_start_before_readiness() -> None:
 
 
 def test_infrastructure_preparation_does_not_start_evaluation_or_pass_readiness() -> None:
+    prepared_at = NOW + timedelta(seconds=45)
     record = infrastructure_prepared(
         new_lifecycle("codex", "0.144.1", now=NOW),
-        duration_seconds=2,
+        duration_seconds=45,
         host_binary_sha256="a" * 64,
-        now=NOW,
+        now=prepared_at,
     )
 
     assert record.phase == "INFRASTRUCTURE_PENDING"
     assert record.infrastructure_status == "pending"
     assert record.evaluation_status == "not_started"
+    assert record.infrastructure_prepared_at == prepared_at
+    assert record.readiness_started_at == prepared_at
     assert scoring_eligibility(record).eligible is False
 
 
