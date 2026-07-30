@@ -35,6 +35,7 @@ from benchmarks.formal_eval.pilot_calibration import (
     PilotCalibrationReport,
     attest_calibration_samples,
     build_calibration_commands,
+    calibration_authorization_status,
     calibration_budget_envelope,
     calibration_readiness_status,
     usage_breakdown,
@@ -63,11 +64,17 @@ COMMIT = "a" * 40
 LINEAGE_ID = "b" * 64
 
 
-def test_pilot_v2_freezes_diagnostic_ground_truth_exclusions() -> None:
-    assert PILOT_DATASET_RELEASE.endswith("pilot-v2")
+def test_pilot_v3_freezes_diagnostic_ground_truth_exclusions() -> None:
+    assert PILOT_DATASET_RELEASE.endswith("pilot-v3")
     assert PILOT_GROUND_TRUTH_EXCLUSIONS == {
+        "bird-train-citeseer-04141": (
+            "question_ambiguously_invokes_paper_citations_but_gold_uses_content_only"
+        ),
         "bird-train-citeseer-04142": (
             "question_requests_other_paper_but_gold_returns_source_paper_words"
+        ),
+        "bird-train-citeseer-04143": (
+            "question_ambiguously_invokes_cites_table_but_gold_uses_content_only"
         ),
         "bird-train-citeseer-04150": (
             "question_requires_class_intersection_but_gold_uses_union"
@@ -132,14 +139,17 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
     assert registration.models[1].id in command
 
 
-def test_pilot_calibration_freezes_two_highest_depth_tasks() -> None:
+def test_pilot_calibration_freezes_highest_depth_tasks_from_distinct_databases() -> None:
     manifest = _manifest(4)
     depths = (1, 4, 2, 4)
+    databases = ("db-a", "db-a", "db-b", "db-b")
     manifest = manifest.model_copy(
         update={
             "tasks": tuple(
-                task.model_copy(update={"join_depth": depth})
-                for task, depth in zip(manifest.tasks, depths, strict=True)
+                task.model_copy(update={"join_depth": depth, "database_id": database})
+                for task, depth, database in zip(
+                    manifest.tasks, depths, databases, strict=True
+                )
             )
         }
     )
@@ -149,7 +159,7 @@ def test_pilot_calibration_freezes_two_highest_depth_tasks() -> None:
     assert specification.task_ids == ("task-1", "task-3")
 
 
-def test_pilot_calibration_uses_frozen_host_candidate_contract(
+def test_pilot_calibration_uses_exact_formal_resource_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -180,10 +190,13 @@ def test_pilot_calibration_uses_frozen_host_candidate_contract(
     envelope = calibration_budget_envelope(registration)
 
     assert CALIBRATION_BUDGET_CNY == 4.0
+    assert CALIBRATION_TOKEN_LIMITS == {
+        host: registration.token_limit_per_run for host in registration.hosts
+    }
     assert envelope.run_count == 8
-    assert envelope.model_cost_upper_cny == pytest.approx(1.52)
+    assert envelope.model_cost_upper_cny == pytest.approx(1.12)
     assert envelope.modal_compute_upper_cny == pytest.approx(0.31728)
-    assert envelope.total_upper_cny == pytest.approx(3.83728)
+    assert envelope.total_upper_cny == pytest.approx(3.43728)
     assert len(commands) == 4
     assert all("condition=treatment" in command for command in commands)
     for command in commands:
@@ -328,13 +341,13 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
     assert still_sufficient.status == "passed"
     assert still_available.status == "passed"
     separated_report = PilotCalibrationReport(
-        schema_version=2,
-        status="failed",
+        schema_version=3,
+        status="passed",
         readiness_status="passed",
         resource=still_sufficient,
         **{**report_values, "harness": failed_harness},
     )
-    assert separated_report.status == "failed"
+    assert separated_report.status == "passed"
     assert separated_report.readiness_status == "passed"
     trace["plan_called"] = True
 
@@ -367,15 +380,40 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
         duration_seconds=1,
     )
     samples[0].store["joinlint.formal_eval.lifecycle.v1"] = limited.model_dump(mode="json")
-    _, limited_resource, _, _ = attest_calibration_samples(
-        samples,
-        registration=registration,
-        task_ids=task_ids,
+    limited_infrastructure, limited_resource, limited_harness, limited_scoring = (
+        attest_calibration_samples(
+            samples,
+            registration=registration,
+            task_ids=task_ids,
+        )
     )
     assert limited_resource.status == "failed"
     limited_cell = next(cell for cell in limited_resource.cells if cell.model_limit_reached)
     assert limited_cell.resource_sufficient is False
     assert limited_cell.usage is not None
+    assert next(
+        summary for summary in limited_resource.hosts if summary.host == limited_cell.host
+    ).limit_censored
+    assert limited_scoring.status == "failed"
+    assert calibration_authorization_status(
+        infrastructure=limited_infrastructure,
+        resource=limited_resource,
+        scoring=limited_scoring,
+        within_budget=True,
+    ) == "passed"
+    censored_report = PilotCalibrationReport(
+        schema_version=3,
+        status="passed",
+        readiness_status="passed",
+        resource=limited_resource,
+        **{
+            **report_values,
+            "infrastructure": limited_infrastructure,
+            "harness": limited_harness,
+            "scoring": limited_scoring,
+        },
+    )
+    assert censored_report.status == "passed"
 
     with pytest.raises(ValueError, match="status is inconsistent"):
         InfrastructureAttestation(status="passed", cells=())

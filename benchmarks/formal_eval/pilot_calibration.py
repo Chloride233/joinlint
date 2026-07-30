@@ -39,7 +39,7 @@ from joinlint.contracts import canonical_json
 CALIBRATION_BUDGET_CNY = 4.0
 CALIBRATION_TOKEN_LIMITS: dict[Host, int] = {
     "codex": 35_000,
-    "claude_code": 60_000,
+    "claude_code": 35_000,
 }
 TARGET_HEADROOM_RATIO = 0.2
 REMOTE_DEPENDENCIES = ("anthropic", "inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
@@ -261,7 +261,7 @@ class ScoringAttestation(StrictModel):
 
 
 class PilotCalibrationReport(StrictModel):
-    schema_version: Literal[1, 2] = 2
+    schema_version: Literal[1, 2, 3] = 3
     status: Literal["passed", "failed"]
     readiness_status: Literal["passed", "failed"] | None = None
     calibration_task_ids: tuple[str, str]
@@ -285,18 +285,18 @@ class PilotCalibrationReport(StrictModel):
 
     @model_validator(mode="after")
     def require_consistent_status_and_budget(self) -> PilotCalibrationReport:
+        within_budget = (
+            self.total_cost_upper_cny <= self.approved_run_budget_cny
+            and self.campaign_total_upper_cny <= self.campaign_budget_cny
+        )
         legacy_passed = all(
             attestation.status == "passed"
             for attestation in (self.infrastructure, self.harness, self.scoring)
         )
-        legacy_passed = (
-            legacy_passed
-            and self.total_cost_upper_cny <= self.approved_run_budget_cny
-            and self.campaign_total_upper_cny <= self.campaign_budget_cny
-        )
-        if (self.status == "passed") != legacy_passed:
-            raise ValueError("pilot calibration report status is inconsistent")
+        legacy_passed = legacy_passed and within_budget
         if self.schema_version == 1:
+            if (self.status == "passed") != legacy_passed:
+                raise ValueError("pilot calibration report status is inconsistent")
             if any(
                 value is not None
                 for value in (self.readiness_status, self.resource)
@@ -304,18 +304,27 @@ class PilotCalibrationReport(StrictModel):
                 raise ValueError("schema v1 cannot contain resource readiness fields")
             return self
         if self.resource is None:
-            raise ValueError("schema v2 requires a resource attestation")
-        readiness = calibration_readiness_status(
-            infrastructure=self.infrastructure,
-            resource=self.resource,
-            scoring=self.scoring,
-            within_budget=(
-                self.total_cost_upper_cny <= self.approved_run_budget_cny
-                and self.campaign_total_upper_cny <= self.campaign_budget_cny
-            ),
+            raise ValueError("schema v2/v3 requires a resource attestation")
+        readiness = (
+            calibration_readiness_status(
+                infrastructure=self.infrastructure,
+                resource=self.resource,
+                scoring=self.scoring,
+                within_budget=within_budget,
+            )
+            if self.schema_version == 2
+            else calibration_authorization_status(
+                infrastructure=self.infrastructure,
+                resource=self.resource,
+                scoring=self.scoring,
+                within_budget=within_budget,
+            )
         )
         if self.readiness_status != readiness:
             raise ValueError("pilot calibration readiness status is inconsistent")
+        expected_passed = legacy_passed if self.schema_version == 2 else readiness == "passed"
+        if (self.status == "passed") != expected_passed:
+            raise ValueError("pilot calibration report status is inconsistent")
         return self
 
 
@@ -333,6 +342,35 @@ def calibration_readiness_status(
         and within_budget
     )
     return "passed" if passed else "failed"
+
+
+def calibration_authorization_status(
+    *,
+    infrastructure: InfrastructureAttestation,
+    resource: ResourceAttestation,
+    scoring: ScoringAttestation,
+    within_budget: bool,
+) -> Literal["passed", "failed"]:
+    passed = (
+        infrastructure.status == "passed"
+        and resource_pipeline_available(resource)
+        and scoring_pipeline_available(scoring)
+        and within_budget
+    )
+    return "passed" if passed else "failed"
+
+
+def resource_pipeline_available(resource: ResourceAttestation) -> bool:
+    return (
+        len(resource.cells) == 8
+        and len({_cell_key(cell) for cell in resource.cells}) == 8
+        and all(
+            cell.usage is not None
+            and cell.observed_weighted_tokens is not None
+            and cell.observed_weighted_tokens <= cell.configured_token_limit
+            for cell in resource.cells
+        )
+    )
 
 
 def scoring_pipeline_available(scoring: ScoringAttestation) -> bool:
@@ -473,14 +511,8 @@ def run_calibration(
         registration=registration,
         task_ids=specification.task_ids,
     )
-    passed = all(
-        attestation.status == "passed"
-        for attestation in (infrastructure, harness, scoring)
-    )
     campaign_total = campaign_spend_before_cny + total_upper
-    if total_upper > CALIBRATION_BUDGET_CNY or campaign_total > campaign_budget_cny:
-        passed = False
-    readiness_status = calibration_readiness_status(
+    readiness_status = calibration_authorization_status(
         infrastructure=infrastructure,
         resource=resource,
         scoring=scoring,
@@ -490,7 +522,7 @@ def run_calibration(
         ),
     )
     report = PilotCalibrationReport(
-        status="passed" if passed else "failed",
+        status="passed" if readiness_status == "passed" else "failed",
         readiness_status=readiness_status,
         calibration_task_ids=specification.task_ids,
         resource_contract=CalibrationResourceContract(
@@ -747,8 +779,8 @@ def verify_calibration_attestation_values(
     run_metadata: dict[str, Any],
     repository: str,
 ) -> None:
-    if report.status != "passed":
-        raise ValueError("pilot calibration did not pass all three attestations")
+    if report.status != "passed" or report.readiness_status != "passed":
+        raise ValueError("pilot calibration readiness did not pass")
     if report.workflow_run_id != expected_run_id or run_metadata.get("id") != expected_run_id:
         raise ValueError("calibration attestation run ID mismatch")
     if run_metadata.get("name") != "formal-pilot-canary" or run_metadata.get(
@@ -782,6 +814,8 @@ def verify_calibration_attestation(
     if registration.joinlint_commit != current_commit:
         raise ValueError("checked-out JoinLint commit does not match the pilot registration")
     report = PilotCalibrationReport.model_validate_json(attestation_path.read_bytes())
+    if report.schema_version != 3:
+        raise ValueError("pilot calibration attestation schema is not current")
     specification = load_pilot_calibration_spec(root, manifest)
     if report.calibration_task_ids != specification.task_ids:
         raise ValueError("calibration attestation task IDs mismatch")

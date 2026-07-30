@@ -43,11 +43,13 @@ from benchmarks.formal_eval.manifest import (
 from benchmarks.formal_eval.run_plan import RunPlanV2, RunSpec, sample_id_for
 
 
-PILOT_DATASET_RELEASE = "bird-train-2023-07-11-declared-fk-pilot-v2"
+PILOT_DATASET_RELEASE = "bird-train-2023-07-11-declared-fk-pilot-v3"
 PILOT_ALLOCATION = {"citeseer": 8, "genes": 4, "trains": 8}
 PILOT_DOMAINS = {"citeseer": "research", "genes": "biology", "trains": "transportation"}
 PILOT_GROUND_TRUTH_EXCLUSIONS = {
+    "bird-train-citeseer-04141": "question_ambiguously_invokes_paper_citations_but_gold_uses_content_only",
     "bird-train-citeseer-04142": "question_requests_other_paper_but_gold_returns_source_paper_words",
+    "bird-train-citeseer-04143": "question_ambiguously_invokes_cites_table_but_gold_uses_content_only",
     "bird-train-citeseer-04150": "question_requires_class_intersection_but_gold_uses_union",
     "bird-train-trains-00698": "question_requests_west_but_gold_filters_east",
 }
@@ -133,10 +135,10 @@ class PilotBudgetCheckpoint(StrictModel):
 
 
 class PilotCalibrationSpec(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     task_ids: tuple[str, str]
-    selection_rule: Literal["highest_join_depth_then_task_id_v1"] = (
-        "highest_join_depth_then_task_id_v1"
+    selection_rule: Literal["highest_join_depth_distinct_database_then_task_id_v2"] = (
+        "highest_join_depth_distinct_database_then_task_id_v2"
     )
 
     @model_validator(mode="after")
@@ -512,9 +514,18 @@ def build_pilot_calibration_spec(manifest: FormalManifestV2) -> PilotCalibration
         manifest.tasks,
         key=lambda task: (-task.join_depth, task.task_id.encode("utf-8")),
     )
-    if len(ranked) < 2:
-        raise ValueError("pilot calibration requires at least two frozen tasks")
-    return PilotCalibrationSpec(task_ids=(ranked[0].task_id, ranked[1].task_id))
+    selected: list[str] = []
+    selected_databases: set[str] = set()
+    for task in ranked:
+        if task.database_id in selected_databases:
+            continue
+        selected.append(task.task_id)
+        selected_databases.add(task.database_id)
+        if len(selected) == 2:
+            break
+    if len(selected) < 2:
+        raise ValueError("pilot calibration requires tasks from two distinct databases")
+    return PilotCalibrationSpec(task_ids=(selected[0], selected[1]))
 
 
 def load_pilot_calibration_spec(
