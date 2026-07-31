@@ -160,7 +160,7 @@ def build_review_bundle(
                 "tasks_per_database": tasks_per_database,
                 "uses_joinlint_output": False,
                 "train_confirmatory_database": TRAIN_CONFIRMATORY_DATABASE,
-                "reserved_pilot_databases": ["citeseer", "genes", "trains"],
+                "reserved_pilot_databases": ["citeseer", "trains"],
                 "gold_execution_deadline_seconds": 5,
                 "gold_execution_max_rows": 10_000,
                 "selection_seed": SELECTION_SEED,

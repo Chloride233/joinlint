@@ -141,14 +141,14 @@ cache-hit, uncached-input, cache-write, and output usage. Cache reads can be
 cheap in CNY while still consuming the Inspect context limit; both facts are
 reported rather than collapsed into one token number.
 
-Pilot dataset v3 excludes four BIRD Train tasks whose question and gold SQL
+Pilot dataset v4 excludes four BIRD Train tasks whose question and gold SQL
 conflict or admit materially different entity sets: `citeseer-04142`,
-`citeseer-04143`, `citeseer-04150`, and `trains-00698`.
-The exclusions and stable reasons are frozen in the source manifest. They were
-found during diagnostic calibration, so the v1/v2 calibrations are retained as
-failed diagnostics and are never combined with v3 or confirmatory results. The
-remaining allocation is selected again by the unchanged deterministic rule;
-no JoinLint output is used to choose replacements.
+`citeseer-04143`, `citeseer-04150`, and `trains-00698`. It also drops the
+`genes` database entirely because none of its declared-FK tasks have an entity
+with a stable unique grain, so JoinLint Stage 1 cannot certify a Join Proof for
+them. The frozen allocation is `citeseer` 9 and `trains` 11, selected by the
+unchanged deterministic rule after the ground-truth exclusions and the
+grain-provable oracle gate; no JoinLint output is used to choose replacements.
 
 ## Bounded independent pilot
 

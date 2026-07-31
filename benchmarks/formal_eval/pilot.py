@@ -43,9 +43,9 @@ from benchmarks.formal_eval.manifest import (
 from benchmarks.formal_eval.run_plan import RunPlanV2, RunSpec, sample_id_for
 
 
-PILOT_DATASET_RELEASE = "bird-train-2023-07-11-declared-fk-pilot-v3"
-PILOT_ALLOCATION = {"citeseer": 8, "genes": 4, "trains": 8}
-PILOT_DOMAINS = {"citeseer": "research", "genes": "biology", "trains": "transportation"}
+PILOT_DATASET_RELEASE = "bird-train-2023-07-11-declared-fk-pilot-v4"
+PILOT_ALLOCATION = {"citeseer": 9, "trains": 11}
+PILOT_DOMAINS = {"citeseer": "research", "trains": "transportation"}
 PILOT_GROUND_TRUTH_EXCLUSIONS = {
     "bird-train-citeseer-04142": "question_requests_other_paper_but_gold_returns_source_paper_words",
     "bird-train-citeseer-04143": "question_ambiguously_invokes_cites_table_but_gold_uses_content_only",
@@ -155,7 +155,7 @@ class PilotCalibrationSpec(StrictModel):
 def frozen_pilot_registration(commit: str) -> PilotRegistration:
     observed_at = date(2026, 7, 26)
     return PilotRegistration(
-        evaluation_id="joinlint-deepseek-modal-pilot-v3",
+        evaluation_id="joinlint-deepseek-modal-pilot-v4",
         dataset_release=PILOT_DATASET_RELEASE,
         seed=20260727,
         models=(
@@ -313,13 +313,14 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
                 database_ids=(database_id,),
                 tasks_per_database=count,
                 database_paths={database_id: database_paths[database_id]},
+                require_grain_provable=True,
             )
         )
     selected.sort(key=lambda task: task["task_id"].encode("utf-8"))
     if len(selected) != 20 or dict(
         Counter(task["database_id"] for task in selected)
     ) != PILOT_ALLOCATION:
-        raise ValueError("pilot allocation is not the frozen 8/4/8 selection")
+        raise ValueError("pilot allocation is not the frozen 9/11 selection")
     near_pairs = Counter(
         (task["question_template_id"], task["sql_structure_id"]) for task in selected
     )

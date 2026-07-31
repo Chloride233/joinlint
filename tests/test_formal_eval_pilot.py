@@ -17,6 +17,7 @@ from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.manifest import verify_input_lock
 from benchmarks.formal_eval.pilot import (
     PILOT_DATASET_RELEASE,
+    PILOT_ALLOCATION,
     PILOT_GROUND_TRUTH_EXCLUSIONS,
     _input_lock,
     budget_envelope,
@@ -65,8 +66,9 @@ COMMIT = "a" * 40
 LINEAGE_ID = "b" * 64
 
 
-def test_pilot_v3_freezes_diagnostic_ground_truth_exclusions() -> None:
-    assert PILOT_DATASET_RELEASE.endswith("pilot-v3")
+def test_pilot_v4_freezes_diagnostic_ground_truth_exclusions() -> None:
+    assert PILOT_DATASET_RELEASE.endswith("pilot-v4")
+    assert PILOT_ALLOCATION == {"citeseer": 9, "trains": 11}
     assert PILOT_GROUND_TRUTH_EXCLUSIONS == {
         "bird-train-citeseer-04142": (
             "question_requests_other_paper_but_gold_returns_source_paper_words"
