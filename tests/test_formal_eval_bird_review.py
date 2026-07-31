@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import sqlite3
 
-from benchmarks.formal_eval.bird_review import reviewer_template, select_review_candidates
+from benchmarks.formal_eval.bird_review import (
+    grain_provable,
+    reviewer_template,
+    select_review_candidates,
+)
 
 
 def test_review_selection_is_deterministic_and_does_not_prefer_fk_support() -> None:
@@ -95,6 +100,57 @@ def test_reviewer_template_omits_machine_graphs_and_fk_support() -> None:
         "annotation",
     }
     assert serialized_task["annotation"]["physical_join_graph"] == []
+
+
+def test_grain_provable_requires_a_unique_expected_entity(tmp_path: Path) -> None:
+    database = tmp_path / "genes-like.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE Classification ("
+            "GeneID TEXT NOT NULL PRIMARY KEY, Localization TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE Genes (GeneID TEXT NOT NULL REFERENCES Classification(GeneID), "
+            "Chromosome INTEGER NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO Classification VALUES ('g1','plasma'),('g2','nucleus'),('g3','plasma')"
+        )
+        connection.execute(
+            "INSERT INTO Genes VALUES ('g1',1),('g1',2),('g2',3),('g3',4),('g3',5),('g3',6)"
+        )
+
+    assert grain_provable(
+        database,
+        [("Classification.GeneID", "Genes.GeneID")],
+    ) is False
+    assert grain_provable(
+        database,
+        [("Genes.GeneID", "Classification.GeneID")],
+    ) is False
+
+
+def test_grain_provable_accepts_many_to_one_from_unique_child_grain(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "orders-like.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE customers (id INTEGER NOT NULL PRIMARY KEY, name TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE orders (id INTEGER NOT NULL PRIMARY KEY, "
+            "customer_id INTEGER NOT NULL REFERENCES customers(id))"
+        )
+        connection.execute("INSERT INTO customers VALUES (1,'a'),(2,'b')")
+        connection.execute(
+            "INSERT INTO orders VALUES (10,1),(11,1),(12,2),(13,1)"
+        )
+
+    assert grain_provable(
+        database,
+        [("orders.customer_id", "customers.id")],
+    ) is True
 
 
 def _task(database_id: str, index: int, *, depth: int) -> dict[str, object]:

@@ -64,7 +64,7 @@ def plan_join(
         entity_definitions,
     ):
         raise JoinLintError(
-            "GRAIN_INCOMPATIBLE",
+            "GRAIN_UNPROVABLE",
             "expected grain has no stable unique key",
             3,
             affected_refs=(expected,),

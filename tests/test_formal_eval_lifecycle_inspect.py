@@ -87,6 +87,62 @@ def test_infrastructure_failure_never_creates_normal_agent_result() -> None:
     assert "join_correct_task_completion" not in score.metadata
 
 
+def test_model_limit_score_keeps_the_treatment_tool_trace() -> None:
+    record = readiness_passed(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=0,
+        now=NOW,
+    )
+    record = start_evaluation(record, now=NOW)
+    record = fail_evaluation(
+        record,
+        reason=LifecycleFailureReason.MODEL_LIMIT,
+        duration_seconds=2,
+        now=NOW,
+    )
+    state = _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
+    state.metadata = {
+        "condition": "treatment",
+        "expected_entities": ["cars"],
+    }
+    state.messages = [
+        ChatMessageAssistant(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="plan-1",
+                    function="mcp__JoinLint__get_join_plan",
+                    arguments={
+                        "entity_refs": [{"ref": "cars", "entity": "cars"}],
+                        "start_ref": "cars",
+                        "expected_grain_ref": "cars",
+                    },
+                )
+            ],
+        ),
+        ChatMessageTool(
+            content=(
+                "Wall time: 0.005 seconds\nOutput:\n"
+                '{"schema_version":3,"command":"get_join_plan","status":"inconclusive",'
+                '"data":null,"findings":[],"error":{"code":"GRAIN_UNPROVABLE",'
+                '"message":"GRAIN_UNPROVABLE","guidance":{"retryable":false,'
+                '"next_action":"stop","affected_refs":["cars"]}}}'
+            ),
+            tool_call_id="plan-1",
+            function="mcp__JoinLint__get_join_plan",
+        ),
+    ]
+
+    score = asyncio.run(inspect_task.formal_join_scorer()(state, Target("SELECT 1")))
+
+    assert score.value == 0
+    assert score.metadata["failure_code"] == "MODEL_LIMIT"
+    trace = score.metadata["trace"]
+    assert trace["plan_called"] is True
+    assert trace["plan_usable"] is False
+    assert trace["failure_code"] == "PLAN_INCONCLUSIVE"
+
+
 def test_evaluation_wrapper_becomes_eligible_only_after_first_model_boundary() -> None:
     state = _ready_state()
     init_subtask_store(state.store)

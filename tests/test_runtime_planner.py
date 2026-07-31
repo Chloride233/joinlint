@@ -235,7 +235,43 @@ def test_expected_grain_requires_a_non_null_unique_key() -> None:
             entity_definitions=definitions,
         )
 
-    assert captured.value.code == "GRAIN_INCOMPATIBLE"
+    assert captured.value.code == "GRAIN_UNPROVABLE"
+
+
+def test_unprovable_expected_grain_is_not_rescued_by_another_unique_entity() -> None:
+    graph = (authorized("a" * 64, "sales.orders", "sales.customers", max_children=2),)
+    definitions = (
+        EntityDefinition(
+            entity_id="sales.orders",
+            source_id="sales",
+            physical_name="orders",
+            columns=(ColumnDefinition(name="customer_id", physical_type="integer", nullable=True),),
+        ),
+        EntityDefinition(
+            entity_id="sales.customers",
+            source_id="sales",
+            physical_name="customers",
+            columns=(ColumnDefinition(name="id", physical_type="integer", nullable=False),),
+            primary_key=("id",),
+            unique_keys=(("id",),),
+        ),
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        plan_join(
+            (
+                EntityRef(ref="orders", entity="sales.orders"),
+                EntityRef(ref="customers", entity="sales.customers"),
+            ),
+            "orders",
+            "orders",
+            4,
+            False,
+            graph,
+            entity_definitions=definitions,
+        )
+
+    assert captured.value.code == "GRAIN_UNPROVABLE"
 
 
 def test_planner_preserves_composite_relationship_grouping() -> None:

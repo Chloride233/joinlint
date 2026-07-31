@@ -261,8 +261,13 @@ additional Train databases without making a developer machine a runner:
    disk. The source size, ETag, nested-member size, and nested-member CRC are
    checked before use; a complete SHA-256 is recorded after download.
 3. Qualification uses only frozen BIRD SQL structure: one to four supported
-   equality joins, deterministic SQLGlot parsing, and at least five eligible
-   tasks per selected database. It never reads JoinLint output.
+   equality joins, deterministic SQLGlot parsing, at least five eligible tasks
+   per selected database, and a physical grain-preserving join path derived
+   from the frozen database's declared foreign keys and unique keys. A task
+   whose expected grain entity has no stable unique key, or whose only path
+   fans out from every unique-key entity, is ineligible even when its gold SQL
+   executes, because JoinLint Stage 1 cannot certify a Join Proof for it.
+   Qualification never reads JoinLint output.
 4. The remote Volume receives only selected SQLite files, matching task/schema
    metadata, and `source-manifest.json`. GitHub rechecks every hash and SQLite
    file before creating the access-controlled seven-day artifact, then removes the

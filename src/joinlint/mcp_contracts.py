@@ -268,6 +268,7 @@ _NEXT_ACTION_BY_CODE: dict[str, NextAction] = {
     "SOURCE_CHANGED_DURING_SCAN": "replan",
     "INCONCLUSIVE_SCAN": "replan",
     "EVIDENCE_UNVERIFIABLE": "replan",
+    "GRAIN_UNPROVABLE": "stop",
     "GRAIN_INCOMPATIBLE": "change_expected_grain",
     "REQUEST_TOO_LARGE": "reduce_request",
     "RESOURCE_LIMIT_EXCEEDED": "reduce_request",

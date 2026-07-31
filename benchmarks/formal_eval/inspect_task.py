@@ -411,12 +411,47 @@ def formal_host_context_scorer() -> Scorer:
     return score
 
 
+def _forced_trace(state: TaskState) -> dict[str, Any] | None:
+    try:
+        metadata = state.metadata or {}
+        condition = metadata.get("condition")
+        if condition not in {"treatment", "oracle_mcp", "no_harness"}:
+            return None
+        try:
+            submission = _extract_submission_tool_call(state.messages)
+            sql = submission.sql
+            submitted = bool(sql)
+        except ValueError:
+            sql = ""
+            submitted = False
+        try:
+            schema = metadata.get("schema") or {}
+            edges = set(extract_join_edges(sql, schema)) if submitted and sql else set()
+        except (KeyError, ValueError):
+            edges = set()
+        trace = assess_trace(
+            _tool_events(state.messages),
+            expected_entities=set(metadata.get("expected_entities") or []),
+            final_sql=sql,
+            final_edges=edges,
+            submitted_sql=submitted,
+        )
+        return trace.model_dump(mode="json")
+    except Exception:
+        return None
+
+
 @scorer(metrics=[mean()])
 def formal_join_scorer() -> Scorer:
     async def score(state: TaskState, target: Target) -> Score:
         del target
         blocked = _lifecycle_score(state)
         if blocked is not None:
+            blocked_trace = _forced_trace(state)
+            if blocked_trace is not None:
+                merged = {k: v for k, v in blocked.metadata.items()}
+                merged["trace"] = blocked_trace
+                blocked = Score(value=blocked.value, metadata=merged)
             return blocked
         metadata = state.metadata or {}
         condition = str(metadata["condition"])

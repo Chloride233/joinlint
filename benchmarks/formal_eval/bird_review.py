@@ -5,6 +5,7 @@ import json
 import hashlib
 import os
 import shutil
+import sqlite3
 import uuid
 import zipfile
 from collections import defaultdict
@@ -145,6 +146,7 @@ def build_review_bundle(
             database_ids=(*dev_ids, TRAIN_CONFIRMATORY_DATABASE),
             tasks_per_database=tasks_per_database,
             database_paths=database_paths,
+            require_grain_provable=True,
         )
         if not all(task["all_edges_declared_fk"] for task in selected):
             raise ValueError("confirmatory selection contains an undeclared edge")
@@ -302,6 +304,7 @@ def select_executable_candidates(
     database_ids: Iterable[str],
     tasks_per_database: int,
     database_paths: dict[str, Path],
+    require_grain_provable: bool = False,
 ) -> list[dict[str, Any]]:
     remaining = {database_id: list(values) for database_id, values in candidates.items()}
     while True:
@@ -312,6 +315,12 @@ def select_executable_candidates(
         )
         failed: set[str] = set()
         for task in selected:
+            if require_grain_provable and not grain_provable(
+                database_paths[task["database_id"]],
+                task["physical_join_graph"],
+            ):
+                failed.add(task["task_id"])
+                continue
             result = execute_readonly(
                 database_paths[task["database_id"]],
                 task["gold_sql"],
@@ -429,6 +438,191 @@ def _foreign_key_edges(metadata: dict[str, Any]) -> frozenset[tuple[str, str]]:
         canonical_edge(_column_endpoint(metadata, left), _column_endpoint(metadata, right))
         for left, right in metadata["foreign_keys"]
     )
+
+
+def grain_provable(database_path: Path, graph: Iterable[tuple[str, str]]) -> bool:
+    """Return whether a Stage-1 style grain-preserving Join Proof could exist.
+
+    The check mirrors JoinLint's planner conservatively: there must be an
+    entity with a stable unique key that can span every requested table while
+    every traversal step away from that entity preserves the grain.
+    It is computed directly from the frozen database and declared foreign keys,
+    not from JoinLint output.
+    """
+    edges = [canonical_edge(*edge) for edge in graph]
+    if not edges:
+        return False
+    tables = sorted({endpoint.rsplit(".", 1)[0] for edge in edges for endpoint in edge})
+    connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    try:
+        unique_keys = {
+            table: _stable_unique_key(connection, table)
+            for table in tables
+        }
+        relationships = [
+            relationship
+            for table in tables
+            for relationship in _foreign_key_relationships(connection, table)
+            if relationship["child_table"] in tables
+            and relationship["parent_table"] in tables
+        ]
+        if not relationships:
+            return False
+        for expected in tables:
+            if not unique_keys[expected]:
+                continue
+            if _grain_spanning_tree(
+                expected,
+                tables,
+                relationships,
+                child_matches=_group_max_count(
+                    connection, relationships, table_field="child_table", column_field="child_column"
+                ),
+                parent_duplicates=_group_max_count(
+                    connection, relationships, table_field="parent_table", column_field="parent_column"
+                ),
+                child_to_parent_unique=_unique_parent_map(connection, relationships),
+            ):
+                return True
+        return False
+    finally:
+        connection.close()
+
+
+def _stable_unique_key(connection: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    quoted = f'"{table}"'
+    info = connection.execute(f"PRAGMA table_info({quoted})").fetchall()
+    nullables = {row[1] for row in info if not row[3]}
+    pk_columns = tuple(
+        column
+        for column, _ in sorted(
+            ((row[1], row[5]) for row in info if row[5]),
+            key=lambda pair: pair[1],
+        )
+    )
+    candidate: tuple[str, ...] = ()
+    if pk_columns and not (set(pk_columns) & nullables):
+        candidate = pk_columns
+    for index in connection.execute(f"PRAGMA index_list({quoted})").fetchall():
+        if not index[2]:
+            continue
+        columns = tuple(
+            row[2]
+            for row in connection.execute(
+                f"PRAGMA index_info(\"{index[1]}\")"
+            ).fetchall()
+            if row[2] is not None
+        )
+        if not columns:
+            continue
+        if set(columns) & nullables:
+            continue
+        if not candidate or len(columns) < len(candidate):
+            candidate = columns
+    return candidate
+
+
+def _foreign_key_relationships(
+    connection: sqlite3.Connection,
+    table: str,
+) -> list[dict[str, str]]:
+    relationships: list[dict[str, str]] = []
+    for row in connection.execute(f'PRAGMA foreign_key_list("{table}")').fetchall():
+        if row[2] is None or row[3] is None or row[4] is None:
+            continue
+        relationships.append(
+            {
+                "child_table": table,
+                "child_column": row[3],
+                "parent_table": row[2],
+                "parent_column": row[4],
+            }
+        )
+    return relationships
+
+
+def _unique_parent_map(
+    connection: sqlite3.Connection,
+    relationships: list[dict[str, str]],
+) -> dict[tuple[str, str, str, str], bool]:
+    result: dict[tuple[str, str, str, str], bool] = {}
+    for relationship in relationships:
+        parent = relationship["parent_table"]
+        key = _stable_unique_key(connection, parent)
+        result[_relationship_key(relationship)] = key == (relationship["parent_column"],)
+    return result
+
+
+def _group_max_count(
+    connection: sqlite3.Connection,
+    relationships: list[dict[str, str]],
+    *,
+    table_field: str,
+    column_field: str,
+) -> dict[tuple[str, str, str, str], int]:
+    result: dict[tuple[str, str, str, str], int] = {}
+    for relationship in relationships:
+        table = relationship[table_field]
+        column = relationship[column_field]
+        row = connection.execute(
+            f'SELECT MAX(cnt) FROM (SELECT "{column}" AS key, COUNT(*) AS cnt '
+            f'FROM "{table}" WHERE "{column}" IS NOT NULL GROUP BY key)'
+        ).fetchone()
+        result[_relationship_key(relationship)] = int(row[0] or 0)
+    return result
+
+
+def _relationship_key(
+    relationship: dict[str, str],
+) -> tuple[str, str, str, str]:
+    return (
+        relationship["child_table"],
+        relationship["child_column"],
+        relationship["parent_table"],
+        relationship["parent_column"],
+    )
+
+
+def _grain_spanning_tree(
+    expected: str,
+    tables: list[str],
+    relationships: list[dict[str, str]],
+    *,
+    child_matches: dict[tuple[str, str, str, str], int],
+    parent_duplicates: dict[tuple[str, str, str, str], int],
+    child_to_parent_unique: dict[tuple[str, str, str, str], bool],
+) -> bool:
+    adjacency: dict[str, list[tuple[str, dict[str, str], int]]] = {
+        table: [] for table in tables
+    }
+    for relationship in relationships:
+        key = _relationship_key(relationship)
+        parent_to_child = child_matches[key]
+        child_to_parent = (
+            1
+            if child_to_parent_unique.get(key, False)
+            else parent_duplicates[key]
+        )
+        adjacency[relationship["child_table"]].append(
+            (relationship["parent_table"], relationship, child_to_parent)
+        )
+        adjacency[relationship["parent_table"]].append(
+            (relationship["child_table"], relationship, parent_to_child)
+        )
+
+    def visit(current: str, connected: set[str]) -> bool:
+        if len(connected) == len(tables):
+            return True
+        for neighbor, _relationship, matches in adjacency[current]:
+            if neighbor in connected:
+                continue
+            if matches > 1:
+                continue
+            if visit(neighbor, connected | {neighbor}):
+                return True
+        return False
+
+    return visit(expected, {expected})
 
 
 def _column_endpoint(metadata: dict[str, Any], column_index: int) -> str:
