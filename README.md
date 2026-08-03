@@ -85,9 +85,13 @@ evidence, or plan identity.
 `get_join_plan` accepts 2–8 request-local entity instances and returns at most
 four hops of current, exact, authorized physical relationships. If no safe
 path exists it returns `inconclusive`, never uncertain predicates. It
-distinguishes a missing authorized path (`NO_VERIFIED_PATH`) from an unsafe
-requested grain (`GRAIN_INCOMPATIBLE`) and compound fan-out
-(`COMPOUND_FANOUT`) so an Agent can stop instead of retrying equivalent plans.
+distinguishes a missing authorized path (`NO_VERIFIED_PATH`) from a request
+that contains references outside its dominant connected component
+(`UNCONNECTED_ENTITY_REF`), an unsafe requested grain
+(`GRAIN_INCOMPATIBLE`), and compound fan-out (`COMPOUND_FANOUT`) so an Agent
+can stop instead of retrying equivalent plans. `UNCONNECTED_ENTITY_REF` is
+retryable only after the Agent confirms the affected reference is not needed
+and sends one changed request; it never authorizes an unchanged retry.
 
 `validate_sql` parses one SQLite `SELECT`/`WITH`, normalizes aliases, CTEs,
 subqueries, self joins, composite predicates, INNER/LEFT joins, and WHERE
@@ -102,8 +106,9 @@ Every non-OK error and blocking finding also carries bounded recovery guidance:
 
 - `retryable` means the tool may be called again only after applying
   `next_action`; it never authorizes retrying an unchanged request;
-- `next_action` is one stable action such as `replan`, `revise_sql`,
-  `specify_source`, `change_expected_grain`, `reduce_request`, or `stop`;
+- `next_action` is one stable action such as `replan`, `fix_entity_refs`,
+  `revise_sql`, `specify_source`, `change_expected_grain`, `reduce_request`,
+  or `stop`;
 - `affected_refs` and `blocking_relationship_ids` contain only sanitized,
   bounded identifiers;
 - `stop` means the Agent must not execute the SQL or retry the same operation.
