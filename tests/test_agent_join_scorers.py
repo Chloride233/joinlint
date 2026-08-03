@@ -49,6 +49,15 @@ def test_cte_preserves_a_physical_join_inside_the_cte() -> None:
     assert edges == frozenset({EDGE})
 
 
+def test_derived_projection_preserves_a_physical_outer_join() -> None:
+    edges = extract_join_edges(
+        "SELECT t.direction FROM (SELECT DISTINCT train_id FROM cars) AS c "
+        "JOIN trains AS t ON t.id = c.train_id",
+        {"cars": {"train_id": "INTEGER"}, "trains": {"id": "INTEGER", "direction": "TEXT"}},
+    )
+    assert edges == frozenset({("cars.train_id", "trains.id")})
+
+
 def test_constants_and_same_physical_table_do_not_create_edges() -> None:
     assert extract_join_edges("SELECT * FROM orders WHERE id = 10", SCHEMA) == frozenset()
     assert (

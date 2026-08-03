@@ -94,9 +94,13 @@ def create_server(
         not prove query correctness. expected_grain_ref is the instance whose
         unique key must remain one row per output row before aggregation. In a
         many-to-one join, the referencing child usually preserves that grain;
-        aggregation, DISTINCT, and GROUP BY do not restore grain in Stage 1.
+        for a child-row count or other aggregate, use that child as the
+        pre-aggregation grain even when the result is grouped by its parent.
+        Aggregation, DISTINCT, and GROUP BY do not restore grain in Stage 1.
         If planning is inconclusive, apply error.guidance.next_action. Do not
-        invent an edge or retry the unchanged request.
+        invent an edge or retry the unchanged request. A GRAIN_INCOMPATIBLE
+        result may be corrected by changing only expected_grain_ref after
+        checking the intended pre-aggregation row grain.
         UNCONNECTED_ENTITY_REF permits one changed request only after you
         confirm the affected reference is not required by the intended query.
         """

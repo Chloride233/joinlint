@@ -92,6 +92,9 @@ that contains references outside its dominant connected component
 can stop instead of retrying equivalent plans. `UNCONNECTED_ENTITY_REF` is
 retryable only after the Agent confirms the affected reference is not needed
 and sends one changed request; it never authorizes an unchanged retry.
+`GRAIN_INCOMPATIBLE` is corrective only: after checking the intended
+pre-aggregation row grain, an Agent may send one request changing only
+`expected_grain_ref`.
 
 `validate_sql` parses one SQLite `SELECT`/`WITH`, normalizes aliases, CTEs,
 subqueries, self joins, composite predicates, INNER/LEFT joins, and WHERE
