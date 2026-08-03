@@ -407,11 +407,13 @@ def test_pilot_task_ids_accept_inspect_list_normalization() -> None:
     )
 
 
-def test_treatment_harness_is_single_plan_and_fail_closed() -> None:
+def test_treatment_harness_is_bounded_and_fail_closed() -> None:
     assert "first tool call must be JoinLint get_join_plan" in inspect_task.HARNESS_PROMPT
-    assert "Call get_join_plan exactly once" in inspect_task.HARNESS_PROMPT
+    assert "Call get_join_plan once" in inspect_task.HARNESS_PROMPT
+    assert "exactly one changed replan" in inspect_task.HARNESS_PROMPT
     assert "submit empty SQL" in inspect_task.HARNESS_PROMPT
     assert "GRAIN_INCOMPATIBLE" in inspect_task.HARNESS_PROMPT
+    assert "UNCONNECTED_ENTITY_REF" in inspect_task.HARNESS_PROMPT
 
 
 def test_host_context_profile_disables_unneeded_builtin_tools() -> None:

@@ -202,6 +202,39 @@ def test_empty_graph_is_no_verified_path_not_cross_source() -> None:
     assert captured.value.code == "NO_VERIFIED_PATH"
 
 
+def test_planner_identifies_refs_disconnected_from_a_dominant_component() -> None:
+    graph = (authorized("a" * 64, "sales.orders", "sales.customers", max_children=2),)
+    refs = (
+        EntityRef(ref="orders", entity="sales.orders"),
+        EntityRef(ref="customers", entity="sales.customers"),
+        EntityRef(ref="orphan", entity="sales.orphan"),
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        plan_join(refs, "orphan", "orphan", 4, False, graph)
+
+    assert captured.value.code == "UNCONNECTED_ENTITY_REF"
+    assert captured.value.affected_refs == ("orphan",)
+
+
+def test_planner_keeps_equal_disconnected_components_inconclusive() -> None:
+    graph = (
+        authorized("a" * 64, "sales.orders", "sales.customers", max_children=2),
+        authorized("c" * 64, "sales.items", "sales.suppliers", max_children=2),
+    )
+    refs = (
+        EntityRef(ref="orders", entity="sales.orders"),
+        EntityRef(ref="customers", entity="sales.customers"),
+        EntityRef(ref="items", entity="sales.items"),
+        EntityRef(ref="suppliers", entity="sales.suppliers"),
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        plan_join(refs, "orders", "orders", 4, False, graph)
+
+    assert captured.value.code == "NO_VERIFIED_PATH"
+
+
 def test_expected_grain_requires_a_non_null_unique_key() -> None:
     graph = (authorized("a" * 64, "sales.orders", "sales.customers", max_children=2),)
     definitions = (

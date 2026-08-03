@@ -84,6 +84,37 @@ def test_plan_reports_grain_incompatibility_separately_from_missing_path(
     assert response.error.guidance.affected_refs == ("customers",)
 
 
+def test_plan_identifies_an_unconnected_entity_ref(tmp_path: Path) -> None:
+    make_database(tmp_path / "data.sqlite")
+    connection = sqlite3.connect(tmp_path / "data.sqlite")
+    connection.execute("CREATE TABLE orphan(id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    server = create_server(tmp_path, ("data.sqlite",), cache_root=tmp_path / "cache")
+
+    result = asyncio.run(
+        server.call_tool(
+            "get_join_plan",
+            {
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                    {"ref": "orphan", "entity": "orphan"},
+                ],
+                "start_ref": "orphan",
+                "expected_grain_ref": "orphan",
+            },
+        )
+    )
+
+    response = GetJoinPlanResponse.model_validate(result[1])
+    assert response.status == "inconclusive"
+    assert response.error is not None
+    assert response.error.code == "UNCONNECTED_ENTITY_REF"
+    assert response.error.guidance.next_action == "fix_entity_refs"
+    assert response.error.guidance.affected_refs == ("orphan",)
+
+
 def test_two_call_flow_returns_current_proof_and_bound_validation(tmp_path: Path) -> None:
     make_database(tmp_path / "data.sqlite")
     cache = tmp_path / "cache"

@@ -94,9 +94,10 @@ def assess_trace(
             tool_error = True
             continue
         if response.status == "inconclusive":
-            plan_inconclusive = True
             if response.error is not None and response.error.code == "NO_VERIFIED_PATH":
                 no_verified_path = True
+            if not _permits_entity_ref_replan(response):
+                plan_inconclusive = True
         edges = _plan_edges(response)
         if (
             response.status == "ok"
@@ -206,6 +207,17 @@ def _planned_entities(arguments: dict[str, Any]) -> set[str]:
         if isinstance(value, dict) and isinstance(value.get("entity"), str)
     }
     return {str(value) for value in entities}
+
+
+def _permits_entity_ref_replan(response: PlanResponse) -> bool:
+    error = response.error
+    return bool(
+        response.status == "inconclusive"
+        and error is not None
+        and error.code == "UNCONNECTED_ENTITY_REF"
+        and error.guidance.retryable
+        and error.guidance.next_action == "fix_entity_refs"
+    )
 
 
 def _plan_edges(response: PlanResponse) -> set[Edge]:

@@ -77,6 +77,21 @@ def _plan_result(*, columns: tuple[list[str], list[str]] | None = None) -> dict[
     }
 
 
+def _unconnected_entity_ref_result() -> dict[str, object]:
+    return {
+        "schema_version": 3,
+        "command": "get_join_plan",
+        "status": "inconclusive",
+        "data": None,
+        "findings": [],
+        "error": {
+            "code": "UNCONNECTED_ENTITY_REF",
+            "message": "UNCONNECTED_ENTITY_REF",
+            "guidance": _guidance("fix_entity_refs", retryable=True),
+        },
+    }
+
+
 def _validation_result(
     *, blocking: bool = False, edges: list[list[str]] | None = None
 ) -> dict[str, object]:
@@ -167,6 +182,67 @@ def test_trace_requires_complete_plan_grounding_and_exact_final_validation() -> 
 
     assert result.mcp_grounded
     assert result.final_sql_validated
+    assert result.failure_code is None
+
+
+def test_trace_allows_a_grounded_replan_after_unconnected_entity_ref() -> None:
+    sql = "SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id"
+    events = [
+        ToolEvent(
+            kind="call",
+            call_id="first-plan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                    {"ref": "orphan", "entity": "orphan"},
+                ],
+                "start_ref": "orphan",
+            },
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="first-plan",
+            tool="get_join_plan",
+            result=_unconnected_entity_ref_result(),
+        ),
+        ToolEvent(
+            kind="call",
+            call_id="replan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                ],
+                "start_ref": "orders",
+            },
+        ),
+        ToolEvent(kind="result", call_id="replan", tool="get_join_plan", result=_plan_result()),
+        ToolEvent(
+            kind="call",
+            call_id="validate",
+            tool="validate_sql",
+            arguments={"sql": sql, "dialect": "sqlite", "plan_id": "1" * 64},
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="validate",
+            tool="validate_sql",
+            result=_validation_result(edges=[["customers.id", "orders.customer_id"]]),
+        ),
+    ]
+
+    result = assess_trace(
+        events,
+        expected_entities={"orders", "customers"},
+        final_sql=sql,
+        final_edges={canonical_edge("orders.customer_id", "customers.id")},
+        submitted_sql=True,
+    )
+
+    assert result.mcp_grounded
     assert result.failure_code is None
 
 

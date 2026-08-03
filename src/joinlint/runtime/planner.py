@@ -90,6 +90,14 @@ def plan_join(
     )
     safe_trees = search.safe_trees
     if not safe_trees and not search.has_tree:
+        unconnected_refs = _unconnected_refs(refs, candidates)
+        if unconnected_refs:
+            raise JoinLintError(
+                "UNCONNECTED_ENTITY_REF",
+                "one or more entity references are disconnected from the dominant request component",
+                3,
+                affected_refs=unconnected_refs,
+            )
         raise JoinLintError(
             "NO_VERIFIED_PATH",
             "no current authorized join proof exists",
@@ -264,6 +272,35 @@ def _search_spanning_trees(
         has_tree=has_tree,
         has_grain_compatible_tree=has_grain_compatible_tree,
     )
+
+
+def _unconnected_refs(
+    refs: dict[str, EntityRef],
+    candidates: tuple[CandidateEdge, ...],
+) -> tuple[str, ...]:
+    adjacency = {ref: set() for ref in refs}
+    for edge in candidates:
+        adjacency[edge.from_ref].add(edge.to_ref)
+        adjacency[edge.to_ref].add(edge.from_ref)
+
+    components: list[tuple[str, ...]] = []
+    remaining = set(refs)
+    while remaining:
+        pending = [min(remaining, key=str.encode)]
+        component: set[str] = set()
+        while pending:
+            ref = pending.pop()
+            if ref in component:
+                continue
+            component.add(ref)
+            pending.extend(adjacency[ref] - component)
+        remaining -= component
+        components.append(tuple(sorted(component, key=str.encode)))
+
+    components.sort(key=lambda component: (-len(component), tuple(ref.encode() for ref in component)))
+    if len(components) < 2 or len(components[0]) == len(components[1]):
+        return ()
+    return tuple(sorted((ref for component in components[1:] for ref in component), key=str.encode))
 
 
 def _check_candidate_budget(candidates: list[CandidateEdge]) -> None:

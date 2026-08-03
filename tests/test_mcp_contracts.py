@@ -34,6 +34,9 @@ def test_recovery_guidance_is_sorted_bounded_and_fail_closed() -> None:
     assert guidance.next_action == "revise_sql"
     assert guidance.affected_refs == ("customers", "orders")
     assert guidance.blocking_relationship_ids == ("1" * 64, "2" * 64)
+    unconnected = recovery_guidance("UNCONNECTED_ENTITY_REF", affected_refs=("cites",))
+    assert unconnected.retryable
+    assert unconnected.next_action == "fix_entity_refs"
     assert recovery_guidance("UNKNOWN_FUTURE_CODE").next_action == "stop"
     assert not recovery_guidance("UNKNOWN_FUTURE_CODE").retryable
 

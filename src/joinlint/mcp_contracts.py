@@ -261,6 +261,7 @@ _NEXT_ACTION_BY_CODE: dict[str, NextAction] = {
     "SOURCE_NOT_FOUND": "specify_source",
     "SOURCE_AMBIGUOUS": "specify_source",
     "ENTITY_NOT_FOUND": "fix_entity_refs",
+    "UNCONNECTED_ENTITY_REF": "fix_entity_refs",
     "UNKNOWN_ENTITY": "revise_sql",
     "PROOF_NOT_AVAILABLE": "replan",
     "PROOF_STALE": "replan",

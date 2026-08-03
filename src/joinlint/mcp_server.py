@@ -97,6 +97,8 @@ def create_server(
         aggregation, DISTINCT, and GROUP BY do not restore grain in Stage 1.
         If planning is inconclusive, apply error.guidance.next_action. Do not
         invent an edge or retry the unchanged request.
+        UNCONNECTED_ENTITY_REF permits one changed request only after you
+        confirm the affected reference is not required by the intended query.
         """
         return _response(
             "get_join_plan",
