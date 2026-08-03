@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from joinlint.errors import JoinLintError
 from joinlint.mcp_contracts import GetJoinPlanRequest, ValidateSQLRequest
 from joinlint.runtime.cache import RuntimeCache
 from joinlint.runtime.domain import EntityRef
@@ -74,6 +75,29 @@ def test_two_call_flow_reuses_one_snapshot(tmp_path: Path, monkeypatch: pytest.M
 
     assert validation.status == "ok"
     assert calls == 1
+
+
+def test_proof_bound_validation_rejects_a_different_expected_grain(tmp_path: Path) -> None:
+    make_database(tmp_path / "data.sqlite")
+    service = RuntimeService(
+        tmp_path,
+        ("data.sqlite",),
+        cache=RuntimeCache(tmp_path / "cache"),
+    )
+    plan = service.get_join_plan(plan_request())
+    assert plan.data is not None
+
+    with pytest.raises(JoinLintError) as captured:
+        service.validate_sql(
+            ValidateSQLRequest(
+                sql="SELECT * FROM orders o JOIN customers c ON o.customer_id = c.id",
+                plan_id=plan.data.proof.plan_id,
+                expected_grain_ref="customers",
+            )
+        )
+
+    assert captured.value.code == "INVALID_ARGUMENT"
+    assert captured.value.affected_refs == ("customers",)
 
 
 @pytest.mark.parametrize("wal", [False, True])

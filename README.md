@@ -100,7 +100,11 @@ pre-aggregation row grain, an Agent may send one request changing only
 subqueries, self joins, composite predicates, INNER/LEFT joins, and WHERE
 equalities, then checks the complete graph. A supplied stale proof returns
 `PROOF_STALE`; it is never silently downgraded to independent lint. Repair
-never rewrites SQL.
+never rewrites SQL. A proof-bound validation uses the immutable grain stored in
+the proof; an explicit different `expected_grain_ref` is rejected. A planning
+`GRAIN_INCOMPATIBLE` may therefore change the grain through one new plan, while
+a validation `GRAIN_INCOMPATIBLE` requires revising the SQL against the same
+proof.
 
 Every response carries explicit `validated_scope` and `not_validated_scope`.
 Every SQL validation attests `execution_count: 0`.

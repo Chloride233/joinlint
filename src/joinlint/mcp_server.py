@@ -127,8 +127,10 @@ def create_server(
     ) -> dict[str, object]:
         """Validate a SQL join graph without executing SQL or judging answer correctness.
 
-        Execute SQL only when status is ok. For findings or errors, apply the
-        bounded guidance next_action; stop means do not execute or retry.
+        With plan_id, the proof's expected grain is immutable; omit
+        expected_grain_ref or pass the same ref. Execute SQL only when status
+        is ok. A non-ok response blocks the current SQL. Retry only after
+        applying a retryable bounded guidance action; stop means do not retry.
         """
         return _response(
             "validate_sql",
@@ -177,6 +179,7 @@ def _response(
                 status="findings",
                 findings=(
                     mcp_finding(
+                        "validate_sql",
                         RuntimeFinding(
                             code=error.code,
                             severity="blocking",

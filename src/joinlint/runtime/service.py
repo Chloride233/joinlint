@@ -165,11 +165,11 @@ class RuntimeService:
                     )
                 if (
                     request.expected_grain_ref is not None
-                    and request.expected_grain_ref not in {item.ref for item in proof.entity_refs}
+                    and request.expected_grain_ref != proof.expected_grain_ref
                 ):
                     raise JoinLintError(
                         "INVALID_ARGUMENT",
-                        "expected_grain_ref is not present in proof",
+                        "expected_grain_ref does not match proof",
                         2,
                         affected_refs=(request.expected_grain_ref,),
                     )
@@ -183,7 +183,7 @@ class RuntimeService:
                     context.graph,
                     context.catalog.entities,
                     proof=proof,
-                    expected_grain_ref=request.expected_grain_ref,
+                    expected_grain_ref=proof.expected_grain_ref,
                 )
             context, graph = self._normalize_without_proof(contexts, request, statement)
             return self._validation_response(
@@ -221,6 +221,7 @@ class RuntimeService:
         )
         response_findings = tuple(
             mcp_finding(
+                "validate_sql",
                 finding,
                 affected_refs=(
                     (requested_grain,)

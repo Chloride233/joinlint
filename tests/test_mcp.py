@@ -368,7 +368,7 @@ def test_grain_finding_identifies_only_contributing_relationships(tmp_path: Path
     assert response.status == "findings"
     finding = response.findings[0]
     assert finding.code == "GRAIN_INCOMPATIBLE"
-    assert finding.guidance.next_action == "change_expected_grain"
+    assert finding.guidance.next_action == "revise_sql"
     assert finding.guidance.affected_refs == ("customers",)
     assert len(finding.guidance.blocking_relationship_ids) == 1
 

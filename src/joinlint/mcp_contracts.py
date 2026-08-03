@@ -17,6 +17,7 @@ from joinlint.runtime.domain import (
 )
 
 
+MCPCommand = Literal["get_join_plan", "validate_sql"]
 MCPStatus = Literal["ok", "findings", "inconclusive", "error"]
 NextAction = Literal[
     "fix_request",
@@ -169,7 +170,7 @@ def not_validated_scope(*, proof_bound: bool) -> tuple[str, ...]:
 
 
 def error_response(
-    command: Literal["get_join_plan", "validate_sql"],
+    command: MCPCommand,
     code: str,
     *,
     inconclusive: bool,
@@ -183,6 +184,7 @@ def error_response(
             code=code,
             message=code,
             guidance=recovery_guidance(
+                command,
                 code,
                 affected_refs=affected_refs,
                 blocking_relationship_ids=blocking_relationship_ids,
@@ -196,6 +198,7 @@ def error_response(
 
 
 def mcp_finding(
+    command: MCPCommand,
     finding: RuntimeFinding,
     *,
     affected_refs: tuple[str, ...] = (),
@@ -206,6 +209,7 @@ def mcp_finding(
         severity=finding.severity,
         message=finding.code,
         guidance=recovery_guidance(
+            command,
             finding.code,
             affected_refs=affected_refs,
             blocking_relationship_ids=blocking_relationship_ids,
@@ -214,13 +218,17 @@ def mcp_finding(
 
 
 def recovery_guidance(
+    command: MCPCommand,
     code: str,
     *,
     affected_refs: tuple[str, ...] = (),
     blocking_relationship_ids: tuple[str, ...] = (),
     freshness_reason: FreshnessReason | None = None,
 ) -> RecoveryGuidance:
-    next_action = _NEXT_ACTION_BY_CODE.get(code, "stop")
+    next_action = _NEXT_ACTION_BY_COMMAND.get(command, {}).get(
+        code,
+        _NEXT_ACTION_BY_CODE.get(code, "stop"),
+    )
     return RecoveryGuidance(
         retryable=next_action != "stop",
         next_action=next_action,
@@ -284,6 +292,15 @@ _NEXT_ACTION_BY_CODE: dict[str, NextAction] = {
     "MISSING_JOIN_PREDICATE": "revise_sql",
     "UNSUPPORTED_JOIN_EDGE": "revise_sql",
     "PROOF_GRAPH_MISMATCH": "revise_sql",
+}
+
+_NEXT_ACTION_BY_COMMAND: dict[MCPCommand, dict[str, NextAction]] = {
+    "get_join_plan": {
+        "GRAIN_INCOMPATIBLE": "change_expected_grain",
+    },
+    "validate_sql": {
+        "GRAIN_INCOMPATIBLE": "revise_sql",
+    },
 }
 
 _FRESHNESS_BY_CODE: dict[str, FreshnessReason] = {
