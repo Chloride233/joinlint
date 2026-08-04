@@ -470,6 +470,7 @@ def test_treatment_harness_is_bounded_and_fail_closed() -> None:
     assert "GRAIN_INCOMPATIBLE" in inspect_task.HARNESS_PROMPT
     assert "UNCONNECTED_ENTITY_REF" in inspect_task.HARNESS_PROMPT
     assert "one changed SQL-only revision" in inspect_task.HARNESS_PROMPT
+    assert "A status ok is never a retry signal" in inspect_task.HARNESS_PROMPT
     assert "omit expected_grain_ref" in inspect_task.HARNESS_PROMPT
     assert "Never plan after validation" in inspect_task.HARNESS_PROMPT
     assert "execute_sql at most once" in inspect_task.HARNESS_PROMPT
