@@ -324,7 +324,7 @@ class PilotCalibrationReport(StrictModel):
             and self.resource_contract.token_accounting_ceiling_by_host
             != CALIBRATION_TOKEN_ACCOUNTING_CEILINGS
         ):
-            raise ValueError("schema v4 requires the frozen accounting ceilings")
+            raise ValueError("schema v4+ requires the frozen accounting ceilings")
         readiness = (
             calibration_readiness_status(
                 infrastructure=self.infrastructure,

@@ -115,19 +115,20 @@ model request, and a 150-second Modal sandbox. The formal workflow rejects an
 attestation unless these limits match its registration and the frozen budget
 envelope remains approved.
 
-Calibration schema v4 separates readiness evidence from the observed product
+Calibration schema v5 separates readiness evidence from the observed product
 outcome. Infrastructure attestation requires every model/host/task cell to
 prepare the selected host binary. Resource attestation records uncached input,
 cache read, cache write, output, Inspect-weighted usage, headroom, and frozen-price
 cost for every cell. It retains limit-censored product outcomes, while the schema
-v4 authorization check independently requires complete accounting inside the
+v5 authorization check independently requires complete accounting inside the
 frozen token/cost envelope. A message, turn, token, or time limit therefore remains
 an Agent outcome rather than becoming an infrastructure failure.
 Scoring-pipeline readiness requires both scorer artifacts even when the model
 never produced a parseable submission. Harness and scoring attestations remain
 product observations: they report planning, proof binding, MCP grounding,
-scoring eligibility, and parseability, but do not authorize or block the Pilot.
-Schema v4 authorizes only from infrastructure/resource/scoring-pipeline readiness
+protocol compliance and any bounded protocol-violation code, scoring eligibility,
+and parseability, but do not authorize or block the Pilot. Schema v5 authorizes
+only from infrastructure/resource/scoring-pipeline readiness
 and budget status, so a product failure cannot preselect tasks that already work.
 Schema v1-v3 artifacts remain parseable but cannot authorize the current Pilot.
 
