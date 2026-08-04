@@ -79,6 +79,8 @@ def test_exported_row_drops_sealed_inputs_and_transcripts() -> None:
         "final_sql_validated": True,
         "validation_passed": True,
         "mcp_grounded": True,
+        "protocol_compliant": True,
+        "protocol_violation": None,
         "blocking_applicable": False,
         "blocking_compliant": None,
         "bypassed": False,
@@ -153,6 +155,8 @@ def test_exported_row_drops_sealed_inputs_and_transcripts() -> None:
     assert payload["input_cache_read_tokens"] == 20
     assert payload["input_cache_write_tokens"] == 10
     assert payload["calculated_cost_cny"] == pytest.approx(0.0005705)
+    assert payload["protocol_compliant"] is True
+    assert payload["protocol_violation"] is None
     assert "SECRET" not in serialized
     assert "gold_sql" not in payload
     assert "database_path" not in payload

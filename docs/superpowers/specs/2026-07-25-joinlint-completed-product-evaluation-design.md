@@ -127,13 +127,13 @@ oracle-inline, oracle-through-MCP, and JoinLint-without-Harness diagnostics.
 Every treatment trace becomes this funnel:
 
 ```text
-eligible → plan called → plan usable → SQL grounded → validation called
+eligible → plan called → plan usable → protocol compliant → SQL grounded → final SQL validated
 → validation passed → join correct → execution correct
 ```
 
 Failures use only: `TOOL_NOT_CALLED`, `ENTITY_SET_INCOMPLETE`,
 `PLAN_INCONCLUSIVE`, `NO_VERIFIED_PATH`, `WRONG_PLAN`, `SQL_NOT_GROUNDED`,
-`VALIDATION_NOT_CALLED`, `VALIDATION_BLOCKED`, `AGENT_BYPASS`,
+`VALIDATION_NOT_CALLED`, `FINAL_SQL_NOT_VALIDATED`, `VALIDATION_BLOCKED`, `AGENT_BYPASS`,
 `SQL_PARSE_FAILED`, `EXECUTION_FAILED`, `MODEL_TIMEOUT`, `MODEL_LIMIT`, `MCP_TOOL_ERROR`,
 `GROUND_TRUTH_AMBIGUOUS`, and `INFRASTRUCTURE_FAILURE`.
 

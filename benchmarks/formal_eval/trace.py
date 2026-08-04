@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import model_validator
 
 from benchmarks.agent_join.sql_edges import canonical_edge
-from benchmarks.formal_eval.contracts import Edge, FailureCode, StrictModel
+from benchmarks.formal_eval.contracts import Edge, FailureCode, ProtocolViolation, StrictModel
 from joinlint.mcp_contracts import (
     GetJoinPlanResponse as PlanResponse,
 )
@@ -15,16 +15,6 @@ from joinlint.mcp_contracts import (
 
 
 ToolName = Literal["get_join_plan", "validate_sql"]
-ProtocolViolation = Literal[
-    "PLAN_AFTER_VALIDATION",
-    "PLAN_RETRY_LIMIT",
-    "PLAN_RETRY_NOT_ALLOWED",
-    "PLAN_RETRY_NOT_CHANGED",
-    "VALIDATION_BEFORE_PLAN_RESULT",
-    "VALIDATION_RETRY_LIMIT",
-    "VALIDATION_RETRY_NOT_ALLOWED",
-    "VALIDATION_RETRY_NOT_CHANGED",
-]
 
 
 class ToolEvent(StrictModel):
@@ -193,6 +183,8 @@ def assess_trace(
         failure = "AGENT_BYPASS"
     elif canonical_final and not canonical_final <= returned_edges:
         failure = "SQL_NOT_GROUNDED"
+    elif submitted_sql and validation_calls and not exact_validation_call:
+        failure = "FINAL_SQL_NOT_VALIDATED"
     elif submitted_sql and not exact_validation_call:
         failure = "VALIDATION_NOT_CALLED"
     elif blocking:

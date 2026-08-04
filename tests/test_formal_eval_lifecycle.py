@@ -45,6 +45,20 @@ def test_infrastructure_preparation_does_not_start_evaluation_or_pass_readiness(
     assert scoring_eligibility(record).eligible is False
 
 
+def test_infrastructure_retry_evidence_is_preserved() -> None:
+    record = infrastructure_prepared(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=61,
+        host_binary_sha256="a" * 64,
+        infrastructure_attempts=2,
+        infrastructure_retry_reason="readiness_timeout",
+        now=NOW,
+    )
+
+    assert record.infrastructure_attempts == 2
+    assert record.infrastructure_retry_reason == "readiness_timeout"
+
+
 def test_readiness_failure_is_scoring_ineligible() -> None:
     record = readiness_failed(
         new_lifecycle("codex", "0.144.1", now=NOW),

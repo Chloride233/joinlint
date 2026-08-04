@@ -220,6 +220,62 @@ def test_readiness_reports_sandbox_tools_failure(
         asyncio.run(inspect_task._run_readiness_probes("codex"))
 
 
+def test_infrastructure_readiness_retries_one_transient_pre_model_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    async def prepare(host: str, agent_version: str) -> str:
+        nonlocal attempts
+        del host, agent_version
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("sandbox_tools_readiness_failed")
+        return "a" * 64
+
+    async def probe(host: str) -> None:
+        del host
+
+    monkeypatch.setattr(inspect_task, "_prepare_host_binary", prepare)
+    monkeypatch.setattr(inspect_task, "_run_readiness_probes", probe)
+    state = _state(store={})
+
+    result = asyncio.run(
+        inspect_task.infrastructure_readiness("codex", "0.144.1", 1)(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 2
+    assert record.infrastructure_status == "pending"
+    assert record.infrastructure_attempts == 2
+    assert record.infrastructure_retry_reason == "sandbox_tools_readiness_failed"
+
+
+def test_infrastructure_readiness_does_not_retry_a_frozen_image_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    async def prepare(host: str, agent_version: str) -> str:
+        nonlocal attempts
+        del host, agent_version
+        attempts += 1
+        raise RuntimeError("host_binary_version_mismatch")
+
+    monkeypatch.setattr(inspect_task, "_prepare_host_binary", prepare)
+    state = _state(store={})
+
+    result = asyncio.run(
+        inspect_task.infrastructure_readiness("codex", "0.144.1", 1)(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 1
+    assert record.infrastructure_status == "failed"
+    assert record.infrastructure_attempts == 1
+    assert record.infrastructure_retry_reason is None
+
+
 def test_readiness_probes_the_selected_host_bridge_dependency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

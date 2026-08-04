@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from benchmarks.formal_eval.contracts import FailureCode, Host, StrictModel
 
@@ -60,11 +60,20 @@ class LifecycleRecord(StrictModel):
     host_binary_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     readiness_completed_at: datetime | None = None
     readiness_duration_seconds: float | None = Field(default=None, ge=0)
+    infrastructure_attempts: int = Field(default=1, ge=1, le=2)
+    infrastructure_retry_reason: str | None = Field(default=None, max_length=512)
     evaluation_started_at: datetime | None = None
     evaluation_completed_at: datetime | None = None
     evaluation_duration_seconds: float | None = Field(default=None, ge=0)
     failure_reason: LifecycleFailureReason | None = None
     failure_detail: str | None = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def require_retry_evidence(self) -> LifecycleRecord:
+        retried = self.infrastructure_attempts == 2
+        if retried != (self.infrastructure_retry_reason is not None):
+            raise ValueError("infrastructure retry evidence is inconsistent")
+        return self
 
     @property
     def scoring_eligible(self) -> bool:
@@ -112,6 +121,8 @@ def infrastructure_prepared(
     *,
     duration_seconds: float,
     host_binary_sha256: str,
+    infrastructure_attempts: int = 1,
+    infrastructure_retry_reason: str | None = None,
     now: datetime | None = None,
 ) -> LifecycleRecord:
     _require_phase(record, LifecyclePhase.INFRASTRUCTURE_PENDING)
@@ -122,6 +133,8 @@ def infrastructure_prepared(
             "infrastructure_preparation_duration_seconds": duration_seconds,
             "host_binary_sha256": host_binary_sha256,
             "readiness_started_at": prepared_at,
+            "infrastructure_attempts": infrastructure_attempts,
+            "infrastructure_retry_reason": infrastructure_retry_reason,
         }
     )
 
@@ -132,6 +145,8 @@ def readiness_failed(
     reason: LifecycleFailureReason = LifecycleFailureReason.READINESS_FAILED,
     detail: str | None = None,
     duration_seconds: float,
+    infrastructure_attempts: int = 1,
+    infrastructure_retry_reason: str | None = None,
     now: datetime | None = None,
 ) -> LifecycleRecord:
     _require_phase(record, LifecyclePhase.INFRASTRUCTURE_PENDING)
@@ -151,6 +166,8 @@ def readiness_failed(
             "readiness_duration_seconds": duration_seconds,
             "failure_reason": reason,
             "failure_detail": _bounded_detail(detail),
+            "infrastructure_attempts": infrastructure_attempts,
+            "infrastructure_retry_reason": infrastructure_retry_reason,
         }
     )
 

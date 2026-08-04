@@ -779,24 +779,30 @@ def infrastructure_readiness(
         record = new_lifecycle(host, agent_version)
         write_lifecycle(state.store, record)
         started = perf_counter()
-        try:
-            with fail_after(timeout_seconds):
-                host_binary_sha256 = await _prepare_host_binary(host, agent_version)
-                await _run_readiness_probes(host)
-        except TimeoutError:
+        retry_reason: str | None = None
+        attempts = 0
+        while attempts < 2:
+            attempts += 1
+            try:
+                with fail_after(timeout_seconds):
+                    host_binary_sha256 = await _prepare_host_binary(host, agent_version)
+                    await _run_readiness_probes(host)
+                break
+            except TimeoutError:
+                detail = "readiness_timeout"
+                retryable = True
+            except Exception as error:
+                detail = _safe_failure_detail(error)
+                retryable = _is_retryable_readiness_failure(error)
+            if attempts == 1 and retryable:
+                retry_reason = detail
+                continue
             record = readiness_failed(
                 record,
                 duration_seconds=perf_counter() - started,
-                detail="readiness_timeout",
-            )
-            write_lifecycle(state.store, record)
-            state.completed = True
-            return state
-        except Exception as error:
-            record = readiness_failed(
-                record,
-                duration_seconds=perf_counter() - started,
-                detail=_safe_failure_detail(error),
+                detail=detail,
+                infrastructure_attempts=attempts,
+                infrastructure_retry_reason=retry_reason,
             )
             write_lifecycle(state.store, record)
             state.completed = True
@@ -805,11 +811,20 @@ def infrastructure_readiness(
             record,
             duration_seconds=perf_counter() - started,
             host_binary_sha256=host_binary_sha256,
+            infrastructure_attempts=attempts,
+            infrastructure_retry_reason=retry_reason,
         )
         write_lifecycle(state.store, record)
         return state
 
     return solve
+
+
+def _is_retryable_readiness_failure(error: Exception) -> bool:
+    return str(error) in {
+        "host_bridge_dependency_or_database_readiness_failed",
+        "sandbox_tools_readiness_failed",
+    }
 
 
 @solver

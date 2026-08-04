@@ -250,6 +250,8 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
         "final_sql_validated": True,
         "validation_passed": True,
         "mcp_grounded": True,
+        "protocol_compliant": True,
+        "protocol_violation": None,
         "tool_error": False,
     }
     samples = []
@@ -300,6 +302,8 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
     assert scoring.status == "passed"
     assert len(infrastructure.cells) == len(resource.cells) == 8
     assert len(harness.cells) == len(scoring.cells) == 8
+    assert all(cell.protocol_compliant is True for cell in harness.cells)
+    assert all(cell.protocol_violation is None for cell in harness.cells)
     assert {summary.observed_cache_read_floor_tokens for summary in resource.hosts} == {
         43_008
     }
@@ -357,6 +361,15 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
     assert separated_report.status == "passed"
     assert separated_report.readiness_status == "passed"
     trace["plan_called"] = True
+
+    trace["protocol_compliant"] = False
+    _, _, failed_protocol, _ = attest_calibration_samples(
+        samples,
+        registration=registration,
+        task_ids=task_ids,
+    )
+    assert failed_protocol.status == "failed"
+    trace["protocol_compliant"] = True
 
     samples[0].scores["formal_join_scorer"].metadata["failure_code"] = "SQL_PARSE_FAILED"
     _, _, _, failed_scoring = attest_calibration_samples(

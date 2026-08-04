@@ -64,6 +64,7 @@ FailureCode = Literal[
     "WRONG_PLAN",
     "SQL_NOT_GROUNDED",
     "VALIDATION_NOT_CALLED",
+    "FINAL_SQL_NOT_VALIDATED",
     "VALIDATION_BLOCKED",
     "AGENT_BYPASS",
     "SQL_PARSE_FAILED",
@@ -73,6 +74,16 @@ FailureCode = Literal[
     "MCP_TOOL_ERROR",
     "GROUND_TRUTH_AMBIGUOUS",
     "INFRASTRUCTURE_FAILURE",
+]
+ProtocolViolation = Literal[
+    "PLAN_AFTER_VALIDATION",
+    "PLAN_RETRY_LIMIT",
+    "PLAN_RETRY_NOT_ALLOWED",
+    "PLAN_RETRY_NOT_CHANGED",
+    "VALIDATION_BEFORE_PLAN_RESULT",
+    "VALIDATION_RETRY_LIMIT",
+    "VALIDATION_RETRY_NOT_ALLOWED",
+    "VALIDATION_RETRY_NOT_CHANGED",
 ]
 Edge = tuple[str, str]
 
@@ -499,6 +510,8 @@ class AgentResultRow(StrictModel):
     complete_entity_planning: bool | None
     final_sql_validated: bool | None
     mcp_grounded: bool | None
+    protocol_compliant: bool | None
+    protocol_violation: ProtocolViolation | None
     blocking_applicable: bool | None
     blocking_compliant: bool | None
     bypassed: bool | None
@@ -530,6 +543,8 @@ class AgentResultRow(StrictModel):
             self.complete_entity_planning,
             self.final_sql_validated,
             self.mcp_grounded,
+            self.protocol_compliant,
+            self.protocol_violation,
             self.blocking_applicable,
             self.blocking_compliant,
             self.bypassed,
@@ -544,6 +559,7 @@ class AgentResultRow(StrictModel):
             self.complete_entity_planning,
             self.final_sql_validated,
             self.mcp_grounded,
+            self.protocol_compliant,
             self.blocking_applicable,
             self.bypassed,
             self.tool_error,
@@ -554,6 +570,8 @@ class AgentResultRow(StrictModel):
             self.blocking_applicable == (self.blocking_compliant is None)
         ):
             raise ValueError("blocking compliance must be present exactly when applicable")
+        if self.protocol_violation is not None and self.protocol_compliant:
+            raise ValueError("protocol violations require protocol noncompliance")
         if self.safe_abstention and (
             self.oracle_has_safe_path
             or self.submitted_sql
@@ -588,7 +606,7 @@ class AgentResultRow(StrictModel):
 
 
 class AgentResultBundle(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     lineage_id: str
     run_plan_sha256: str
     rows: tuple[AgentResultRow, ...]

@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from benchmarks.formal_eval.contracts import Host, InputLockV2, StrictModel
+from benchmarks.formal_eval.contracts import Host, InputLockV2, ProtocolViolation, StrictModel
 from benchmarks.formal_eval.dispatch import inspect_subprocess_environment
 from benchmarks.formal_eval.lifecycle import (
     LIFECYCLE_STORE_KEY,
@@ -205,6 +205,8 @@ class HarnessCell(StrictModel):
     final_sql_validated: bool
     validation_passed: bool
     mcp_grounded: bool
+    protocol_compliant: bool | None = None
+    protocol_violation: ProtocolViolation | None = None
     tool_error: bool
 
 
@@ -244,6 +246,7 @@ class HarnessAttestation(StrictModel):
             and cell.final_sql_validated
             and cell.validation_passed
             and cell.mcp_grounded
+            and cell.protocol_compliant is not False
             and not cell.tool_error
             for cell in self.cells
         )
@@ -272,7 +275,7 @@ class ScoringAttestation(StrictModel):
 
 
 class PilotCalibrationReport(StrictModel):
-    schema_version: Literal[1, 2, 3, 4] = 4
+    schema_version: Literal[1, 2, 3, 4, 5] = 5
     status: Literal["passed", "failed"]
     readiness_status: Literal["passed", "failed"] | None = None
     calibration_task_ids: tuple[str, str]
@@ -317,7 +320,7 @@ class PilotCalibrationReport(StrictModel):
         if self.resource is None:
             raise ValueError("schema v2+ requires a resource attestation")
         if (
-            self.schema_version == 4
+            self.schema_version >= 4
             and self.resource_contract.token_accounting_ceiling_by_host
             != CALIBRATION_TOKEN_ACCOUNTING_CEILINGS
         ):
@@ -347,6 +350,10 @@ class PilotCalibrationReport(StrictModel):
         expected_passed = legacy_passed if self.schema_version == 2 else readiness == "passed"
         if (self.status == "passed") != expected_passed:
             raise ValueError("pilot calibration report status is inconsistent")
+        if self.schema_version == 5 and any(
+            cell.protocol_compliant is None for cell in self.harness.cells
+        ):
+            raise ValueError("schema v5 requires protocol compliance evidence")
         return self
 
 
@@ -739,6 +746,12 @@ def attest_calibration_samples(
                 final_sql_validated=bool(trace.get("final_sql_validated")),
                 validation_passed=bool(trace.get("validation_passed")),
                 mcp_grounded=bool(trace.get("mcp_grounded")),
+                protocol_compliant=bool(trace.get("protocol_compliant")),
+                protocol_violation=(
+                    trace.get("protocol_violation")
+                    if isinstance(trace.get("protocol_violation"), str)
+                    else None
+                ),
                 tool_error=bool(trace.get("tool_error", True)),
             )
         )
@@ -772,6 +785,7 @@ def attest_calibration_samples(
         and cell.final_sql_validated
         and cell.validation_passed
         and cell.mcp_grounded
+        and cell.protocol_compliant
         and not cell.tool_error
         for cell in harness_cells
     )
@@ -848,7 +862,7 @@ def verify_calibration_attestation(
     if registration.joinlint_commit != current_commit:
         raise ValueError("checked-out JoinLint commit does not match the pilot registration")
     report = PilotCalibrationReport.model_validate_json(attestation_path.read_bytes())
-    if report.schema_version != 4:
+    if report.schema_version != 5:
         raise ValueError("pilot calibration attestation schema is not current")
     specification = load_pilot_calibration_spec(root, manifest)
     if report.calibration_task_ids != specification.task_ids:

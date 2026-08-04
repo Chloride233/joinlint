@@ -212,6 +212,14 @@ def _row(
             bool(trace.get("final_sql_validated")) if mcp_condition else None
         ),
         mcp_grounded=bool(trace.get("mcp_grounded")) if mcp_condition else None,
+        protocol_compliant=(
+            bool(trace.get("protocol_compliant")) if mcp_condition else None
+        ),
+        protocol_violation=(
+            trace.get("protocol_violation")
+            if mcp_condition and isinstance(trace.get("protocol_violation"), str)
+            else None
+        ),
         blocking_applicable=blocking_applicable,
         blocking_compliant=blocking_compliant,
         bypassed=bool(trace.get("bypassed")) if mcp_condition else None,
