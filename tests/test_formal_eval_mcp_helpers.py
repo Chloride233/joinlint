@@ -5,6 +5,8 @@ from pathlib import Path
 
 from benchmarks.formal_eval.database_mcp import execute_readonly_sql, submit_sql_payload
 from benchmarks.formal_eval.oracle_mcp import OracleDocument, plan_oracle, validate_oracle_sql
+from benchmarks.formal_eval.recording_joinlint_mcp import record_validation_outcome
+from benchmarks.formal_eval.validation_ledger import ValidationLedger
 
 
 def test_evaluation_database_tool_is_read_only_and_bounded(tmp_path: Path) -> None:
@@ -31,6 +33,32 @@ def test_evaluation_database_tool_is_read_only_and_bounded(tmp_path: Path) -> No
 
 def test_submission_payload_acknowledges_without_echoing_sql() -> None:
     assert submit_sql_payload("SELECT secret FROM records", "") == {"status": "ok"}
+
+
+def test_submission_payload_requires_exact_successfully_validated_sql(tmp_path: Path) -> None:
+    ledger = ValidationLedger(tmp_path / "validated-sql.json")
+    ledger.record("SELECT id FROM records")
+
+    assert submit_sql_payload(
+        "SELECT id FROM records",
+        "",
+        validation_ledger=ledger,
+    ) == {"status": "ok"}
+    assert submit_sql_payload(
+        "SELECT id FROM records ",
+        "",
+        validation_ledger=ledger,
+    ) == {"status": "error", "code": "FINAL_SQL_NOT_VALIDATED"}
+
+
+def test_recording_joinlint_mcp_records_only_successful_validation(tmp_path: Path) -> None:
+    ledger = ValidationLedger(tmp_path / "validated-sql.json")
+
+    record_validation_outcome(ledger, "SELECT id FROM records", {"status": "findings"})
+    assert ledger.matches("SELECT id FROM records") is False
+
+    record_validation_outcome(ledger, "SELECT id FROM records", {"status": "ok"})
+    assert ledger.matches("SELECT id FROM records") is True
 
 
 def test_oracle_mcp_uses_the_same_two_tool_contract() -> None:

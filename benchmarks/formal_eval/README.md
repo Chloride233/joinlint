@@ -106,6 +106,14 @@ reached scoring; it does not authorize a full Pilot dispatch.
 
 The `calibration` mode of `formal-pilot-canary.yml` is the required gate before
 another full Pilot.
+
+For the treatment arm, an evaluation-only sidecar records only the SHA-256 of
+the most recent `validate_sql` response with `status: ok`. The separate
+submission MCP accepts non-empty SQL only when its exact bytes match that
+record. This prevents a validated SQL statement from being silently replaced at
+submission time; it is not a JoinLint product feature and does not alter the
+released two-tool MCP contract.
+
 The sealed input freezes two task IDs from distinct databases using the deterministic
 `highest_join_depth_distinct_database_then_task_id_v2` rule. Each task runs in treatment on both
 model tiers and both hosts, producing eight samples. Calibration uses the exact

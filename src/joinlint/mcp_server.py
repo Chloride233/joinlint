@@ -43,6 +43,7 @@ def create_server(
     *,
     auto: bool = True,
     cache_root: Path | None = None,
+    on_validate_sql: Callable[[str, dict[str, object]], None] | None = None,
 ) -> FastMCP:
     """Create the strict SQLite-only, STDIO-only Stage 1 MCP server."""
     service: RuntimeService | None = None
@@ -132,7 +133,7 @@ def create_server(
         is ok. A non-ok response blocks the current SQL. Retry only after
         applying a retryable bounded guidance action; stop means do not retry.
         """
-        return _response(
+        response = _response(
             "validate_sql",
             lambda: runtime_service().validate_sql(
                 ValidateSQLRequest(
@@ -144,6 +145,9 @@ def create_server(
                 )
             ),
         )
+        if on_validate_sql is not None:
+            on_validate_sql(sql, response)
+        return response
 
     _forbid_unknown_arguments(mcp, "get_join_plan")
     _forbid_unknown_arguments(mcp, "validate_sql")

@@ -70,6 +70,7 @@ BASE_PROMPT = """You are evaluating one SQLite question. Use the EvaluationDatab
 HARNESS_PROMPT = """The schema is already provided, so your first tool call must be JoinLint get_join_plan after choosing every intended physical table instance. Each entity_refs item must be exactly {"ref":"orders","entity":"orders"}: ref is a unique request-local alias and entity is the physical table name; repeat an entity only for a genuine self join. Set expected_grain_ref to the instance whose unique key must remain one row per output row before aggregation. For a many-to-one join, the referencing child normally preserves that grain; when the question counts, averages, or summarizes child rows per parent, choose that child table as the pre-aggregation grain even if the result is grouped by the parent. Aggregation, DISTINCT, and GROUP BY do not restore grain in Stage 1. After UNCONNECTED_ENTITY_REF, you may make one changed replan that removes or replaces only the affected references after confirming they are not needed. After a planning GRAIN_INCOMPATIBLE, you may make one changed replan that changes only expected_grain_ref to the safe pre-aggregation row grain. Otherwise do not replan. Use only returned proof predicates. Call JoinLint validate_sql with the exact final SQL and returned plan_id; omit expected_grain_ref because the proof already binds it. A non-ok validation blocks that SQL. A status ok is never a retry signal: do not edit SQL or call validate_sql again. Call execute_sql at most once with that exact SQL, then submit it immediately. Only when validation guidance is retryable with next_action revise_sql may you make one changed SQL-only revision and validate it once more with the same plan_id; otherwise submit empty SQL with the stable code. Never plan after validation or change grain during validation. JoinLint proof is not query correctness."""
 HOST_CONTEXT_STORE_KEY = "joinlint.formal_eval.host_context.v1"
 MCP_READINESS_HANDSHAKE_STORE_KEY = "joinlint.formal_eval.mcp_readiness_handshake.v1"
+VALIDATION_LEDGER_PATH = "/tmp/joinlint-formal-validation-ledger.json"
 
 CODEX_CONTEXT_CONFIG_OVERRIDES = {
     "features.apps": "false",
@@ -695,6 +696,11 @@ def _solver(
                 "benchmarks.formal_eval.database_mcp",
                 "--database",
                 "/workspace/data/database.sqlite",
+                *(
+                    ["--validation-ledger", VALIDATION_LEDGER_PATH]
+                    if condition == "treatment"
+                    else []
+                ),
             ],
             cwd="/workspace/joinlint",
             env=sanitized_mcp_environment(),
@@ -705,7 +711,18 @@ def _solver(
             MCPServerConfigStdio(
                 name="JoinLint",
                 command="python",
-                args=["-m", "joinlint", "serve-mcp", "--auto", "--project", "/workspace/data"],
+                args=(
+                    [
+                        "-m",
+                        "benchmarks.formal_eval.recording_joinlint_mcp",
+                        "--project",
+                        "/workspace/data",
+                        "--validation-ledger",
+                        VALIDATION_LEDGER_PATH,
+                    ]
+                    if condition == "treatment"
+                    else ["-m", "joinlint", "serve-mcp", "--auto", "--project", "/workspace/data"]
+                ),
                 cwd="/workspace/joinlint",
                 env=sanitized_mcp_environment(),
             )

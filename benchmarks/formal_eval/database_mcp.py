@@ -9,6 +9,7 @@ from urllib.parse import quote
 from mcp.server.fastmcp import FastMCP
 
 from benchmarks.agent_join.sql_edges import validate_readonly_select
+from benchmarks.formal_eval.validation_ledger import ValidationLedger
 
 
 def execute_readonly_sql(
@@ -51,12 +52,23 @@ def execute_readonly_sql(
         connection.close()
 
 
-def submit_sql_payload(sql: str, warning: str) -> dict[str, str]:
-    del sql, warning
+def submit_sql_payload(
+    sql: str,
+    warning: str,
+    *,
+    validation_ledger: ValidationLedger | None = None,
+) -> dict[str, str]:
+    del warning
+    if sql and validation_ledger is not None and not validation_ledger.matches(sql):
+        return {"status": "error", "code": "FINAL_SQL_NOT_VALIDATED"}
     return {"status": "ok"}
 
 
-def create_database_server(database: Path) -> FastMCP:
+def create_database_server(
+    database: Path,
+    *,
+    validation_ledger: ValidationLedger | None = None,
+) -> FastMCP:
     mcp = FastMCP("EvaluationDatabase")
 
     @mcp.tool(name="execute_sql")
@@ -67,7 +79,7 @@ def create_database_server(database: Path) -> FastMCP:
     @mcp.tool(name="submit_sql")
     def submit_sql(sql: str, warning: str) -> dict[str, str]:
         """Submit the final SQL and warning to the evaluator without executing it."""
-        return submit_sql_payload(sql, warning)
+        return submit_sql_payload(sql, warning, validation_ledger=validation_ledger)
 
     return mcp
 
@@ -75,8 +87,16 @@ def create_database_server(database: Path) -> FastMCP:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--validation-ledger", type=Path)
     arguments = parser.parse_args(argv)
-    create_database_server(arguments.database).run(transport="stdio")
+    ledger = (
+        ValidationLedger(arguments.validation_ledger)
+        if arguments.validation_ledger is not None
+        else None
+    )
+    if ledger is not None:
+        ledger.reset()
+    create_database_server(arguments.database, validation_ledger=ledger).run(transport="stdio")
     return 0
 
 
