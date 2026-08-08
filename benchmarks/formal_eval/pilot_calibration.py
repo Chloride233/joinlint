@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import secrets
 import shutil
 import subprocess
 from importlib.metadata import version
@@ -90,7 +92,7 @@ class CalibrationResourceContract(StrictModel):
     token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
     message_limit: Literal[20] = 20
     evaluation_timeout_seconds: Literal[90] = 90
-    sandbox_timeout_seconds: Literal[150] = 150
+    sandbox_timeout_seconds: Literal[150, 170] = 150
     cpu_cores: Literal[0.5] = 0.5
     memory_mib: Literal[2048] = 2048
 
@@ -304,7 +306,7 @@ class ScoringAttestation(StrictModel):
 
 
 class PilotCalibrationReport(StrictModel):
-    schema_version: Literal[1, 2, 3, 4, 5, 6] = 6
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7] = 7
     status: Literal["passed", "failed"]
     readiness_status: Literal["passed", "failed"] | None = None
     calibration_task_ids: tuple[str, str]
@@ -328,6 +330,11 @@ class PilotCalibrationReport(StrictModel):
 
     @model_validator(mode="after")
     def require_consistent_status_and_budget(self) -> PilotCalibrationReport:
+        sandbox_timeout = self.resource_contract.sandbox_timeout_seconds
+        if (self.schema_version >= 7 and sandbox_timeout != 170) or (
+            self.schema_version < 7 and sandbox_timeout != 150
+        ):
+            raise ValueError("sandbox timeout does not match calibration schema version")
         if self.schema_version >= 6:
             expected_total = (
                 self.actual_model_cost_cny
@@ -503,6 +510,7 @@ def submission_guard_pipeline_available(harness: HarnessAttestation) -> bool:
         and all(
             cell.submission_guard_contract_version == 1
             and cell.submission_guard_decision in observed
+            and not cell.tool_error
             for cell in harness.cells
         )
     )
@@ -606,6 +614,16 @@ def run_calibration(
     campaign_budget_cny: float,
     campaign_spend_before_cny: float,
 ) -> PilotCalibrationReport:
+    resolved_log_dir = log_dir.resolve()
+    resolved_output = output.resolve()
+    if (
+        resolved_log_dir == resolved_output
+        or resolved_log_dir in resolved_output.parents
+        or resolved_output in resolved_log_dir.parents
+    ):
+        raise ValueError("calibration log and output directories must be disjoint")
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        raise ValueError("calibration output directory must be empty")
     output.mkdir(parents=True, exist_ok=True)
     failure_path = output / "calibration-failure.json"
     failure_report = CalibrationFailureReport(
@@ -619,11 +637,10 @@ def run_calibration(
     _write_calibration_failure(failure_path, failure_report)
     registration, manifest, run_plan = verify_pilot_inputs(root)
     input_lock_sha256 = _input_lock_sha256(root)
-    failure_report = failure_report.model_copy(
-        update={
-            "joinlint_commit": registration.joinlint_commit,
-            "input_lock_sha256": input_lock_sha256,
-        }
+    failure_report = _updated_calibration_failure(
+        failure_report,
+        joinlint_commit=registration.joinlint_commit,
+        input_lock_sha256=input_lock_sha256,
     )
     _write_calibration_failure(failure_path, failure_report)
     specification = load_pilot_calibration_spec(root, manifest)
@@ -648,95 +665,132 @@ def run_calibration(
             batch_log_dir.mkdir(parents=True, exist_ok=True)
             subprocess.run(command, check=True, env=inspect_subprocess_environment())
             require_batch_health(batch_log_dir, expected_sample_count=2)
-            failure_report = failure_report.model_copy(
-                update={
-                    "observed_sample_count": _observed_sample_count(log_dir),
-                    "actual_model_cost_cny": observed_model_cost_cny(
-                        log_dir, registration
-                    ),
-                }
+            failure_report = _updated_calibration_failure(
+                failure_report,
+                observed_sample_count=_observed_sample_count(log_dir),
+                actual_model_cost_cny=observed_model_cost_cny(log_dir, registration),
             )
             _write_calibration_failure(failure_path, failure_report)
+        actual_model_cost = observed_model_cost_cny(log_dir, registration)
+        total_upper = (
+            actual_model_cost
+            + envelope.modal_compute_upper_cny
+            + envelope.modal_image_build_reserve_cny
+        )
+        infrastructure, resource, harness, scoring = verify_calibration_logs(
+            log_dir,
+            registration=registration,
+            task_ids=specification.task_ids,
+        )
+        campaign_total = campaign_spend_before_cny + total_upper
+        readiness_status = calibration_authorization_status(
+            infrastructure=infrastructure,
+            resource=resource,
+            scoring=scoring,
+            submission_guard_available=submission_guard_pipeline_available(harness),
+            within_budget=(
+                total_upper <= CALIBRATION_BUDGET_CNY
+                and campaign_total <= campaign_budget_cny
+            ),
+        )
+        report = PilotCalibrationReport(
+            status="passed" if readiness_status == "passed" else "failed",
+            readiness_status=readiness_status,
+            calibration_task_ids=specification.task_ids,
+            resource_contract=CalibrationResourceContract(
+                token_limit_by_host=CALIBRATION_TOKEN_LIMITS,
+                token_accounting_ceiling_by_host=CALIBRATION_TOKEN_ACCOUNTING_CEILINGS,
+                token_limit_type=registration.token_limit_type,
+                message_limit=registration.message_limit_per_run,
+                evaluation_timeout_seconds=registration.time_limit_seconds,
+                sandbox_timeout_seconds=registration.modal_sandbox_timeout_seconds,
+                cpu_cores=registration.cpu_cores,
+                memory_mib=registration.memory_mib,
+            ),
+            infrastructure=infrastructure,
+            resource=resource,
+            harness=harness,
+            scoring=scoring,
+            actual_model_cost_cny=actual_model_cost,
+            modal_compute_upper_cny=envelope.modal_compute_upper_cny,
+            modal_image_build_reserve_cny=envelope.modal_image_build_reserve_cny,
+            total_cost_upper_cny=total_upper,
+            campaign_spend_before_cny=campaign_spend_before_cny,
+            campaign_budget_cny=campaign_budget_cny,
+            campaign_total_upper_cny=campaign_total,
+            workflow_run_id=workflow_run_id,
+            joinlint_commit=registration.joinlint_commit,
+            input_lock_sha256=input_lock_sha256,
+            dependency_versions=dependency_versions(),
+        )
+        _write_calibration_artifact(
+            output / "calibration.json",
+            canonical_json(report.model_dump(mode="json")) + b"\n",
+        )
+        failure_path.unlink()
+        return report
     except Exception as error:
         try:
             observed_count = _observed_sample_count(log_dir)
-            observed_cost = observed_model_cost_cny(log_dir, registration)
         except Exception:
             observed_count = failure_report.observed_sample_count
+        try:
+            observed_cost = observed_model_cost_cny(log_dir, registration)
+        except Exception:
             observed_cost = failure_report.actual_model_cost_cny
-        failure_report = failure_report.model_copy(
-            update={
-                "failure_code": _calibration_failure_code(error),
-                "observed_sample_count": observed_count,
-                "actual_model_cost_cny": observed_cost,
-            }
-        )
-        _write_calibration_failure(failure_path, failure_report)
+        try:
+            failure_report = _updated_calibration_failure(
+                failure_report,
+                failure_code=_calibration_failure_code(error),
+            )
+        except Exception:
+            pass
+        for update in (
+            {"observed_sample_count": observed_count},
+            {"actual_model_cost_cny": observed_cost},
+        ):
+            try:
+                failure_report = _updated_calibration_failure(
+                    failure_report,
+                    **update,
+                )
+            except Exception:
+                pass
+        try:
+            _write_calibration_failure(failure_path, failure_report)
+        except Exception:
+            pass
         raise
-    actual_model_cost = observed_model_cost_cny(log_dir, registration)
-    total_upper = (
-        actual_model_cost
-        + envelope.modal_compute_upper_cny
-        + envelope.modal_image_build_reserve_cny
-    )
-    infrastructure, resource, harness, scoring = verify_calibration_logs(
-        log_dir,
-        registration=registration,
-        task_ids=specification.task_ids,
-    )
-    campaign_total = campaign_spend_before_cny + total_upper
-    readiness_status = calibration_authorization_status(
-        infrastructure=infrastructure,
-        resource=resource,
-        scoring=scoring,
-        submission_guard_available=submission_guard_pipeline_available(harness),
-        within_budget=(
-            total_upper <= CALIBRATION_BUDGET_CNY
-            and campaign_total <= campaign_budget_cny
-        ),
-    )
-    report = PilotCalibrationReport(
-        status="passed" if readiness_status == "passed" else "failed",
-        readiness_status=readiness_status,
-        calibration_task_ids=specification.task_ids,
-        resource_contract=CalibrationResourceContract(
-            token_limit_by_host=CALIBRATION_TOKEN_LIMITS,
-            token_accounting_ceiling_by_host=CALIBRATION_TOKEN_ACCOUNTING_CEILINGS,
-            token_limit_type=registration.token_limit_type,
-            message_limit=registration.message_limit_per_run,
-            evaluation_timeout_seconds=registration.time_limit_seconds,
-            sandbox_timeout_seconds=registration.modal_sandbox_timeout_seconds,
-            cpu_cores=registration.cpu_cores,
-            memory_mib=registration.memory_mib,
-        ),
-        infrastructure=infrastructure,
-        resource=resource,
-        harness=harness,
-        scoring=scoring,
-        actual_model_cost_cny=actual_model_cost,
-        modal_compute_upper_cny=envelope.modal_compute_upper_cny,
-        modal_image_build_reserve_cny=envelope.modal_image_build_reserve_cny,
-        total_cost_upper_cny=total_upper,
-        campaign_spend_before_cny=campaign_spend_before_cny,
-        campaign_budget_cny=campaign_budget_cny,
-        campaign_total_upper_cny=campaign_total,
-        workflow_run_id=workflow_run_id,
-        joinlint_commit=registration.joinlint_commit,
-        input_lock_sha256=input_lock_sha256,
-        dependency_versions=dependency_versions(),
-    )
-    (output / "calibration.json").write_bytes(
-        canonical_json(report.model_dump(mode="json")) + b"\n"
-    )
-    failure_path.unlink()
-    return report
 
 
 def _write_calibration_failure(
     path: Path,
     report: CalibrationFailureReport,
 ) -> None:
-    path.write_bytes(canonical_json(report.model_dump(mode="json")) + b"\n")
+    _write_calibration_artifact(
+        path,
+        canonical_json(report.model_dump(mode="json")) + b"\n",
+    )
+
+
+def _write_calibration_artifact(path: Path, payload: bytes) -> None:
+    temporary = path.with_name(
+        f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    )
+    try:
+        temporary.write_bytes(payload)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _updated_calibration_failure(
+    report: CalibrationFailureReport,
+    **updates: object,
+) -> CalibrationFailureReport:
+    return CalibrationFailureReport.model_validate(
+        {**report.model_dump(mode="python"), **updates}
+    )
 
 
 def _calibration_failure_code(error: Exception) -> str:
@@ -1011,6 +1065,8 @@ def verify_calibration_attestation_values(
         raise ValueError("pilot calibration readiness did not pass")
     if report.workflow_run_id != expected_run_id or run_metadata.get("id") != expected_run_id:
         raise ValueError("calibration attestation run ID mismatch")
+    if type(run_metadata.get("run_attempt")) is not int or run_metadata["run_attempt"] != 1:
+        raise ValueError("calibration attestation run attempt mismatch")
     if run_metadata.get("name") != "formal-pilot-canary" or run_metadata.get(
         "path"
     ) != ".github/workflows/formal-pilot-canary.yml":
@@ -1064,9 +1120,7 @@ def verify_calibration_attestation(
     registration, manifest, _ = verify_pilot_inputs(root)
     if registration.joinlint_commit != current_commit:
         raise ValueError("checked-out JoinLint commit does not match the pilot registration")
-    report = PilotCalibrationReport.model_validate_json(attestation_path.read_bytes())
-    if report.schema_version != 6:
-        raise ValueError("pilot calibration attestation schema is not current")
+    report = _load_current_calibration_attestation(attestation_path)
     specification = load_pilot_calibration_spec(root, manifest)
     if report.calibration_task_ids != specification.task_ids:
         raise ValueError("calibration attestation task IDs mismatch")
@@ -1084,6 +1138,17 @@ def verify_calibration_attestation(
         != formal_accounting_ceilings
     ):
         raise ValueError("calibration accounting contract does not match the formal Pilot")
+    if (
+        report.resource_contract.token_limit_type != registration.token_limit_type
+        or report.resource_contract.message_limit != registration.message_limit_per_run
+        or report.resource_contract.evaluation_timeout_seconds
+        != registration.time_limit_seconds
+        or report.resource_contract.sandbox_timeout_seconds
+        != registration.modal_sandbox_timeout_seconds
+        or report.resource_contract.cpu_cores != registration.cpu_cores
+        or report.resource_contract.memory_mib != registration.memory_mib
+    ):
+        raise ValueError("calibration resource contract does not match the formal Pilot")
     verify_calibration_budget_values(report, registration)
     expected_keys = {
         (model.returned_id, host, task_id)
@@ -1117,6 +1182,43 @@ def verify_calibration_attestation(
         run_metadata=run_metadata,
         repository=repository,
     )
+
+
+def _load_current_calibration_attestation(
+    attestation_path: Path,
+) -> PilotCalibrationReport:
+    if attestation_path.with_name("calibration-failure.json").exists():
+        raise ValueError("calibration success and failure artifacts coexist")
+    raw_attestation = attestation_path.read_bytes()
+    payload = json.loads(
+        raw_attestation,
+        object_pairs_hook=_unique_json_object,
+        parse_constant=_reject_json_constant,
+    )
+    if not isinstance(payload, dict):
+        raise ValueError("pilot calibration attestation must be an object")
+    if type(payload.get("schema_version")) is not int or payload["schema_version"] != 7:
+        raise ValueError("current calibration requires explicit schema version 7")
+    resource_contract = payload.get("resource_contract")
+    if not isinstance(resource_contract, dict):
+        raise ValueError("current calibration requires an explicit resource contract")
+    sandbox_timeout = resource_contract.get("sandbox_timeout_seconds")
+    if type(sandbox_timeout) is not int or sandbox_timeout != 170:
+        raise ValueError("current calibration requires explicit sandbox timeout 170")
+    return PilotCalibrationReport.model_validate_json(canonical_json(payload))
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"unsupported JSON constant: {value}")
 
 
 def dependency_versions() -> dict[str, str]:

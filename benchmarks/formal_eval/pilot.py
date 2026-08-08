@@ -58,7 +58,7 @@ PILOT_ASSIGNMENT_DESIGN = "balanced_diagonal_crossover_v1"
 
 
 class PilotRegistration(StrictModel):
-    schema_version: Literal[3, 4] = 4
+    schema_version: Literal[3, 4, 5]
     evaluation_id: str
     dataset_release: str
     seed: int = Field(ge=0)
@@ -76,7 +76,7 @@ class PilotRegistration(StrictModel):
     token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
     message_limit_per_run: Literal[20] = 20
     time_limit_seconds: Literal[90] = 90
-    modal_sandbox_timeout_seconds: Literal[150] = 150
+    modal_sandbox_timeout_seconds: Literal[150, 170]
     modal_image_builder_version: Literal["2025.06 Stable"] = "2025.06 Stable"
     max_sandboxes: Literal[2] = 2
     cpu_cores: Literal[0.5] = 0.5
@@ -84,12 +84,39 @@ class PilotRegistration(StrictModel):
     usd_to_cny_upper: Literal[8.0] = 8.0
     modal_image_build_reserve_cny: Literal[2.0] = 2.0
 
+    @model_validator(mode="before")
+    @classmethod
+    def default_legacy_sandbox_timeout(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if (
+            value.get("schema_version") in (3, 4)
+            and "modal_sandbox_timeout_seconds" not in value
+        ):
+            return {**value, "modal_sandbox_timeout_seconds": 150}
+        if (
+            value.get("schema_version") == 5
+            and "modal_sandbox_timeout_seconds" not in value
+        ):
+            raise ValueError(
+                "current pilot registration must explicitly declare its sandbox timeout"
+            )
+        return value
+
     @model_validator(mode="after")
     def require_frozen_matrix_and_budget(self) -> PilotRegistration:
-        if self.schema_version == 4 and self.token_accounting_ceiling_per_run != 45_000:
+        if self.schema_version >= 4 and self.token_accounting_ceiling_per_run != 45_000:
             raise ValueError("pilot token accounting ceiling must be 45,000")
         if self.schema_version == 3 and self.token_accounting_ceiling_per_run is not None:
             raise ValueError("legacy pilot registration cannot define an accounting ceiling")
+        if (
+            self.schema_version == 5
+            and self.modal_sandbox_timeout_seconds != 170
+        ) or (
+            self.schema_version < 5
+            and self.modal_sandbox_timeout_seconds != 150
+        ):
+            raise ValueError("pilot sandbox timeout does not match its schema version")
         if {model.tier for model in self.models} != {"high_capability", "cost_efficient"}:
             raise ValueError("pilot requires one model from each tier")
         if len({model.id for model in self.models}) != 2:
@@ -155,6 +182,7 @@ class PilotCalibrationSpec(StrictModel):
 def frozen_pilot_registration(commit: str) -> PilotRegistration:
     observed_at = date(2026, 7, 26)
     return PilotRegistration(
+        schema_version=5,
         evaluation_id="joinlint-deepseek-modal-pilot-v4",
         dataset_release=PILOT_DATASET_RELEASE,
         seed=20260727,
@@ -190,6 +218,7 @@ def frozen_pilot_registration(commit: str) -> PilotRegistration:
         joinlint_commit=commit,
         assignment_design=PILOT_ASSIGNMENT_DESIGN,
         token_accounting_ceiling_per_run=45_000,
+        modal_sandbox_timeout_seconds=170,
     )
 
 

@@ -49,6 +49,7 @@ from benchmarks.formal_eval.modal_compat import install_modal_filesystem_compat
 from benchmarks.formal_eval.lifecycle import (
     LIFECYCLE_STORE_KEY,
     LifecycleFailureReason,
+    LifecyclePhase,
     LifecycleRecord,
     allow_scoring,
     complete_evaluation,
@@ -67,6 +68,10 @@ from benchmarks.formal_eval.lifecycle import (
 from benchmarks.formal_eval.oracle_mcp import OracleDocument
 from benchmarks.formal_eval.pilot import pilot_partition_tasks
 from benchmarks.formal_eval.trace import ToolEvent, assess_trace
+from benchmarks.formal_eval.validation_failure_marker import (
+    VALIDATION_FAILURE_MARKER_CLEAR,
+    validation_failure_marker_failed,
+)
 from benchmarks.formal_eval.validation_ledger import VALIDATION_LEDGER_WRITE_FAILED
 from joinlint.contracts import canonical_json
 
@@ -75,11 +80,19 @@ BASE_PROMPT = """You are evaluating one SQLite question. Use the EvaluationDatab
 HARNESS_PROMPT = """The schema is already provided, so your first tool call must be JoinLint get_join_plan after choosing every intended physical table instance. Each entity_refs item must be exactly {"ref":"orders","entity":"orders"}: ref is a unique request-local alias and entity is the physical table name; repeat an entity only for a genuine self join. Set expected_grain_ref to the instance whose unique key must remain one row per output row before aggregation. For a many-to-one join, the referencing child normally preserves that grain; when the question counts, averages, or summarizes child rows per parent, choose that child table as the pre-aggregation grain even if the result is grouped by the parent. Aggregation, DISTINCT, and GROUP BY do not restore grain in Stage 1. After UNCONNECTED_ENTITY_REF, you may make one changed replan that removes or replaces only the affected references after confirming they are not needed. After a planning GRAIN_INCOMPATIBLE, you may make one changed replan that changes only expected_grain_ref to the safe pre-aggregation row grain. Otherwise do not replan. Use only returned proof predicates. Call JoinLint validate_sql with the exact final SQL and returned plan_id; omit expected_grain_ref because the proof already binds it. A non-ok validation blocks that SQL. A status ok is never a retry signal: do not edit SQL or call validate_sql again. Call execute_sql at most once with that exact SQL, then submit it immediately. Only when validation guidance is retryable with next_action revise_sql may you make one changed SQL-only revision and validate it once more with the same plan_id; otherwise submit empty SQL with the stable code. Never plan after validation or change grain during validation. JoinLint proof is not query correctness."""
 HOST_CONTEXT_STORE_KEY = "joinlint.formal_eval.host_context.v1"
 MCP_READINESS_HANDSHAKE_STORE_KEY = "joinlint.formal_eval.mcp_readiness_handshake.v1"
-VALIDATION_LEDGER_PATH = "/tmp/joinlint-formal-validation-ledger.json"
-CODEX_ALL_MCP_MISSING_DETAIL = (
-    "host_tool_surface_mismatch:"
-    "missing=execute_sql,get_join_plan,submit_sql,validate_sql;unexpected=-"
+VALIDATION_LEDGER_FAILURE_OBSERVED_STORE_KEY = (
+    "joinlint.formal_eval.validation_ledger_failure_observed.v1"
 )
+VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY = (
+    "joinlint.formal_eval.validation_failure_marker_armed.v1"
+)
+VALIDATION_LEDGER_PATH = "/tmp/joinlint-formal-validation-ledger.json"
+VALIDATION_FAILURE_MARKER_PATH = (
+    "/workspace/.joinlint-eval/validation-ledger-failed-v1.marker"
+)
+VALIDATION_FAILURE_MARKER_UNAVAILABLE = "validation_failure_marker_unavailable"
+VALIDATION_FAILURE_MARKER_READ_TIMEOUT_SECONDS = 2
+PILOT_READINESS_TIME_LIMIT_SECONDS = 60
 
 CODEX_CONTEXT_CONFIG_OVERRIDES = {
     "features.apps": "false",
@@ -190,7 +203,7 @@ def formal_pilot_eval(
     token_limit_type: str = "(input*0.5)+output",
     message_limit: int = 20,
     time_limit: int = 90,
-    sandbox_timeout: int = 150,
+    sandbox_timeout: int = 170,
     cpu: float = 0.5,
     memory_mib: int = 2048,
 ) -> Task:
@@ -206,7 +219,7 @@ def formal_pilot_eval(
         or token_limit_type not in {"all", "(input*0.5)+output"}
         or message_limit <= 0
         or time_limit <= 0
-        or sandbox_timeout <= time_limit
+        or sandbox_timeout <= time_limit + PILOT_READINESS_TIME_LIMIT_SECONDS
         or cpu <= 0
         or memory_mib <= 0
     ):
@@ -228,7 +241,7 @@ def formal_pilot_eval(
         strict_pilot=True,
         token_limit=token_limit,
         token_limit_type=token_limit_type,
-        readiness_time_limit=sandbox_timeout - time_limit,
+        readiness_time_limit=PILOT_READINESS_TIME_LIMIT_SECONDS,
         evaluation_time_limit=time_limit,
         modal_timeout_seconds=sandbox_timeout,
         task_partition=task_partition or None,
@@ -788,6 +801,8 @@ def _solver(
                         "/workspace/data",
                         "--validation-ledger",
                         VALIDATION_LEDGER_PATH,
+                        "--validation-failure-marker",
+                        VALIDATION_FAILURE_MARKER_PATH,
                     ]
                     if condition == "treatment"
                     else ["-m", "joinlint", "serve-mcp", "--auto", "--project", "/workspace/data"]
@@ -832,7 +847,14 @@ def _solver(
             **_claude_host_options(strict_pilot),
         )
     return chain(
-        infrastructure_readiness(host, agent_version, readiness_time_limit),
+        infrastructure_readiness(
+            host,
+            agent_version,
+            readiness_time_limit,
+            validation_failure_marker_path=(
+                VALIDATION_FAILURE_MARKER_PATH if condition == "treatment" else None
+            ),
+        ),
         evaluation_lifecycle(
             agent,
             readiness_time_limit,
@@ -865,6 +887,8 @@ def infrastructure_readiness(
     host: Host,
     agent_version: str,
     timeout_seconds: int,
+    *,
+    validation_failure_marker_path: str | None = None,
 ) -> Solver:
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         del generate
@@ -874,11 +898,29 @@ def infrastructure_readiness(
         retry_reason: str | None = None
         attempts = 0
         while attempts < 2:
+            remaining = timeout_seconds - (perf_counter() - started)
+            if remaining <= 0:
+                record = readiness_failed(
+                    record,
+                    duration_seconds=perf_counter() - started,
+                    detail="readiness_timeout",
+                    infrastructure_attempts=max(attempts, 1),
+                    infrastructure_retry_reason=(
+                        retry_reason if attempts == 2 else None
+                    ),
+                )
+                write_lifecycle(state.store, record)
+                state.completed = True
+                return state
             attempts += 1
             try:
-                with fail_after(timeout_seconds):
+                with fail_after(remaining):
                     host_binary_sha256 = await _prepare_host_binary(host, agent_version)
                     await _run_readiness_probes(host)
+                    if validation_failure_marker_path is not None:
+                        await _arm_validation_failure_marker(
+                            validation_failure_marker_path
+                        )
                 break
             except TimeoutError:
                 detail = "readiness_timeout"
@@ -907,6 +949,12 @@ def infrastructure_readiness(
             infrastructure_retry_reason=retry_reason,
         )
         write_lifecycle(state.store, record)
+        if validation_failure_marker_path is not None:
+            _set_store_value(
+                state.store,
+                VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+                validation_failure_marker_path,
+            )
         return state
 
     return solve
@@ -916,7 +964,23 @@ def _is_retryable_readiness_failure(error: Exception) -> bool:
     return str(error) in {
         "host_bridge_dependency_or_database_readiness_failed",
         "sandbox_tools_readiness_failed",
+        "validation_failure_marker_arm_failed",
     }
+
+
+async def _arm_validation_failure_marker(path: str) -> None:
+    try:
+        await sandbox().write_file(path, VALIDATION_FAILURE_MARKER_CLEAR)
+    except Exception as error:
+        raise RuntimeError("validation_failure_marker_arm_failed") from error
+
+
+def _set_store_value(destination: Any, key: str, value: object) -> None:
+    setter = getattr(destination, "set", None)
+    if callable(setter):
+        setter(key, value)
+    else:
+        destination[key] = value
 
 
 @solver
@@ -931,9 +995,34 @@ def evaluation_lifecycle(
     agent_solver = as_solver(agent)
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
+        record = _require_lifecycle(state)
+        infrastructure_duration = record.infrastructure_preparation_duration_seconds or 0.0
+        readiness_remaining = preparation_timeout_seconds
+        if record.phase == LifecyclePhase.INFRASTRUCTURE_PENDING:
+            readiness_elapsed = infrastructure_duration + elapsed_seconds_since(
+                record.readiness_started_at
+            )
+            readiness_remaining -= readiness_elapsed
+        if (
+            record.phase == LifecyclePhase.INFRASTRUCTURE_PENDING
+            and readiness_remaining <= 0
+        ):
+            record = readiness_failed(
+                record,
+                reason=LifecycleFailureReason.EVALUATION_NOT_STARTED,
+                duration_seconds=0,
+                detail="agent_preparation_timeout",
+                infrastructure_attempts=record.infrastructure_attempts,
+                infrastructure_retry_reason=record.infrastructure_retry_reason,
+            )
+            write_lifecycle(state.store, record)
+            state.completed = True
+            return state
+        agent_preparation_started = perf_counter()
         done = Event()
         agent_error: Exception | None = None
         evaluation_timed_out = False
+        marker_observation: bool | None = False
         result_state = state
 
         async def run_agent() -> None:
@@ -944,17 +1033,18 @@ def evaluation_lifecycle(
                     break
                 except Exception as error:
                     record = _require_lifecycle(state)
-                    if _should_retry_agent_startup(
+                    retry_detail = _agent_startup_retry_detail(
                         error,
                         record=record,
                         host=host,
                         condition=condition,
-                    ):
+                    )
+                    if retry_detail is not None:
                         write_lifecycle(
                             state.store,
                             record_infrastructure_retry(
                                 record,
-                                reason=CODEX_ALL_MCP_MISSING_DETAIL,
+                                reason=retry_detail,
                             ),
                         )
                         continue
@@ -964,10 +1054,6 @@ def evaluation_lifecycle(
 
         async with create_task_group() as tasks:
             tasks.start_soon(run_agent)
-            readiness_elapsed = elapsed_seconds_since(
-                _require_lifecycle(state).readiness_started_at
-            )
-            readiness_remaining = max(0.001, preparation_timeout_seconds - readiness_elapsed)
             with move_on_after(readiness_remaining) as preparation_scope:
                 while not done.is_set() and not _evaluation_has_started(state):
                     await sleep(0.01)
@@ -989,7 +1075,7 @@ def evaluation_lifecycle(
                 record = readiness_failed(
                     record,
                     reason=reason,
-                    duration_seconds=elapsed_seconds_since(record.readiness_started_at),
+                    duration_seconds=perf_counter() - agent_preparation_started,
                     detail=detail,
                     infrastructure_attempts=record.infrastructure_attempts,
                     infrastructure_retry_reason=record.infrastructure_retry_reason,
@@ -1004,45 +1090,79 @@ def evaluation_lifecycle(
             if evaluation_scope.cancel_called:
                 tasks.cancel_scope.cancel()
                 evaluation_timed_out = True
-            elif _validation_ledger_write_failed(result_state.messages):
-                record = fail_evaluation(
-                    _require_lifecycle(result_state),
-                    reason=LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED,
-                    duration_seconds=perf_counter() - evaluation_started,
-                    detail=VALIDATION_LEDGER_WRITE_FAILED,
+            else:
+                marker_observation = await _validation_failure_marker_observation(
+                    result_state,
+                    required=condition == "treatment",
                 )
-                write_lifecycle(result_state.store, record)
-                result_state.completed = True
-                return result_state
-            elif agent_error is not None:
-                reason = (
-                    LifecycleFailureReason.MODEL_LIMIT
-                    if _is_model_limit_error(agent_error) or _sample_model_limit_exceeded()
-                    else LifecycleFailureReason.EVALUATION_FAILED
-                )
-                record = fail_evaluation(
-                    record,
-                    reason=reason,
-                    duration_seconds=perf_counter() - evaluation_started,
-                    detail=_safe_failure_detail(agent_error),
-                )
-                write_lifecycle(state.store, record)
-                state.completed = True
-                return state
+                if (
+                    marker_observation is True
+                    or _validation_ledger_failure_observed(result_state)
+                    or _validation_ledger_write_failed(result_state.messages)
+                ):
+                    record = fail_evaluation(
+                        _require_lifecycle(result_state),
+                        reason=LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED,
+                        duration_seconds=perf_counter() - evaluation_started,
+                        detail=VALIDATION_LEDGER_WRITE_FAILED,
+                    )
+                    write_lifecycle(result_state.store, record)
+                    result_state.completed = True
+                    return result_state
+                if marker_observation is None:
+                    record = fail_evaluation(
+                        _require_lifecycle(result_state),
+                        reason=(
+                            LifecycleFailureReason.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+                        ),
+                        duration_seconds=perf_counter() - evaluation_started,
+                        detail=VALIDATION_FAILURE_MARKER_UNAVAILABLE,
+                    )
+                    write_lifecycle(result_state.store, record)
+                    result_state.completed = True
+                    return result_state
+                if agent_error is not None:
+                    reason = (
+                        LifecycleFailureReason.MODEL_LIMIT
+                        if _is_model_limit_error(agent_error)
+                        or _sample_model_limit_exceeded()
+                        else LifecycleFailureReason.EVALUATION_FAILED
+                    )
+                    record = fail_evaluation(
+                        record,
+                        reason=reason,
+                        duration_seconds=perf_counter() - evaluation_started,
+                        detail=_safe_failure_detail(agent_error),
+                    )
+                    write_lifecycle(state.store, record)
+                    state.completed = True
+                    return state
 
         if evaluation_timed_out:
-            ledger_failed = _validation_ledger_write_failed(state.messages)
+            marker_observation = await _validation_failure_marker_observation(
+                state,
+                required=condition == "treatment",
+            )
+            ledger_failed = (
+                marker_observation is True
+                or _validation_ledger_failure_observed(state)
+            )
+            reason = (
+                LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED
+                if ledger_failed
+                else LifecycleFailureReason.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+                if marker_observation is None
+                else LifecycleFailureReason.MODEL_TIMEOUT
+            )
             record = fail_evaluation(
                 _require_lifecycle(state),
-                reason=(
-                    LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED
-                    if ledger_failed
-                    else LifecycleFailureReason.MODEL_TIMEOUT
-                ),
+                reason=reason,
                 duration_seconds=perf_counter() - evaluation_started,
                 detail=(
                     VALIDATION_LEDGER_WRITE_FAILED
                     if ledger_failed
+                    else VALIDATION_FAILURE_MARKER_UNAVAILABLE
+                    if marker_observation is None
                     else "evaluation_timeout"
                 ),
             )
@@ -1060,20 +1180,22 @@ def evaluation_lifecycle(
     return solve
 
 
-def _should_retry_agent_startup(
+def _agent_startup_retry_detail(
     error: Exception,
     *,
     record: LifecycleRecord,
     host: Host | None,
     condition: Condition | None,
-) -> bool:
-    return (
-        host == "codex"
-        and condition in {"treatment", "oracle_mcp", "no_harness"}
-        and record.infrastructure_attempts == 1
-        and record.infrastructure_retry_reason is None
-        and CODEX_ALL_MCP_MISSING_DETAIL in str(error)
-    )
+) -> str | None:
+    if (
+        host != "codex"
+        or condition is None
+        or record.infrastructure_attempts != 1
+        or record.infrastructure_retry_reason is not None
+    ):
+        return None
+    detail = _all_required_mcp_missing_detail(host, condition)
+    return detail if _safe_failure_detail(error) == detail else None
 
 
 def _is_host_context_drift_error(error: Exception | None) -> bool:
@@ -1178,6 +1300,7 @@ def _host_context_filter(
         tool_choice: object,
         config: GenerateConfig,
     ) -> ModelOutput | GenerateInput | None:
+        _mark_validation_ledger_failure_observed(messages)
         if _claude_mcp_wait_required(host, condition, tools):
             active_store = store()
             if active_store.get(MCP_READINESS_HANDSHAKE_STORE_KEY) is not None:
@@ -1191,7 +1314,7 @@ def _host_context_filter(
                             id="joinlint-mcp-readiness-1",
                             function="WaitForMcpServers",
                             arguments={
-                                "servers": ["EvaluationDatabase", "JoinLint"]
+                                "servers": _configured_mcp_server_names(condition)
                             },
                         )
                     ],
@@ -1286,6 +1409,18 @@ def _required_mcp_tool_names(host: Host, condition: Condition) -> set[str]:
     return names
 
 
+def _all_required_mcp_missing_detail(host: Host, condition: Condition) -> str:
+    missing = ",".join(sorted(_required_mcp_tool_names(host, condition)))
+    return f"host_tool_surface_mismatch:missing={missing};unexpected=-"
+
+
+def _configured_mcp_server_names(condition: Condition) -> list[str]:
+    names = ["EvaluationDatabase"]
+    if condition in {"treatment", "oracle_mcp", "no_harness"}:
+        names.append("JoinLint")
+    return names
+
+
 def _host_tool_name(tool: object) -> str | None:
     if isinstance(tool, dict):
         value = tool.get("name")
@@ -1332,6 +1467,7 @@ def _safe_failure_detail(error: Exception) -> str:
         "host_bridge_dependency_or_database_readiness_failed",
         "sandbox_tools_readiness_failed",
         "unsupported_inspect_sandboxes_version",
+        "validation_failure_marker_arm_failed",
     }:
         return str(error)
     return type(error).__name__
@@ -1505,6 +1641,41 @@ def _validation_ledger_write_failed(messages: list[object]) -> bool:
         ):
             return True
     return False
+
+
+def _mark_validation_ledger_failure_observed(messages: list[object]) -> None:
+    if _validation_ledger_write_failed(messages):
+        store().set(
+            VALIDATION_LEDGER_FAILURE_OBSERVED_STORE_KEY,
+            VALIDATION_LEDGER_WRITE_FAILED,
+        )
+
+
+def _validation_ledger_failure_observed(state: TaskState) -> bool:
+    return (
+        state.store.get(VALIDATION_LEDGER_FAILURE_OBSERVED_STORE_KEY)
+        == VALIDATION_LEDGER_WRITE_FAILED
+    )
+
+
+async def _validation_failure_marker_observation(
+    state: TaskState,
+    *,
+    required: bool,
+) -> bool | None:
+    marker_path = state.store.get(VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY)
+    if marker_path is None:
+        return None if required else False
+    if marker_path != VALIDATION_FAILURE_MARKER_PATH:
+        return None
+    try:
+        with fail_after(VALIDATION_FAILURE_MARKER_READ_TIMEOUT_SECONDS):
+            value = await sandbox().read_file(marker_path, text=False)
+        if not isinstance(value, bytes):
+            return None
+        return validation_failure_marker_failed(value)
+    except Exception:
+        return None
 
 
 def _tool_result_payload(content: object) -> dict[str, Any] | None:

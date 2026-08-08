@@ -95,7 +95,9 @@ Edge = tuple[str, str]
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, strict=True, allow_inf_nan=False
+    )
 
 
 def _validate_identifier(value: str) -> str:

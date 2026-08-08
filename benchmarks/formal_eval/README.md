@@ -57,10 +57,10 @@ Formal Agent tasks use five separate stages:
    bridged model request;
 5. semantic scorers run only after evaluation completes.
 
-Each stage records its own status and duration in the Inspect sample store. The
-Agent-readiness clock starts only after host-binary and sandbox probes complete;
-infrastructure preparation no longer consumes the separate pre-model readiness
-window. The Modal sandbox timeout remains the global bound across both phases.
+Each stage records its own status and duration in the Inspect sample store.
+Host-binary and sandbox probes, their bounded retry, Agent bridge preparation,
+and MCP startup share one pre-model readiness window. The evaluation window is
+separate, while the Modal sandbox timeout remains the global bound across both.
 Readiness failures and Agents that never reach a first model request produce a
 task outcome with `INFRASTRUCTURE_FAILURE`; they are never interpreted as SQL
 parse failures. A timeout after the first model request remains `MODEL_TIMEOUT`.
@@ -90,9 +90,16 @@ the provider model, and attests the reduced tool surface with zero provider
 tokens. It exposes only Modal credentials and emits a commit-bound readiness
 report. Its exact CNY 2.10 approval covers the CNY 0.063456 two-sandbox compute
 upper bound plus the existing CNY 2.00 image-build reserve.
-The paid one-task canary uses a 150-second sandbox envelope so its independently
-measured 60-second readiness window does not consume the 90-second evaluation
-window. Pilot v3 targets Claude Code with the cost-efficient model so the host
+Readiness, the one-task canary, and calibration all require the cumulative
+campaign ceiling and prior spend; each fails locally before Modal or the model
+provider when its full approved per-run ceiling would exceed the remainder.
+Paid readiness, canary, calibration, and Pilot dispatch are additionally
+fail-closed until that calculation is backed by an authoritative atomic
+campaign reservation rather than a manually supplied prior-spend snapshot.
+The paid one-task canary uses a 170-second sandbox envelope: its independently
+measured 60-second readiness window and 90-second evaluation window leave 20
+seconds for lifecycle handoff and evidence finalization. Pilot v3 targets Claude
+Code with the cost-efficient model so the host
 bridge dependency is exercised before any full matrix run. Its Inspect accounting
 limit uses the native price-weighted expression `(input*0.5)+output:60000`:
 input is weighted at the cache-miss CNY 1 rate relative to the CNY 2 output rate,
@@ -119,16 +126,16 @@ The sealed input freezes two task IDs from distinct databases using the determin
 model tiers and both hosts, producing eight samples. Calibration uses the exact
 formal contract: a 35,000 native price-weighted runtime stop line and a 45,000
 accounting ceiling on each host, plus 20 messages, 90 seconds after the first
-model request, and a 150-second Modal sandbox. The formal workflow rejects an
+model request, and a 170-second Modal sandbox. The formal workflow rejects an
 attestation unless these limits match its registration and the frozen budget
 envelope remains approved.
 
-Calibration schema v6 separates readiness evidence from the observed product
+Calibration schema v7 separates readiness evidence from the observed product
 outcome. Infrastructure attestation requires every model/host/task cell to
 prepare the selected host binary. Resource attestation records uncached input,
 cache read, cache write, output, Inspect-weighted usage, headroom, and frozen-price
 cost for every cell. It retains limit-censored product outcomes, while the schema
-v6 authorization check independently requires complete accounting inside the
+v7 authorization check independently requires complete accounting inside the
 frozen token/cost envelope. A message, turn, token, or time limit therefore remains
 an Agent outcome rather than becoming an infrastructure failure.
 Scoring-pipeline readiness requires both scorer artifacts even when the model
@@ -139,13 +146,20 @@ parseability, and the evaluation-only submission guard decision. Guard rejection
 remains a product outcome; missing or malformed guard evidence blocks authorization.
 An evaluation-side ledger write failure is reported as infrastructure failure and
 also blocks authorization rather than increasing the product tool-error rate.
-Schema v6 otherwise authorizes only from infrastructure/resource/scoring-pipeline
+Before a treatment Agent starts, readiness arms a sticky sandbox marker. The
+recording MCP flips that marker before returning a ledger-write error, and the
+lifecycle reads it at the terminal boundary even when the Agent makes no later
+provider request. The marker contains no SQL or exception detail; a missing or
+malformed armed marker fails closed as evaluation infrastructure rather than
+being scored as a model outcome. Provider-request and final-message checks
+remain independent secondary evidence for the same failure.
+Schema v7 otherwise authorizes only from infrastructure/resource/scoring-pipeline
 readiness and budget status, so a product failure cannot preselect tasks that
 already work.
-Schema v1-v5 artifacts remain parseable but cannot authorize the current Pilot.
+Schema v1-v6 artifacts remain parseable but cannot authorize the current Pilot.
 
 The eight-run ceiling is CNY 4.00: a modeled CNY 1.44 token upper bound, CNY
-0.31728 Modal-compute upper bound, and CNY 2.00 image-build reserve. Dispatch
+0.359584 Modal-compute upper bound, and CNY 2.00 image-build reserve. Dispatch
 also requires the previously accumulated investigation spend and cumulative
 campaign budget; both values are recorded in the attestation. The weighted
 token expression remains a conservative prompt-complexity limit, not a
@@ -175,10 +189,10 @@ the Pilot as a full-factorial effect study. There are no repetitions. Pilot
 tasks and outputs never enter the confirmatory effect estimate.
 
 The workflow accepts only the exact CNY 20 approval. The frozen worst-case
-resource envelope is CNY 19.5728: CNY 14.40 for model tokens, CNY 3.1728 for
-150-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. It also
+resource envelope is CNY 19.99584: CNY 14.40 for model tokens, CNY 3.59584 for
+170-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. It also
 requires the cumulative investigation budget and the spend observed before the
-Pilot; dispatch stops unless that prior spend plus the frozen CNY 19.5728 cost
+Pilot; dispatch stops unless that prior spend plus the frozen CNY 19.99584 cost
 envelope fits inside the campaign budget. The CNY 20 per-run hard stop remains
 unchanged, so unused approval headroom is not counted as spend twice. Each
 sample has the native price-weighted token limit exercised by the required
@@ -186,10 +200,10 @@ four-cell calibration, `(input*0.5)+output:35000`, with a separate 45,000
 accounting ceiling. Inspect checks the runtime stop line after a model response;
 the 10,000-token accounting reserve is nearly twice the largest 5,123-token
 single-response increment observed in the sealed calibration. Each sample has a
-60-second readiness limit,
-and a 90-second
-evaluation limit that starts at the first model request; each Modal sandbox has
-a platform-level 150-second automatic timeout. A 20-message limit bounds
+60-second readiness limit and a 90-second evaluation limit that starts at the
+first model request; each Modal sandbox has a platform-level 170-second
+automatic timeout, leaving a 20-second lifecycle-finalization margin. A
+20-message limit bounds
 runaway host exploration before the token ceiling. The existing 0.5 CPU and 2 GiB
 memory allocation remains unchanged rather than introducing an unmeasured
 memory reduction. The workspace Image Builder is
@@ -211,15 +225,16 @@ machine to connect to Modal. Because GitHub limits Draft Releases to maintainers
 the protected manual workflow receives a repository `contents: write` token
 solely to read that input asset; it does not invoke a GitHub write operation.
 Only the paid dispatch step receives both Modal and DeepSeek credentials.
-Partial budget checkpoints and private logs are retained if a batch stops. This
-code-side envelope does not replace provider billing alerts or account spend
-limits.
+Partial sanitized budget checkpoints are retained if a batch stops. Raw Inspect
+logs remain only on the ephemeral Actions runner and are never uploaded. This
+code-side envelope does not replace provider billing alerts or account spend limits.
 
 ## Formal remote run
 
 Formal inputs stay under the ignored `sealed/` boundary described in
-[`sealed/README.md`](sealed/README.md). Use the `formal-evaluation` GitHub
-Actions workflow; do not launch a paid batch from a developer shell.
+[`sealed/README.md`](sealed/README.md). When the paid path is re-enabled, use
+the protected `formal-evaluation` GitHub Actions workflow; never launch that
+batch from a developer shell.
 
 The protected workflow:
 
@@ -239,13 +254,11 @@ The protected workflow:
    including null or harmful effects. This first report is deliberately ineligible for a public
    improvement claim until post-run blinded review is attached.
 
-Configure a protected GitHub Environment named `formal-evaluation` with Modal
-credentials and only the provider keys required by the two frozen model IDs.
-Upload the ignored sealed directory as the private `joinlint-formal-inputs`
-artifact in a controlled freeze run; dispatch the formal workflow with that
-run ID. The workflow downloads it only after environment approval and verifies
-every required file against the input lock. It still requires the explicit
-`confirm_paid` input.
+The legacy paid `formal-evaluation` job is fail-closed until it has both an
+atomic campaign reservation and an access-controlled frozen-input store. Do not
+upload the ignored sealed directory as an Actions artifact: in a public
+repository that artifact is not a private evidence boundary. The deterministic
+job remains available without provider credentials or paid dispatch.
 
 After the batch, independently review the exact sample IDs frozen in the run
 plan without arm labels. Store per-sample `BlindReviewDecision` records, output
@@ -265,8 +278,10 @@ small allowlisted environment without model, GitHub, or Modal credentials.
 ## BIRD subset preparation
 
 The naturalistic study needs at least 12 databases, while the official BIRD
-Dev release contains 11. The protected `prepare-bird-subset` workflow obtains
-additional Train databases without making a developer machine a runner:
+Dev release contains 11. The protected `prepare-bird-subset` paid job is
+currently fail-closed pending an atomic campaign reservation and an
+access-controlled destination for its sealed output. When re-enabled, it
+obtains additional Train databases without making a developer machine a runner:
 
 1. GitHub Actions requires the `formal-evaluation` Environment approval and an
    explicit `confirm_paid` input.
@@ -283,8 +298,9 @@ additional Train databases without making a developer machine a runner:
    Qualification never reads JoinLint output.
 4. The remote Volume receives only selected SQLite files, matching task/schema
    metadata, and `source-manifest.json`. GitHub rechecks every hash and SQLite
-   file before creating the access-controlled seven-day artifact, then removes the
-   temporary remote subset.
+   file before handing the subset to the access-controlled destination, then
+   removes the temporary remote subset. It must never upload sealed output as a
+   public-repository Actions artifact.
 
 The default Train IDs are acquisition candidates, not a frozen pilot or
 confirmatory allocation. Review allowed join graphs and complete the independent
@@ -297,9 +313,12 @@ the workflow is not called by ordinary CI or by the formal-evaluation workflow.
 - Natural and adversarial relationship corpora are never pooled.
 - BIRD confirmatory tasks and semantic-join-failure diagnostics are never
   pooled into one error rate.
-- Raw questions, schema text, gold SQL, database paths, review state, and
-  Inspect transcripts remain private.
-- Public artifacts contain identifiers, hashes, counts, rates, intervals,
+- Raw questions, schema text, gold SQL, database paths, and review state stay in
+  the access-controlled frozen-input boundary.
+- Raw Inspect transcripts remain runner-ephemeral; public Actions never upload
+  them.
+- Uploaded artifacts pass the sanitized-artifact scan and contain identifiers,
+  hashes, counts, rates, intervals,
   failure categories, model and host versions, commit and image identity,
   lineage and input digests, latency, memory, tokens, and cost only.
 - Join correctness is never described as proof of metric meaning or complete

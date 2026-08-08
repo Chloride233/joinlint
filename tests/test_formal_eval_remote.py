@@ -200,6 +200,25 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
 
     assert workflow["jobs"]["formal"]["environment"] == "formal-evaluation"
     assert workflow["jobs"]["formal"]["runs-on"] == "ubuntu-latest"
+    block = workflow["jobs"]["formal"]["steps"][0]
+    assert block["name"] == (
+        "Block legacy paid formal run pending atomic campaign reservation"
+    )
+    assert block["run"] == "exit 1"
+    paid_gate = next(
+        step
+        for step in workflow["jobs"]["formal"]["steps"]
+        if step.get("name") == "Require explicit paid-run confirmation"
+    )
+    assert "github.run_attempt != 1" in paid_gate["if"]
+    checkouts = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if step.get("uses") == "actions/checkout@v4"
+    ]
+    assert checkouts
+    assert all(step.get("with", {}).get("persist-credentials") == "false" for step in checkouts)
     assert "confirm_paid" in workflow["on"]["workflow_dispatch"]["inputs"]
     assert "sealed_artifact_run_id" in workflow["on"]["workflow_dispatch"]["inputs"]
     assert "actions/download-artifact@v4" in text
@@ -214,6 +233,31 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
     ).read_text(encoding="utf-8")
     report_workflow = yaml.load(report_text, Loader=yaml.BaseLoader)
     assert report_workflow["jobs"]["report"]["runs-on"] == "ubuntu-latest"
+    report_steps = report_workflow["jobs"]["report"]["steps"]
+    report_checkout = next(
+        step for step in report_steps if step.get("uses") == "actions/checkout@v4"
+    )
+    assert report_checkout["with"]["persist-credentials"] == "false"
+    report_scan = next(
+        step for step in report_steps if step.get("name") == "Scan final public artifacts"
+    )
+    assert report_scan["id"] == "scan_final_report"
+    assert all(
+        secret_name in report_scan["run"]
+        for secret_name in (
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "MODAL_TOKEN_ID",
+            "MODAL_TOKEN_SECRET",
+        )
+    )
+    report_upload = next(
+        step
+        for step in report_steps
+        if (step.get("with") or {}).get("name") == "formal-evaluation-final-report"
+    )
+    assert "steps.scan_final_report.outcome == 'success'" in report_upload["if"]
     assert "--blind-review formal-review/blind-review.json" in report_text
     assert "--current-commit" in report_text
     for job in (workflow["jobs"]["formal"], report_workflow["jobs"]["report"]):
@@ -244,6 +288,22 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
             "DEEPSEEK_BASE_URL",
         }
         for step in dispatch_steps.values()
+    )
+    sanitized_scan = next(
+        step
+        for step in workflow["jobs"]["formal"]["steps"]
+        if step.get("name")
+        == "Scan sanitized artifacts for forbidden raw fields and common secret prefixes"
+    )
+    sanitized_upload = next(
+        step
+        for step in workflow["jobs"]["formal"]["steps"]
+        if (step.get("with") or {}).get("name") == "formal-evaluation-sanitized"
+    )
+    assert sanitized_scan["id"] == "scan_formal_sanitized"
+    assert (
+        "steps.scan_formal_sanitized.outcome == 'success'"
+        in sanitized_upload["if"]
     )
 
 

@@ -42,6 +42,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.joinlint_commit }}
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: formal-evaluation-sanitized
@@ -93,9 +94,11 @@ jobs:
           --output final-report
           --require none
       - name: Scan final public artifacts
+        id: scan_final_report
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('final-report').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','ANTHROPIC_API_KEY'); found=[value for value in forbidden if value in text]; assert not found, found"
+          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('final-report').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','OPENAI_API_KEY','ANTHROPIC_API_KEY','DEEPSEEK_API_KEY','MODAL_TOKEN_ID','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
       - uses: actions/upload-artifact@v4
+        if: steps.scan_final_report.outcome == 'success'
         with:
           name: formal-evaluation-final-report
           path: final-report

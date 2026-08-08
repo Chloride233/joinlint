@@ -23,13 +23,14 @@ from benchmarks.formal_eval.pilot import (
 from benchmarks.formal_eval.pilot_dispatch import (
     build_pilot_commands,
     observed_model_cost_cny,
+    pilot_campaign_budget,
     require_batch_health,
 )
 from joinlint.contracts import canonical_json
 
 
 CANARY_BUDGET_CNY = 2.25
-CANARY_SANDBOX_TIMEOUT_SECONDS = 150
+CANARY_SANDBOX_TIMEOUT_SECONDS = 170
 CANARY_TOKEN_LIMIT = 60_000
 CANARY_TOKEN_LIMIT_TYPE = "(input*0.5)+output"
 CANARY_HOST: Host = "claude_code"
@@ -128,11 +129,20 @@ def run_canary(
     output: Path,
     *,
     workflow_run_id: int,
+    campaign_budget_cny: float,
+    campaign_spend_before_cny: float,
 ) -> PilotCanaryReport:
     registration, _, run_plan = verify_pilot_inputs(root)
     envelope = canary_budget_envelope(registration)
     if envelope.total_upper_cny > CANARY_BUDGET_CNY:
         raise ValueError("pilot canary upper-bound cost exceeds the approved budget")
+    campaign = pilot_campaign_budget(
+        campaign_budget_cny=campaign_budget_cny,
+        campaign_spend_before_cny=campaign_spend_before_cny,
+        pilot_cost_upper_cny=CANARY_BUDGET_CNY,
+    )
+    if not campaign.passed:
+        raise ValueError("pilot canary could exceed the approved cumulative campaign budget")
     inspect = shutil.which("inspect")
     if inspect is None:
         raise ValueError("Inspect CLI is unavailable")
@@ -235,6 +245,8 @@ def verify_canary_attestation_values(
 ) -> None:
     if report.workflow_run_id != expected_run_id or run_metadata.get("id") != expected_run_id:
         raise ValueError("canary attestation run ID mismatch")
+    if type(run_metadata.get("run_attempt")) is not int or run_metadata["run_attempt"] != 1:
+        raise ValueError("canary attestation run attempt mismatch")
     if run_metadata.get("name") != "formal-pilot-canary" or run_metadata.get("path") != (
         ".github/workflows/formal-pilot-canary.yml"
     ):
@@ -301,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--log-dir", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--workflow-run-id", type=int, required=True)
+    run.add_argument("--campaign-budget-cny", type=float, required=True)
+    run.add_argument("--campaign-spend-before-cny", type=float, required=True)
     verify = commands.add_parser("verify-attestation")
     verify.add_argument("--root", type=Path, required=True)
     verify.add_argument("--attestation", type=Path, required=True)
@@ -315,6 +329,8 @@ def main(argv: list[str] | None = None) -> int:
             arguments.log_dir,
             arguments.output,
             workflow_run_id=arguments.workflow_run_id,
+            campaign_budget_cny=arguments.campaign_budget_cny,
+            campaign_spend_before_cny=arguments.campaign_spend_before_cny,
         )
         print(report.model_dump_json())
         return 0

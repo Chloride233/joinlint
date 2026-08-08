@@ -247,12 +247,39 @@ def test_bird_preparation_workflow_is_approval_and_paid_gated() -> None:
 
     assert job["runs-on"] == "ubuntu-latest"
     assert job["environment"] == "formal-evaluation"
+    assert job["steps"][0]["name"] == (
+        "Block paid evaluation pending atomic campaign reservation"
+    )
+    paid_gate = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Require explicit paid-run confirmation"
+    )
+    assert "github.run_attempt != 1" in paid_gate["if"]
+    checkout = next(
+        step for step in job["steps"] if step.get("uses") == "actions/checkout@v4"
+    )
+    assert checkout["with"]["persist-credentials"] == "false"
     assert "confirm_paid" in workflow["on"]["workflow_dispatch"]["inputs"]
     assert "benchmarks/formal_eval/bird_modal.py" in source
     assert "benchmarks.formal_eval.bird_dataset" in source
-    assert "actions/upload-artifact@v4" in source
+    assert "actions/upload-artifact@v4" not in source
     assert "modal volume rm --recursive" in source
-    assert "if: always()" in source
+    prepare_step = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Prepare the official BIRD Train subset in Modal"
+    )
+    cleanup_step = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Remove the temporary remote subset"
+    )
+    assert prepare_step["id"] == "prepare_subset"
+    assert cleanup_step["if"] == (
+        "always() && steps.prepare_subset.outcome != 'skipped'"
+    )
+    assert cleanup_step.get("continue-on-error") != "true"
     assert "OPENAI_API_KEY" not in source
     assert "ANTHROPIC_API_KEY" not in source
 

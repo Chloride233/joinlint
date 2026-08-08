@@ -39,6 +39,10 @@ from benchmarks.formal_eval.lifecycle import (
     start_evaluation,
     write_lifecycle,
 )
+from benchmarks.formal_eval.validation_failure_marker import (
+    VALIDATION_FAILURE_MARKER_CLEAR,
+    VALIDATION_FAILURE_MARKER_FAILED,
+)
 
 
 NOW = datetime(2026, 7, 27, tzinfo=timezone.utc)
@@ -178,6 +182,49 @@ def test_agent_stopping_before_first_model_boundary_is_infrastructure_outcome() 
     assert scoring_eligibility(record).failure_code == "INFRASTRUCTURE_FAILURE"
 
 
+def test_agent_does_not_start_after_infrastructure_exhausts_preparation_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    @agent
+    def should_not_start_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            nonlocal attempts
+            attempts += 1
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            return agent_state
+
+        return execute
+
+    record = infrastructure_prepared(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=0,
+        host_binary_sha256="a" * 64,
+        now=NOW,
+    )
+    monkeypatch.setattr(inspect_task, "elapsed_seconds_since", lambda started_at: 1)
+    state = _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            should_not_start_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    failed = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 0
+    assert failed.failure_reason == LifecycleFailureReason.EVALUATION_NOT_STARTED
+    assert failed.failure_detail == "agent_preparation_timeout"
+
+
 def test_host_context_drift_is_a_distinct_pre_model_readiness_failure() -> None:
     state = _pending_state()
     init_subtask_store(state.store)
@@ -192,8 +239,12 @@ def test_host_context_drift_is_a_distinct_pre_model_readiness_failure() -> None:
     assert scoring_eligibility(record).failure_code == "INFRASTRUCTURE_FAILURE"
 
 
-def test_codex_retries_one_all_mcp_missing_startup_race_before_model() -> None:
+def test_codex_retries_one_all_mcp_missing_startup_race_before_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     attempts = 0
+    marker_sandbox = _MarkerSandbox(VALIDATION_FAILURE_MARKER_CLEAR)
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
 
     @agent
     def transient_agent():  # type: ignore[no-untyped-def]
@@ -215,6 +266,10 @@ def test_codex_retries_one_all_mcp_missing_startup_race_before_model() -> None:
         return execute
 
     state = _pending_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
     init_subtask_store(state.store)
 
     result = asyncio.run(
@@ -237,7 +292,63 @@ def test_codex_retries_one_all_mcp_missing_startup_race_before_model() -> None:
     )
 
 
-def test_codex_does_not_retry_partial_or_unexpected_tool_surface_drift() -> None:
+def test_codex_control_retries_one_all_required_mcp_missing_startup_race() -> None:
+    attempts = 0
+
+    @agent
+    def transient_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError(
+                    "codex bridge failed: host_tool_surface_mismatch:"
+                    "missing=execute_sql,submit_sql;unexpected=-"
+                )
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            record = readiness_passed(record, duration_seconds=0, now=NOW)
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            return agent_state
+
+        return execute
+
+    state = _pending_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            transient_agent(),
+            1,
+            1,
+            host="codex",
+            condition="control",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 2
+    assert record.scoring_eligible is True
+    assert record.infrastructure_attempts == 2
+    assert record.infrastructure_retry_reason == (
+        "host_tool_surface_mismatch:missing=execute_sql,submit_sql;unexpected=-"
+    )
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "host_tool_surface_mismatch:missing=execute_sql;unexpected=-",
+        (
+            "host_tool_surface_mismatch:"
+            "missing=execute_sql,get_join_plan,submit_sql,validate_sql;"
+            "unexpected=shell"
+        ),
+    ],
+)
+def test_codex_does_not_retry_partial_or_unexpected_tool_surface_drift(
+    detail: str,
+) -> None:
     attempts = 0
 
     @agent
@@ -246,9 +357,7 @@ def test_codex_does_not_retry_partial_or_unexpected_tool_surface_drift() -> None
             nonlocal attempts
             del agent_state
             attempts += 1
-            raise RuntimeError(
-                "host_tool_surface_mismatch:missing=execute_sql;unexpected=shell"
-            )
+            raise RuntimeError(detail)
 
         return execute
 
@@ -274,6 +383,7 @@ def test_codex_does_not_retry_partial_or_unexpected_tool_surface_drift() -> None
 
 def test_codex_does_not_exceed_two_total_infrastructure_attempts() -> None:
     attempts = 0
+    prepared_at = datetime.now(timezone.utc)
 
     @agent
     def missing_mcp_agent():  # type: ignore[no-untyped-def]
@@ -281,17 +391,19 @@ def test_codex_does_not_exceed_two_total_infrastructure_attempts() -> None:
             nonlocal attempts
             del agent_state
             attempts += 1
-            raise RuntimeError(inspect_task.CODEX_ALL_MCP_MISSING_DETAIL)
+            raise RuntimeError(
+                inspect_task._all_required_mcp_missing_detail("codex", "treatment")
+            )
 
         return execute
 
     record = infrastructure_prepared(
-        new_lifecycle("codex", "0.144.1", now=NOW),
+        new_lifecycle("codex", "0.144.1", now=prepared_at),
         duration_seconds=0,
         host_binary_sha256="a" * 64,
         infrastructure_attempts=2,
         infrastructure_retry_reason="sandbox_tools_readiness_failed",
-        now=NOW,
+        now=prepared_at,
     )
     state = _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
     init_subtask_store(state.store)
@@ -371,32 +483,48 @@ def test_ledger_failure_cannot_be_overridden_by_a_drifted_submission() -> None:
     assert record.scoring_eligible is False
 
 
-def test_ledger_failure_takes_precedence_over_a_later_evaluation_timeout() -> None:
+def test_ledger_failure_seen_by_provider_filter_precedes_later_timeout() -> None:
+    context_filter = inspect_task._host_context_filter("codex", "treatment")
+
     @agent
     def stalled_agent():  # type: ignore[no-untyped-def]
         async def execute(agent_state: AgentState) -> AgentState:
             active_store = store()
             record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
             write_lifecycle(active_store, start_evaluation(record, now=NOW))
-            agent_state.messages.extend(
+            provider_messages = [
+                ChatMessageAssistant(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            id="validate-one",
+                            function="mcp__JoinLint__validate_sql",
+                            arguments={"sql": "SELECT 1", "plan_id": "a" * 64},
+                        )
+                    ],
+                ),
+                ChatMessageTool(
+                    content=LEDGER_FAILURE_RESPONSE,
+                    tool_call_id="validate-one",
+                    function="mcp__JoinLint__validate_sql",
+                ),
+            ]
+            await context_filter(
+                get_model("mockllm/model"),
+                provider_messages,
                 [
-                    ChatMessageAssistant(
-                        content="",
-                        tool_calls=[
-                            ToolCall(
-                                id="validate-one",
-                                function="mcp__JoinLint__validate_sql",
-                                arguments={"sql": "SELECT 1", "plan_id": "a" * 64},
-                            )
-                        ],
-                    ),
-                    ChatMessageTool(
-                        content=LEDGER_FAILURE_RESPONSE,
-                        tool_call_id="validate-one",
-                        function="mcp__JoinLint__validate_sql",
-                    ),
-                ]
+                    SimpleNamespace(name=name)
+                    for name in (
+                        "execute_sql",
+                        "submit_sql",
+                        "get_join_plan",
+                        "validate_sql",
+                    )
+                ],
+                None,
+                GenerateConfig(),
             )
+            assert agent_state.messages == []
             await asyncio.sleep(1)
             return agent_state
 
@@ -418,6 +546,208 @@ def test_ledger_failure_takes_precedence_over_a_later_evaluation_timeout() -> No
     record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
     assert record.failure_reason == LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED
     assert record.infrastructure_status == "failed"
+
+
+def test_sidecar_ledger_failure_precedes_timeout_without_provider_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker_sandbox = _MarkerSandbox(VALIDATION_FAILURE_MARKER_FAILED)
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
+    state = _ready_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            _stalled_after_start_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED
+    assert record.infrastructure_status == "failed"
+    assert marker_sandbox.reads >= 1
+
+
+def test_clear_sidecar_preserves_model_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker_sandbox = _MarkerSandbox(VALIDATION_FAILURE_MARKER_CLEAR)
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
+    state = _ready_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            _stalled_after_start_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.MODEL_TIMEOUT
+    assert record.failure_detail == "evaluation_timeout"
+
+
+@pytest.mark.parametrize(
+    "marker_value",
+    [FileNotFoundError("marker missing"), b"malformed"],
+    ids=("missing", "malformed"),
+)
+def test_unavailable_sidecar_fails_closed_without_leaking_detail(
+    monkeypatch: pytest.MonkeyPatch,
+    marker_value: bytes | Exception,
+) -> None:
+    marker_sandbox = _MarkerSandbox(marker_value)
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
+    state = _ready_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            _stalled_after_start_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert (
+        record.failure_reason
+        == LifecycleFailureReason.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+    )
+    assert record.infrastructure_status == "failed"
+    assert record.failure_detail == inspect_task.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+    assert "marker missing" not in repr(record)
+
+
+def test_treatment_missing_sidecar_store_key_is_infrastructure_failure() -> None:
+    state = _ready_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            _started_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert (
+        record.failure_reason
+        == LifecycleFailureReason.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+    )
+    assert record.infrastructure_status == "failed"
+    assert record.failure_detail == inspect_task.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+
+
+def test_sidecar_read_timeout_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker_sandbox = _SlowMarkerSandbox()
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
+    monkeypatch.setattr(
+        inspect_task,
+        "VALIDATION_FAILURE_MARKER_READ_TIMEOUT_SECONDS",
+        0.001,
+    )
+    state = _ready_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            _started_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert (
+        record.failure_reason
+        == LifecycleFailureReason.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+    )
+    assert record.infrastructure_status == "failed"
+    assert record.failure_detail == inspect_task.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+    assert marker_sandbox.reads == 1
+
+
+def test_cancellation_cleanup_ledger_message_does_not_override_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker_sandbox = _MarkerSandbox(VALIDATION_FAILURE_MARKER_CLEAR)
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
+
+    @agent
+    def stalled_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            try:
+                await asyncio.sleep(1)
+            finally:
+                agent_state.messages.append(
+                    ChatMessageTool(
+                        content=LEDGER_FAILURE_RESPONSE,
+                        tool_call_id="validate-one",
+                        function="mcp__JoinLint__validate_sql",
+                    )
+                )
+            return agent_state
+
+        return execute
+
+    state = _ready_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            stalled_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.MODEL_TIMEOUT
+    assert record.failure_detail == "evaluation_timeout"
+    assert marker_sandbox.reads >= 1
 
 
 def test_product_validation_error_is_not_an_evaluation_infrastructure_failure() -> None:
@@ -452,6 +782,47 @@ def test_readiness_forces_sandbox_tools_injection_before_agent_start(
     asyncio.run(inspect_task._run_readiness_probes("codex"))
 
     assert calls[-1] == ("exec_remote", ("true",), False)
+
+
+def test_treatment_readiness_arms_validation_failure_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes: list[tuple[str, bytes]] = []
+
+    class ReadySandbox:
+        async def write_file(self, path: str, content: bytes) -> None:
+            writes.append((path, content))
+
+    async def prepare(host: str, agent_version: str) -> str:
+        del host, agent_version
+        return "a" * 64
+
+    async def probe(host: str) -> None:
+        del host
+
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: ReadySandbox())
+    monkeypatch.setattr(inspect_task, "_prepare_host_binary", prepare)
+    monkeypatch.setattr(inspect_task, "_run_readiness_probes", probe)
+    state = _state(store={})
+
+    result = asyncio.run(
+        inspect_task.infrastructure_readiness(
+            "codex",
+            "0.144.1",
+            1,
+            validation_failure_marker_path=inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    assert writes == [
+        (
+            inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+            VALIDATION_FAILURE_MARKER_CLEAR,
+        )
+    ]
+    assert result.store.get(inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY) == (
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH
+    )
 
 
 def test_readiness_reports_sandbox_tools_failure(
@@ -499,6 +870,50 @@ def test_infrastructure_readiness_retries_one_transient_pre_model_failure(
     assert record.infrastructure_status == "pending"
     assert record.infrastructure_attempts == 2
     assert record.infrastructure_retry_reason == "sandbox_tools_readiness_failed"
+
+
+def test_infrastructure_retry_uses_only_the_remaining_preparation_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    observed_timeouts: list[float] = []
+    clock = iter((0.0, 0.0, 0.4, 0.8))
+
+    class CapturedDeadline:
+        def __init__(self, timeout: float) -> None:
+            observed_timeouts.append(timeout)
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+    async def prepare(host: str, agent_version: str) -> str:
+        nonlocal attempts
+        del host, agent_version
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("sandbox_tools_readiness_failed")
+        return "a" * 64
+
+    async def probe(host: str) -> None:
+        del host
+
+    monkeypatch.setattr(inspect_task, "perf_counter", lambda: next(clock))
+    monkeypatch.setattr(inspect_task, "fail_after", CapturedDeadline)
+    monkeypatch.setattr(inspect_task, "_prepare_host_binary", prepare)
+    monkeypatch.setattr(inspect_task, "_run_readiness_probes", probe)
+    state = _state(store={})
+
+    result = asyncio.run(
+        inspect_task.infrastructure_readiness("codex", "0.144.1", 1)(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 2
+    assert observed_timeouts == pytest.approx([1.0, 0.6])
+    assert record.infrastructure_preparation_duration_seconds == pytest.approx(0.8)
 
 
 def test_infrastructure_readiness_does_not_retry_a_frozen_image_mismatch(
@@ -947,6 +1362,39 @@ def test_claude_host_context_waits_once_for_mcp_before_scoring() -> None:
     ).evaluation_status == "started"
 
 
+def test_claude_control_waits_only_for_its_configured_database_mcp() -> None:
+    state = _pending_state(host="claude_code", agent_version="2.1.212")
+    init_subtask_store(state.store)
+    context_filter = inspect_task._host_context_filter(
+        "claude_code",
+        "control",
+        short_circuit=True,
+    )
+    pending_tools = [
+        SimpleNamespace(name=name)
+        for name in ("Glob", "Grep", "WaitForMcpServers")
+    ]
+
+    wait_output = asyncio.run(
+        context_filter(
+            get_model("mockllm/model"),
+            [],
+            pending_tools,
+            None,
+            GenerateConfig(),
+        )
+    )
+
+    assert wait_output is not None
+    assert wait_output.message.tool_calls == [
+        ToolCall(
+            id="joinlint-mcp-readiness-1",
+            function="WaitForMcpServers",
+            arguments={"servers": ["EvaluationDatabase"]},
+        )
+    ]
+
+
 def test_claude_host_context_rejects_repeated_mcp_wait() -> None:
     state = _pending_state(host="claude_code", agent_version="2.1.212")
     init_subtask_store(state.store)
@@ -1033,11 +1481,12 @@ def _pending_state(
     host: str = "codex",
     agent_version: str = "0.144.1",
 ) -> TaskState:
+    prepared_at = datetime.now(timezone.utc)
     record = infrastructure_prepared(
-        new_lifecycle(host, agent_version, now=NOW),  # type: ignore[arg-type]
+        new_lifecycle(host, agent_version, now=prepared_at),  # type: ignore[arg-type]
         duration_seconds=0,
         host_binary_sha256="a" * 64,
-        now=NOW,
+        now=prepared_at,
     )
     return _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
 
@@ -1063,12 +1512,50 @@ def _eligible_state() -> TaskState:
     return _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
 
 
+class _MarkerSandbox:
+    def __init__(self, value: bytes | Exception) -> None:
+        self.value = value
+        self.reads = 0
+
+    async def read_file(self, path: str, *, text: bool = True) -> bytes:
+        assert path == inspect_task.VALIDATION_FAILURE_MARKER_PATH
+        assert text is False
+        self.reads += 1
+        if isinstance(self.value, Exception):
+            raise self.value
+        return self.value
+
+
+class _SlowMarkerSandbox:
+    def __init__(self) -> None:
+        self.reads = 0
+
+    async def read_file(self, path: str, *, text: bool = True) -> bytes:
+        assert path == inspect_task.VALIDATION_FAILURE_MARKER_PATH
+        assert text is False
+        self.reads += 1
+        await asyncio.sleep(1)
+        return VALIDATION_FAILURE_MARKER_CLEAR
+
+
 @agent
 def _started_agent():  # type: ignore[no-untyped-def]
     async def execute(agent_state: AgentState) -> AgentState:
         active_store = store()
         record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
         write_lifecycle(active_store, start_evaluation(record, now=NOW))
+        return agent_state
+
+    return execute
+
+
+@agent
+def _stalled_after_start_agent():  # type: ignore[no-untyped-def]
+    async def execute(agent_state: AgentState) -> AgentState:
+        active_store = store()
+        record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+        write_lifecycle(active_store, start_evaluation(record, now=NOW))
+        await asyncio.sleep(1)
         return agent_state
 
     return execute

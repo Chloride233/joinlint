@@ -127,6 +127,7 @@ def test_modal_readiness_workflow_scopes_secrets_and_budget() -> None:
     text = path.read_text(encoding="utf-8")
     job = workflow["jobs"]["readiness"]
     canary = workflow["jobs"]["canary"]
+    inputs = workflow["on"]["workflow_dispatch"]["inputs"]
     run_steps = [
         step
         for step in job["steps"]
@@ -140,10 +141,44 @@ def test_modal_readiness_workflow_scopes_secrets_and_budget() -> None:
     assert job["environment"] == "formal-evaluation"
     assert job["permissions"] == {"contents": "read"}
     assert job["if"] == "inputs.readiness_only == true && inputs.calibration != true"
-    assert canary["if"] == "inputs.readiness_only != true"
-    assert job["steps"][1]["with"]["ref"] == "${{ github.sha }}"
+    assert canary["if"] == (
+        "inputs.readiness_only != true || inputs.calibration == true"
+    )
+    assert job["steps"][0]["name"] == (
+        "Block paid evaluation pending atomic campaign reservation"
+    )
+    exact_gate = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Require the exact approved no-model diagnostic"
+    )
+    assert "github.run_attempt != 1" in exact_gate["if"]
+    assert inputs["campaign_budget_cny"]["required"] == "true"
+    assert inputs["campaign_spend_before_cny"]["required"] == "true"
+    checkout_index = next(
+        index for index, step in enumerate(job["steps"]) if step.get("uses") == "actions/checkout@v4"
+    )
+    assert job["steps"][checkout_index]["with"]["ref"] == "${{ github.sha }}"
+    assert job["steps"][checkout_index]["with"]["persist-credentials"] == "false"
     assert "inputs.confirm_paid != true || inputs.budget_cny != '2.10'" in text
     assert len(run_steps) == 2
+    preflight = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Require cumulative campaign budget for readiness"
+    )
+    step_names = [step.get("name") for step in job["steps"]]
+    assert step_names.index(preflight["name"]) < step_names.index(run_steps[0]["name"])
+    assert step_names.index(preflight["name"]) < checkout_index
+    assert "benchmarks.formal_eval" not in preflight["run"]
+    assert preflight["env"]["CAMPAIGN_COST_UPPER_CNY"] == "2.10"
+    sanitized_upload = next(
+        step
+        for step in job["steps"]
+        if (step.get("with") or {}).get("name")
+        == "joinlint-formal-modal-readiness-sanitized"
+    )
+    assert sanitized_upload["with"]["if-no-files-found"] == "error"
     assert all(
         set(step["env"])
         == {"MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "PYTHONPATH"}
@@ -158,3 +193,20 @@ def test_modal_readiness_workflow_scopes_secrets_and_budget() -> None:
     assert any("host=claude_code" in step["run"] for step in run_steps)
     assert all("DEEPSEEK_API_KEY" not in step["run"] for step in run_steps)
     assert all("OPENAI_API_KEY" not in step["run"] for step in run_steps)
+    sanitized_scan = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Scan sanitized readiness artifacts"
+    )
+    sanitized_upload = next(
+        step
+        for step in job["steps"]
+        if (step.get("with") or {}).get("name")
+        == "joinlint-formal-modal-readiness-sanitized"
+    )
+    assert sanitized_scan["id"] == "scan_readiness_sanitized"
+    assert sanitized_upload["with"]["path"] == "modal-readiness-artifacts"
+    assert (
+        "steps.scan_readiness_sanitized.outcome == 'success'"
+        in sanitized_upload["if"]
+    )

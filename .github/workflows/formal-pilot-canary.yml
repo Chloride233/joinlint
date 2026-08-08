@@ -40,12 +40,12 @@ on:
         type: boolean
       campaign_budget_cny:
         description: Approved cumulative investigation budget in CNY
-        required: false
+        required: true
         default: ""
         type: string
       campaign_spend_before_cny:
         description: Cumulative investigation spend before this run in CNY
-        required: false
+        required: true
         default: ""
         type: string
 
@@ -60,12 +60,41 @@ jobs:
     runs-on: ubuntu-latest
     environment: formal-evaluation
     steps:
-      - name: Require the exact approved no-model diagnostic
-        if: inputs.confirm_paid != true || inputs.budget_cny != '2.10'
+      - name: Block paid evaluation pending atomic campaign reservation
         run: exit 1
+      - name: Require the exact approved no-model diagnostic
+        if: >-
+          github.run_attempt != 1 ||
+          inputs.confirm_paid != true || inputs.budget_cny != '2.10'
+        run: exit 1
+      - name: Require cumulative campaign budget for readiness
+        env:
+          CAMPAIGN_BUDGET_CNY: ${{ inputs.campaign_budget_cny }}
+          CAMPAIGN_SPEND_BEFORE_CNY: ${{ inputs.campaign_spend_before_cny }}
+          CAMPAIGN_COST_UPPER_CNY: "2.10"
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from decimal import Decimal
+
+          values = [
+              os.environ["CAMPAIGN_BUDGET_CNY"],
+              os.environ["CAMPAIGN_SPEND_BEFORE_CNY"],
+              os.environ["CAMPAIGN_COST_UPPER_CNY"],
+          ]
+          canonical = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?\Z")
+          if not all(canonical.fullmatch(value) for value in values):
+              sys.exit("campaign amounts must be canonical decimal strings")
+          budget, spent, upper = map(Decimal, values)
+          if budget <= 0 or spent < 0 or upper < 0 or spent + upper > budget:
+              sys.exit("readiness could exceed the approved cumulative campaign budget")
+          PY
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Record checked-out commit
         id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -132,30 +161,87 @@ jobs:
           --output modal-readiness-artifacts
           --workflow-run-id "${{ github.run_id }}"
           --joinlint-commit "${{ steps.commit.outputs.sha }}"
-      - uses: actions/upload-artifact@v4
+      - name: Scan sanitized readiness artifacts
+        id: scan_readiness_sanitized
         if: always()
+        run: >-
+          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('modal-readiness-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_ID','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scan_readiness_sanitized.outcome == 'success'
         with:
-          name: joinlint-formal-modal-readiness
-          path: |
-            modal-readiness-artifacts
-            modal-readiness-logs
-          if-no-files-found: warn
-          retention-days: 30
+          name: joinlint-formal-modal-readiness-sanitized
+          path: modal-readiness-artifacts
+          if-no-files-found: error
+          retention-days: 90
 
   canary:
-    if: inputs.readiness_only != true
+    if: inputs.readiness_only != true || inputs.calibration == true
     runs-on: ubuntu-latest
     environment: formal-evaluation
     steps:
+      - name: Block paid evaluation pending atomic campaign reservation
+        run: exit 1
       - name: Require the exact approved paid diagnostic
         if: >-
+          github.run_attempt != 1 ||
           inputs.confirm_paid != true ||
           (inputs.calibration == true && inputs.budget_cny != '4') ||
           (inputs.calibration != true && inputs.budget_cny != '2.25')
         run: exit 1
+      - name: Require cumulative campaign budget for canary
+        if: inputs.calibration != true
+        env:
+          CAMPAIGN_BUDGET_CNY: ${{ inputs.campaign_budget_cny }}
+          CAMPAIGN_SPEND_BEFORE_CNY: ${{ inputs.campaign_spend_before_cny }}
+          CAMPAIGN_COST_UPPER_CNY: "2.25"
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from decimal import Decimal
+
+          values = [
+              os.environ["CAMPAIGN_BUDGET_CNY"],
+              os.environ["CAMPAIGN_SPEND_BEFORE_CNY"],
+              os.environ["CAMPAIGN_COST_UPPER_CNY"],
+          ]
+          canonical = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?\Z")
+          if not all(canonical.fullmatch(value) for value in values):
+              sys.exit("campaign amounts must be canonical decimal strings")
+          budget, spent, upper = map(Decimal, values)
+          if budget <= 0 or spent < 0 or upper < 0 or spent + upper > budget:
+              sys.exit("canary could exceed the approved cumulative campaign budget")
+          PY
+      - name: Require cumulative campaign budget for calibration
+        if: inputs.calibration == true
+        env:
+          CAMPAIGN_BUDGET_CNY: ${{ inputs.campaign_budget_cny }}
+          CAMPAIGN_SPEND_BEFORE_CNY: ${{ inputs.campaign_spend_before_cny }}
+          CAMPAIGN_COST_UPPER_CNY: "4"
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from decimal import Decimal
+
+          values = [
+              os.environ["CAMPAIGN_BUDGET_CNY"],
+              os.environ["CAMPAIGN_SPEND_BEFORE_CNY"],
+              os.environ["CAMPAIGN_COST_UPPER_CNY"],
+          ]
+          canonical = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?\Z")
+          if not all(canonical.fullmatch(value) for value in values):
+              sys.exit("campaign amounts must be canonical decimal strings")
+          budget, spent, upper = map(Decimal, values)
+          if budget <= 0 or spent < 0 or upper < 0 or spent + upper > budget:
+              sys.exit("calibration could exceed the approved cumulative campaign budget")
+          PY
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.pilot_commit }}
+          persist-credentials: false
       - name: Record checked-out pilot commit
         id: pilot_commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -192,6 +278,8 @@ jobs:
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_BASE_URL: https://api.deepseek.com
+          CAMPAIGN_BUDGET_CNY: ${{ inputs.campaign_budget_cny }}
+          CAMPAIGN_SPEND_BEFORE_CNY: ${{ inputs.campaign_spend_before_cny }}
         run: >-
           python -m benchmarks.formal_eval.pilot_canary
           run
@@ -199,6 +287,8 @@ jobs:
           --log-dir pilot-canary-logs
           --output pilot-canary-artifacts
           --workflow-run-id "${{ github.run_id }}"
+          --campaign-budget-cny "$CAMPAIGN_BUDGET_CNY"
+          --campaign-spend-before-cny "$CAMPAIGN_SPEND_BEFORE_CNY"
       - name: Run sealed four-cell calibration
         if: inputs.calibration == true
         env:
@@ -218,38 +308,30 @@ jobs:
           --campaign-budget-cny "$CAMPAIGN_BUDGET_CNY"
           --campaign-spend-before-cny "$CAMPAIGN_SPEND_BEFORE_CNY"
       - name: Scan sanitized canary artifacts
+        id: scan_canary_sanitized
         if: always() && inputs.calibration != true
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-canary-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
+          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-canary-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_ID','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
       - uses: actions/upload-artifact@v4
-        if: always() && inputs.calibration != true
+        if: >-
+          always() && inputs.calibration != true &&
+          steps.scan_canary_sanitized.outcome == 'success'
         with:
           name: joinlint-formal-pilot-canary-sanitized
           path: pilot-canary-artifacts
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 90
-      - uses: actions/upload-artifact@v4
-        if: always() && inputs.calibration != true
-        with:
-          name: joinlint-formal-pilot-canary-private-logs
-          path: pilot-canary-logs
-          if-no-files-found: warn
-          retention-days: 30
       - name: Scan sanitized calibration artifacts
+        id: scan_calibration_sanitized
         if: always() && inputs.calibration == true
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-calibration-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
+          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-calibration-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_ID','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
       - uses: actions/upload-artifact@v4
-        if: always() && inputs.calibration == true
+        if: >-
+          always() && inputs.calibration == true &&
+          steps.scan_calibration_sanitized.outcome == 'success'
         with:
           name: joinlint-formal-pilot-calibration-sanitized
           path: pilot-calibration-artifacts
           if-no-files-found: error
           retention-days: 90
-      - uses: actions/upload-artifact@v4
-        if: always() && inputs.calibration == true
-        with:
-          name: joinlint-formal-pilot-calibration-private-logs
-          path: pilot-calibration-logs
-          if-no-files-found: warn
-          retention-days: 30

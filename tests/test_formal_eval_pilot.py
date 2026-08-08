@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import yaml
 
-from benchmarks.formal_eval import pilot_calibration
+from benchmarks.formal_eval import pilot_calibration, pilot_canary
 from benchmarks.formal_eval.contracts import (
     AgentResultBundle,
     FormalManifestV2,
@@ -93,13 +95,13 @@ def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:
     envelope = budget_envelope(registration)
 
     assert envelope.run_count == 80
-    assert registration.schema_version == 4
+    assert registration.schema_version == 5
     assert registration.token_limit_per_run == 35_000
     assert registration.token_accounting_ceiling_per_run == 45_000
     assert envelope.model_cost_upper_cny == pytest.approx(14.4)
-    assert envelope.modal_compute_upper_cny == pytest.approx(3.1728)
+    assert envelope.modal_compute_upper_cny == pytest.approx(3.59584)
     assert envelope.modal_image_build_reserve_cny == 2.0
-    assert envelope.total_upper_cny == pytest.approx(19.5728)
+    assert envelope.total_upper_cny == pytest.approx(19.99584)
     assert envelope.total_upper_cny < registration.budget_cny == 20.0
     assert registration.modal_image_builder_version == "2025.06 Stable"
     assert {model.family for model in registration.models} == {"deepseek-v4"}
@@ -110,6 +112,57 @@ def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:
     assert model_batch_upper_costs(registration) == pytest.approx(
         (2.7, 2.7, 2.7, 2.7, 0.9, 0.9, 0.9, 0.9)
     )
+
+
+def test_pilot_registration_keeps_the_previous_sandbox_contract_parseable() -> None:
+    current = frozen_pilot_registration(COMMIT)
+    legacy_payload = current.model_dump(mode="python")
+    legacy_payload.update(schema_version=4, modal_sandbox_timeout_seconds=150)
+
+    legacy = type(current).model_validate(legacy_payload)
+
+    assert legacy.schema_version == 4
+    assert legacy.modal_sandbox_timeout_seconds == 150
+    with pytest.raises(ValueError, match="sandbox timeout"):
+        type(current).model_validate(
+            {**legacy_payload, "modal_sandbox_timeout_seconds": 170}
+        )
+
+
+@pytest.mark.parametrize("schema_version", [3, 4])
+def test_legacy_pilot_registration_defaults_omitted_sandbox_timeout_to_150(
+    schema_version: int,
+) -> None:
+    current = frozen_pilot_registration(COMMIT)
+    legacy_payload = current.model_dump(mode="python")
+    legacy_payload["schema_version"] = schema_version
+    legacy_payload.pop("modal_sandbox_timeout_seconds")
+    if schema_version == 3:
+        legacy_payload["token_accounting_ceiling_per_run"] = None
+
+    legacy = type(current).model_validate(legacy_payload)
+
+    assert legacy.schema_version == schema_version
+    assert legacy.modal_sandbox_timeout_seconds == 150
+
+
+def test_current_pilot_registration_requires_explicit_schema_and_timeout() -> None:
+    current = frozen_pilot_registration(COMMIT)
+    current_payload = current.model_dump(mode="python")
+
+    assert {"schema_version", "modal_sandbox_timeout_seconds"} <= current.model_fields_set
+    with pytest.raises(ValueError, match="schema_version"):
+        type(current).model_validate(
+            {key: value for key, value in current_payload.items() if key != "schema_version"}
+        )
+    with pytest.raises(ValueError, match="explicitly declare.*sandbox timeout"):
+        type(current).model_validate(
+            {
+                key: value
+                for key, value in current_payload.items()
+                if key != "modal_sandbox_timeout_seconds"
+            }
+        )
 
 
 def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
@@ -125,14 +178,14 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
     )
 
     assert CANARY_BUDGET_CNY == 2.25
-    assert CANARY_SANDBOX_TIMEOUT_SECONDS == 150
+    assert CANARY_SANDBOX_TIMEOUT_SECONDS == 170
     assert CANARY_TOKEN_LIMIT == 60_000
     assert CANARY_TOKEN_LIMIT_TYPE == "(input*0.5)+output"
     assert envelope.run_count == 1
     assert envelope.model_cost_upper_cny == pytest.approx(0.12)
-    assert envelope.modal_compute_upper_cny == pytest.approx(0.03966)
+    assert envelope.modal_compute_upper_cny == pytest.approx(0.044948)
     assert envelope.modal_image_build_reserve_cny == 2.0
-    assert envelope.total_upper_cny == pytest.approx(2.15966)
+    assert envelope.total_upper_cny == pytest.approx(2.164948)
     assert envelope.total_upper_cny < CANARY_BUDGET_CNY
     assert command[command.index("--limit") + 1] == "1"
     assert CANARY_HOST == "claude_code"
@@ -141,9 +194,45 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
     assert "token_limit=60000" in command
     assert "token_limit=20000" not in command
     assert "token_limit_type=(input*0.5)+output" in command
-    assert "sandbox_timeout=150" in command
+    assert "sandbox_timeout=170" in command
     assert "sandbox_timeout=120" not in command
     assert registration.models[1].id in command
+
+
+def test_pilot_canary_rejects_exhausted_campaign_before_inspect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = frozen_pilot_registration(COMMIT)
+    inspect_calls = 0
+    monkeypatch.setattr(
+        pilot_canary,
+        "verify_pilot_inputs",
+        lambda root: (
+            registration,
+            SimpleNamespace(),
+            SimpleNamespace(lineage_id=LINEAGE_ID),
+        ),
+    )
+    monkeypatch.setattr(pilot_canary.shutil, "which", lambda name: "/inspect")
+
+    def unexpected_inspect(*args: object, **kwargs: object) -> None:
+        nonlocal inspect_calls
+        inspect_calls += 1
+
+    monkeypatch.setattr(pilot_canary.subprocess, "run", unexpected_inspect)
+
+    with pytest.raises(ValueError, match="cumulative campaign budget"):
+        pilot_canary.run_canary(
+            tmp_path / "sealed",
+            tmp_path / "logs",
+            tmp_path / "artifacts",
+            workflow_run_id=123,
+            campaign_budget_cny=10,
+            campaign_spend_before_cny=8,
+        )
+
+    assert inspect_calls == 0
 
 
 def test_pilot_calibration_freezes_highest_depth_tasks_from_distinct_databases() -> None:
@@ -206,8 +295,8 @@ def test_pilot_calibration_uses_exact_formal_resource_contract(
     }
     assert envelope.run_count == 8
     assert envelope.model_cost_upper_cny == pytest.approx(1.44)
-    assert envelope.modal_compute_upper_cny == pytest.approx(0.31728)
-    assert envelope.total_upper_cny == pytest.approx(3.75728)
+    assert envelope.modal_compute_upper_cny == pytest.approx(0.359584)
+    assert envelope.total_upper_cny == pytest.approx(3.799584)
     assert len(commands) == 4
     assert all("condition=treatment" in command for command in commands)
     for command in commands:
@@ -217,7 +306,7 @@ def test_pilot_calibration_uses_exact_formal_resource_contract(
         assert f"token_limit={CALIBRATION_TOKEN_LIMITS[host]}" in command
     assert all("message_limit=20" in command for command in commands)
     assert all("time_limit=90" in command for command in commands)
-    assert all("sandbox_timeout=150" in command for command in commands)
+    assert all("sandbox_timeout=170" in command for command in commands)
     assert all(not any(value.startswith("task_partition=") for value in command) for command in commands)
     expected_task_ids = f"task_ids={','.join(specification.task_ids)}"
     assert all(expected_task_ids in command for command in commands)
@@ -316,6 +405,25 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
     assert all(cell.protocol_compliant is True for cell in harness.cells)
     assert all(cell.protocol_violation is None for cell in harness.cells)
     assert submission_guard_pipeline_available(harness) is True
+
+    tool_error_payload = harness.model_dump(mode="python")
+    tool_error_payload["status"] = "failed"
+    tool_error_payload["cells"][0]["tool_error"] = True
+    tool_error_payload["cells"][0][
+        "submission_guard_decision"
+    ] = "accepted_abstention"
+    tool_error_harness = type(harness).model_validate(tool_error_payload)
+    assert submission_guard_pipeline_available(tool_error_harness) is False
+    assert calibration_authorization_status(
+        infrastructure=infrastructure,
+        resource=resource,
+        scoring=scoring,
+        submission_guard_available=submission_guard_pipeline_available(
+            tool_error_harness
+        ),
+        within_budget=True,
+    ) == "failed"
+
     assert {summary.observed_cache_read_floor_tokens for summary in resource.hosts} == {
         43_008
     }
@@ -425,6 +533,44 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
         infrastructure=failed_infrastructure,
         resource=still_accounted,
         scoring=still_emitted,
+        within_budget=True,
+    ) == "failed"
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        require_sample_batch_health([samples[0]], expected_sample_count=1)
+    samples[0].store["joinlint.formal_eval.lifecycle.v1"] = original_lifecycle
+
+    marker_unavailable = new_lifecycle(
+        sample_host,
+        registration.host_versions[sample_host],
+    )
+    marker_unavailable = infrastructure_prepared(
+        marker_unavailable,
+        duration_seconds=1,
+        host_binary_sha256="c" * 64,
+    )
+    marker_unavailable = readiness_passed(marker_unavailable, duration_seconds=1)
+    marker_unavailable = start_evaluation(marker_unavailable)
+    marker_unavailable = fail_evaluation(
+        marker_unavailable,
+        reason=LifecycleFailureReason.VALIDATION_FAILURE_MARKER_UNAVAILABLE,
+        duration_seconds=1,
+    )
+    samples[0].store[
+        "joinlint.formal_eval.lifecycle.v1"
+    ] = marker_unavailable.model_dump(mode="json")
+    marker_infrastructure, marker_resource, marker_harness, marker_scoring = (
+        attest_calibration_samples(
+            samples,
+            registration=registration,
+            task_ids=task_ids,
+        )
+    )
+    assert marker_infrastructure.status == "failed"
+    assert calibration_authorization_status(
+        infrastructure=marker_infrastructure,
+        resource=marker_resource,
+        scoring=marker_scoring,
+        submission_guard_available=submission_guard_pipeline_available(marker_harness),
         within_budget=True,
     ) == "failed"
     with pytest.raises(RuntimeError, match="infrastructure failure"):
@@ -572,7 +718,7 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
         InfrastructureAttestation(status="passed", cells=())
 
 
-def test_calibration_batch_failure_writes_a_sanitized_failure_attestation(
+def test_calibration_batch_failure_preserves_count_when_cost_is_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -607,7 +753,11 @@ def test_calibration_batch_failure_writes_a_sanitized_failure_attestation(
             RuntimeError("pilot batch contains an infrastructure failure")
         ),
     )
-    monkeypatch.setattr(pilot_calibration, "observed_model_cost_cny", lambda *args: 0.12)
+    monkeypatch.setattr(
+        pilot_calibration,
+        "observed_model_cost_cny",
+        lambda *args: (_ for _ in ()).throw(RuntimeError("usage log unavailable")),
+    )
     monkeypatch.setattr(pilot_calibration, "_observed_sample_count", lambda path: 6)
     monkeypatch.setattr(pilot_calibration, "_input_lock_sha256", lambda root: "c" * 64)
 
@@ -626,10 +776,160 @@ def test_calibration_batch_failure_writes_a_sanitized_failure_attestation(
     )
     assert report.failure_code == "INFRASTRUCTURE_FAILURE"
     assert report.observed_sample_count == 6
-    assert report.actual_model_cost_cny == pytest.approx(0.12)
+    assert report.actual_model_cost_cny == 0
     assert report.joinlint_commit == COMMIT
     assert report.input_lock_sha256 == "c" * 64
     assert "SELECT" not in (output / "calibration-failure.json").read_text()
+
+
+def test_calibration_rejects_a_nonempty_output_directory(tmp_path: Path) -> None:
+    output = tmp_path / "artifacts"
+    output.mkdir()
+    stale_success = output / "calibration.json"
+    stale_success.write_text('{"status":"passed"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="output directory must be empty"):
+        pilot_calibration.run_calibration(
+            tmp_path / "sealed",
+            tmp_path / "logs",
+            output,
+            workflow_run_id=123,
+            campaign_budget_cny=75,
+            campaign_spend_before_cny=64,
+        )
+
+    assert stale_success.read_text(encoding="utf-8") == '{"status":"passed"}'
+    assert not (output / "calibration-failure.json").exists()
+
+
+def test_calibration_archive_write_failure_does_not_mask_the_run_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = frozen_pilot_registration(COMMIT)
+    log_dir = tmp_path / "logs"
+    output = tmp_path / "artifacts"
+    monkeypatch.setattr(
+        pilot_calibration,
+        "verify_pilot_inputs",
+        lambda root: (
+            registration,
+            SimpleNamespace(),
+            SimpleNamespace(lineage_id=LINEAGE_ID),
+        ),
+    )
+    monkeypatch.setattr(
+        pilot_calibration,
+        "load_pilot_calibration_spec",
+        lambda root, manifest: SimpleNamespace(task_ids=("task-a", "task-b")),
+    )
+    monkeypatch.setattr(pilot_calibration.shutil, "which", lambda name: "/inspect")
+    monkeypatch.setattr(
+        pilot_calibration,
+        "build_calibration_commands",
+        lambda **kwargs: (["/inspect", "--log-dir", str(log_dir / "batch")],),
+    )
+    monkeypatch.setattr(pilot_calibration.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        pilot_calibration,
+        "require_batch_health",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("original batch failure")
+        ),
+    )
+    monkeypatch.setattr(pilot_calibration, "observed_model_cost_cny", lambda *args: 0)
+    monkeypatch.setattr(pilot_calibration, "_observed_sample_count", lambda path: 0)
+    monkeypatch.setattr(pilot_calibration, "_input_lock_sha256", lambda root: "c" * 64)
+    original_write = pilot_calibration._write_calibration_failure
+    writes = 0
+
+    def fail_final_write(path: Path, report: CalibrationFailureReport) -> None:
+        nonlocal writes
+        writes += 1
+        if writes == 3:
+            raise OSError("failure archive unavailable")
+        original_write(path, report)
+
+    monkeypatch.setattr(pilot_calibration, "_write_calibration_failure", fail_final_write)
+
+    with pytest.raises(RuntimeError, match="original batch failure"):
+        pilot_calibration.run_calibration(
+            tmp_path / "sealed",
+            log_dir,
+            output,
+            workflow_run_id=123,
+            campaign_budget_cny=75,
+            campaign_spend_before_cny=64,
+        )
+
+    assert writes == 3
+
+
+def test_calibration_post_run_failure_updates_the_sanitized_failure_attestation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = frozen_pilot_registration(COMMIT)
+    log_dir = tmp_path / "logs"
+    output = tmp_path / "artifacts"
+    monkeypatch.setattr(
+        pilot_calibration,
+        "verify_pilot_inputs",
+        lambda root: (
+            registration,
+            SimpleNamespace(),
+            SimpleNamespace(lineage_id=LINEAGE_ID),
+        ),
+    )
+    monkeypatch.setattr(
+        pilot_calibration,
+        "load_pilot_calibration_spec",
+        lambda root, manifest: SimpleNamespace(task_ids=("task-a", "task-b")),
+    )
+    monkeypatch.setattr(pilot_calibration.shutil, "which", lambda name: "/inspect")
+    monkeypatch.setattr(
+        pilot_calibration,
+        "build_calibration_commands",
+        lambda **kwargs: (["/inspect", "--log-dir", str(log_dir / "batch")],),
+    )
+    monkeypatch.setattr(
+        pilot_calibration.subprocess,
+        "run",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        pilot_calibration,
+        "require_batch_health",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(pilot_calibration, "observed_model_cost_cny", lambda *args: 0.12)
+    monkeypatch.setattr(pilot_calibration, "_observed_sample_count", lambda path: 8)
+    monkeypatch.setattr(pilot_calibration, "_input_lock_sha256", lambda root: "c" * 64)
+    monkeypatch.setattr(
+        pilot_calibration,
+        "verify_calibration_logs",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("sensitive post-run detail: SELECT secret_value")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="sensitive post-run detail"):
+        pilot_calibration.run_calibration(
+            tmp_path / "sealed",
+            log_dir,
+            output,
+            workflow_run_id=123,
+            campaign_budget_cny=75,
+            campaign_spend_before_cny=64,
+        )
+
+    failure_path = output / "calibration-failure.json"
+    report = CalibrationFailureReport.model_validate_json(failure_path.read_bytes())
+    assert report.failure_code == "CALIBRATION_FAILED"
+    assert report.observed_sample_count == 8
+    assert report.actual_model_cost_cny == pytest.approx(0.12)
+    assert "sensitive post-run detail" not in failure_path.read_text()
+    assert "SELECT" not in failure_path.read_text()
 
 
 def test_pilot_canary_requires_model_usage_and_both_scorers() -> None:
@@ -722,6 +1022,7 @@ def test_pilot_canary_attestation_binds_run_commit_input_and_dependencies() -> N
     )
     run_metadata = {
         "id": 123,
+        "run_attempt": 1,
         "name": "formal-pilot-canary",
         "path": ".github/workflows/formal-pilot-canary.yml",
         "event": "workflow_dispatch",
@@ -751,6 +1052,63 @@ def test_pilot_canary_attestation_binds_run_commit_input_and_dependencies() -> N
             repository="Chloride233/joinlint",
         )
 
+    for invalid_attempt in (None, 2, "1", True):
+        invalid_metadata = {**run_metadata, "run_attempt": invalid_attempt}
+        with pytest.raises(ValueError, match="run attempt"):
+            verify_canary_attestation_values(
+                report,
+                expected_run_id=123,
+                current_commit=COMMIT,
+                input_lock_sha256="c" * 64,
+                dependency_versions=dependencies,
+                run_metadata=invalid_metadata,
+                repository="Chloride233/joinlint",
+            )
+
+
+def test_pilot_calibration_attestation_rejects_rerun_attempts() -> None:
+    report = SimpleNamespace(
+        status="passed",
+        readiness_status="passed",
+        workflow_run_id=123,
+        joinlint_commit=COMMIT,
+        input_lock_sha256="c" * 64,
+        dependency_versions={},
+    )
+    run_metadata = {
+        "id": 123,
+        "run_attempt": 1,
+        "name": "formal-pilot-canary",
+        "path": ".github/workflows/formal-pilot-canary.yml",
+        "event": "workflow_dispatch",
+        "conclusion": "success",
+        "head_sha": COMMIT,
+        "head_repository": {"full_name": "Chloride233/joinlint"},
+    }
+
+    pilot_calibration.verify_calibration_attestation_values(
+        report,
+        expected_run_id=123,
+        current_commit=COMMIT,
+        input_lock_sha256="c" * 64,
+        dependency_versions={},
+        run_metadata=run_metadata,
+        repository="Chloride233/joinlint",
+    )
+
+    for invalid_attempt in (None, 2, "1", True):
+        invalid_metadata = {**run_metadata, "run_attempt": invalid_attempt}
+        with pytest.raises(ValueError, match="run attempt"):
+            pilot_calibration.verify_calibration_attestation_values(
+                report,
+                expected_run_id=123,
+                current_commit=COMMIT,
+                input_lock_sha256="c" * 64,
+                dependency_versions={},
+                run_metadata=invalid_metadata,
+                repository="Chloride233/joinlint",
+            )
+
 
 def test_pilot_budget_checkpoint_stops_before_an_unsafe_next_batch() -> None:
     registration = frozen_pilot_registration(COMMIT)
@@ -767,9 +1125,9 @@ def test_pilot_budget_checkpoint_stops_before_an_unsafe_next_batch() -> None:
     )
 
     assert safe.safe_to_continue is True
-    assert safe.projected_total_upper_cny == pytest.approx(18.9728)
+    assert safe.projected_total_upper_cny == pytest.approx(19.39584)
     assert unsafe.safe_to_continue is False
-    assert unsafe.projected_total_upper_cny == pytest.approx(22.8728)
+    assert unsafe.projected_total_upper_cny == pytest.approx(23.29584)
 
 
 def test_pilot_campaign_budget_includes_prior_investigation_spend() -> None:
@@ -789,6 +1147,18 @@ def test_pilot_campaign_budget_includes_prior_investigation_spend() -> None:
     assert unsafe.passed is False
 
 
+@pytest.mark.parametrize("campaign_budget_cny", [float("inf"), float("nan")])
+def test_pilot_campaign_budget_rejects_non_finite_ceiling(
+    campaign_budget_cny: float,
+) -> None:
+    with pytest.raises(ValueError):
+        pilot_campaign_budget(
+            campaign_budget_cny=campaign_budget_cny,
+            campaign_spend_before_cny=8,
+            pilot_cost_upper_cny=20,
+        )
+
+
 def test_pilot_campaign_preflight_uses_frozen_cost_envelope() -> None:
     registration = frozen_pilot_registration(COMMIT)
     frozen_upper = budget_envelope(registration).total_upper_cny
@@ -799,9 +1169,9 @@ def test_pilot_campaign_preflight_uses_frozen_cost_envelope() -> None:
         pilot_cost_upper_cny=frozen_upper,
     )
 
-    assert frozen_upper == pytest.approx(19.5728)
+    assert frozen_upper == pytest.approx(19.99584)
     assert frozen_upper < registration.budget_cny
-    assert report.campaign_total_upper_cny == pytest.approx(30.1328)
+    assert report.campaign_total_upper_cny == pytest.approx(30.55584)
     assert report.passed is True
 
 
@@ -856,7 +1226,7 @@ def test_pilot_dispatch_has_eight_non_retrying_bounded_batches(tmp_path: Path) -
     assert all("token_limit_type=(input*0.5)+output" in command for command in commands)
     assert all("message_limit=20" in command for command in commands)
     assert all("time_limit=90" in command for command in commands)
-    assert all("sandbox_timeout=150" in command for command in commands)
+    assert all("sandbox_timeout=170" in command for command in commands)
     assert {
         next(value for value in command if value.startswith("task_partition="))
         for command in commands
@@ -996,7 +1366,7 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
     assert inspect_task.token_limit_type == "(input*0.5)+output"
     assert inspect_task.message_limit == 20
     assert inspect_task.time_limit is None
-    assert sandbox.config.extensions == {"x-modal": {"timeout": 150}}
+    assert sandbox.config.extensions == {"x-modal": {"timeout": 170}}
 
     from inspect_sandboxes._util.naming import make_sandbox_name
 
@@ -1022,7 +1392,26 @@ def test_pilot_task_uses_modal_compose_build_and_resource_limits(
     assert params.kwargs["image"] == "test-image"
     assert params.kwargs["cpu"] == 0.5
     assert params.kwargs["memory"] == 2048
-    assert params.kwargs["timeout"] == 150
+    assert params.kwargs["timeout"] == 170
+
+
+def test_pilot_task_requires_platform_timeout_margin() -> None:
+    pytest.importorskip("inspect_ai")
+    from benchmarks.formal_eval.inspect_task import formal_pilot_eval
+
+    with pytest.raises(ValueError, match="resource limits"):
+        formal_pilot_eval.__wrapped__(
+            sealed_tasks="sealed-tasks.json",
+            manifest="manifest.json",
+            host="codex",
+            condition="control",
+            agent_version="0.144.1",
+            dockerfile="Dockerfile.formal-pilot",
+            lineage_id=LINEAGE_ID,
+            task_partition="even",
+            time_limit=90,
+            sandbox_timeout=150,
+        )
 
 
 def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> None:
@@ -1042,6 +1431,15 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         "true"
     )
     assert workflow["permissions"]["actions"] == "read"
+    assert job["steps"][0]["name"] == (
+        "Block paid evaluation pending atomic campaign reservation"
+    )
+    exact_gate = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Require the exact approved paid pilot"
+    )
+    assert "github.run_attempt != 1" in exact_gate["if"]
     assert "ref: ${{ inputs.pilot_commit }}" in text
     assert "--current-commit \"${{ steps.pilot_commit.outputs.sha }}\"" in text
     assert "pilot_volume" not in text
@@ -1084,9 +1482,32 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert step_names.index("Run no-model lifecycle gate") < step_names.index(
         "Restore private frozen pilot inputs"
     )
+    campaign_preflight = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Require cumulative campaign budget for full pilot"
+    )
+    checkout_index = next(
+        index for index, step in enumerate(job["steps"]) if step.get("uses") == "actions/checkout@v4"
+    )
+    assert job["steps"][checkout_index]["with"]["persist-credentials"] == "false"
+    assert step_names.index(campaign_preflight["name"]) < checkout_index
+    assert "benchmarks.formal_eval" not in campaign_preflight["run"]
+    assert campaign_preflight["env"]["CAMPAIGN_COST_UPPER_CNY"] == "20"
     assert step_names.index("Verify calibration attestation binding") < step_names.index(
         "Run the approved 20-task pilot"
     )
+    sanitized_scan = next(
+        step for step in job["steps"] if step.get("name") == "Scan sanitized pilot artifacts"
+    )
+    sanitized_upload = next(
+        step
+        for step in job["steps"]
+        if (step.get("with") or {}).get("name") == "joinlint-formal-pilot-sanitized"
+    )
+    assert sanitized_scan["id"] == "scan_pilot_sanitized"
+    assert "steps.scan_pilot_sanitized.outcome == 'success'" in sanitized_upload["if"]
+    assert sanitized_upload["with"]["if-no-files-found"] == "error"
 
 
 def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:
@@ -1099,6 +1520,15 @@ def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:
     assert workflow["permissions"]["contents"] == "write"
     assert "inputs.confirm_paid != true" in text
     assert "inputs.calibration != true && inputs.budget_cny != '2.25'" in text
+    assert job["steps"][0]["name"] == (
+        "Block paid evaluation pending atomic campaign reservation"
+    )
+    exact_gate = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Require the exact approved paid diagnostic"
+    )
+    assert "github.run_attempt != 1" in exact_gate["if"]
     step_names = [step.get("name") for step in job["steps"]]
     assert step_names.index("Run no-model lifecycle gate") < step_names.index(
         "Run one-task canary"
@@ -1114,7 +1544,36 @@ def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:
         "MODAL_TOKEN_SECRET",
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_BASE_URL",
+        "CAMPAIGN_BUDGET_CNY",
+        "CAMPAIGN_SPEND_BEFORE_CNY",
     }
+    assert '--campaign-budget-cny "$CAMPAIGN_BUDGET_CNY"' in run_step["run"]
+    assert '--campaign-spend-before-cny "$CAMPAIGN_SPEND_BEFORE_CNY"' in run_step["run"]
+    preflight = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Require cumulative campaign budget for canary"
+    )
+    assert step_names.index(preflight["name"]) < step_names.index(run_step["name"])
+    checkout_index = next(
+        index for index, step in enumerate(job["steps"]) if step.get("uses") == "actions/checkout@v4"
+    )
+    assert job["steps"][checkout_index]["with"]["persist-credentials"] == "false"
+    assert step_names.index(preflight["name"]) < checkout_index
+    assert "benchmarks.formal_eval" not in preflight["run"]
+    assert preflight["env"]["CAMPAIGN_COST_UPPER_CNY"] == "2.25"
+    sanitized_scan = next(
+        step for step in job["steps"] if step.get("name") == "Scan sanitized canary artifacts"
+    )
+    sanitized_upload = next(
+        step
+        for step in job["steps"]
+        if (step.get("with") or {}).get("name")
+        == "joinlint-formal-pilot-canary-sanitized"
+    )
+    assert sanitized_scan["id"] == "scan_canary_sanitized"
+    assert "steps.scan_canary_sanitized.outcome == 'success'" in sanitized_upload["if"]
+    assert sanitized_upload["with"]["if-no-files-found"] == "error"
 
 
 def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() -> None:
@@ -1128,9 +1587,22 @@ def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() ->
         "false"
     )
     assert "inputs.calibration == true && inputs.budget_cny != '4'" in text
+    step_names = [step.get("name") for step in job["steps"]]
+    preflight = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Require cumulative campaign budget for calibration"
+    )
     run_step = next(
         step for step in job["steps"] if step.get("name") == "Run sealed four-cell calibration"
     )
+    assert step_names.index(preflight["name"]) < step_names.index(run_step["name"])
+    checkout_index = next(
+        index for index, step in enumerate(job["steps"]) if step.get("uses") == "actions/checkout@v4"
+    )
+    assert step_names.index(preflight["name"]) < checkout_index
+    assert "benchmarks.formal_eval" not in preflight["run"]
+    assert preflight["env"]["CAMPAIGN_COST_UPPER_CNY"] == "4"
     assert run_step["if"] == "inputs.calibration == true"
     assert set(run_step["env"]) == {
         "MODAL_TOKEN_ID",
@@ -1149,6 +1621,210 @@ def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() ->
         == "joinlint-formal-pilot-calibration-sanitized"
     )
     assert sanitized_upload["with"]["if-no-files-found"] == "error"
+    sanitized_scan = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Scan sanitized calibration artifacts"
+    )
+    assert sanitized_scan["id"] == "scan_calibration_sanitized"
+    assert "steps.scan_calibration_sanitized.outcome == 'success'" in sanitized_upload["if"]
+
+
+@pytest.mark.parametrize(
+    ("workflow_path", "raw_log_directories"),
+    [
+        (
+            ".github/workflows/formal-pilot-canary.yml",
+            (
+                "modal-readiness-logs",
+                "pilot-canary-logs",
+                "pilot-calibration-logs",
+            ),
+        ),
+        (".github/workflows/formal-pilot.yml", ("pilot-logs",)),
+        (".github/workflows/formal-evaluation.yml", ("formal-logs",)),
+    ],
+)
+def test_public_formal_workflows_keep_raw_inspect_logs_runner_ephemeral(
+    workflow_path: str,
+    raw_log_directories: tuple[str, ...],
+) -> None:
+    workflow = yaml.load(Path(workflow_path).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    uploads = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if step.get("uses") == "actions/upload-artifact@v4"
+    ]
+    uploaded_paths = "\n".join(
+        str((step.get("with") or {}).get("path", "")) for step in uploads
+    )
+    uploaded_names = "\n".join(
+        str((step.get("with") or {}).get("name", "")) for step in uploads
+    )
+
+    assert not any(path in uploaded_paths for path in raw_log_directories)
+    assert "private-inspect-logs" not in uploaded_names
+    assert "private-logs" not in uploaded_names
+    assert all("outcome == 'success'" in step.get("if", "") for step in uploads)
+    scans = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if str(step.get("name", "")).startswith("Scan sanitized")
+    ]
+    assert scans
+    assert all(
+        secret_name in step["run"]
+        for step in scans
+        for secret_name in (
+            "MODAL_TOKEN_ID",
+            "MODAL_TOKEN_SECRET",
+            "DEEPSEEK_API_KEY",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("workflow_path", "job_name", "step_name", "upper"),
+    (
+        (
+            ".github/workflows/formal-pilot-canary.yml",
+            "readiness",
+            "Require cumulative campaign budget for readiness",
+            "2.10",
+        ),
+        (
+            ".github/workflows/formal-pilot-canary.yml",
+            "canary",
+            "Require cumulative campaign budget for canary",
+            "2.25",
+        ),
+        (
+            ".github/workflows/formal-pilot-canary.yml",
+            "canary",
+            "Require cumulative campaign budget for calibration",
+            "4",
+        ),
+        (
+            ".github/workflows/formal-pilot.yml",
+            "pilot",
+            "Require cumulative campaign budget for full pilot",
+            "20",
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    "invalid",
+    ["", " ", "+1", "-1", "nan", "inf", "-inf", "1e309", "1.0000001"],
+)
+def test_workflow_campaign_preflight_rejects_noncanonical_amounts(
+    workflow_path: str,
+    job_name: str,
+    step_name: str,
+    upper: str,
+    invalid: str,
+) -> None:
+    workflow = yaml.load(
+        Path(workflow_path).read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    step = next(
+        candidate
+        for candidate in workflow["jobs"][job_name]["steps"]
+        if candidate.get("name") == step_name
+    )
+    environment = {
+        **os.environ,
+        "CAMPAIGN_BUDGET_CNY": "75",
+        "CAMPAIGN_SPEND_BEFORE_CNY": invalid,
+        "CAMPAIGN_COST_UPPER_CNY": upper,
+    }
+
+    result = subprocess.run(
+        ["bash", "-c", step["run"]],
+        check=False,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+
+
+@pytest.mark.parametrize(
+    ("workflow_path", "job_name", "step_name", "upper", "spend"),
+    (
+        (
+            ".github/workflows/formal-pilot-canary.yml",
+            "readiness",
+            "Require cumulative campaign budget for readiness",
+            "2.10",
+            "72.90",
+        ),
+        (
+            ".github/workflows/formal-pilot-canary.yml",
+            "canary",
+            "Require cumulative campaign budget for canary",
+            "2.25",
+            "72.75",
+        ),
+        (
+            ".github/workflows/formal-pilot-canary.yml",
+            "canary",
+            "Require cumulative campaign budget for calibration",
+            "4",
+            "71",
+        ),
+        (
+            ".github/workflows/formal-pilot.yml",
+            "pilot",
+            "Require cumulative campaign budget for full pilot",
+            "20",
+            "55",
+        ),
+    ),
+)
+def test_workflow_campaign_preflight_enforces_the_exact_decimal_boundary(
+    workflow_path: str,
+    job_name: str,
+    step_name: str,
+    upper: str,
+    spend: str,
+) -> None:
+    workflow = yaml.load(
+        Path(workflow_path).read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    step = next(
+        candidate
+        for candidate in workflow["jobs"][job_name]["steps"]
+        if candidate.get("name") == step_name
+    )
+    exact_environment = {
+        **os.environ,
+        "CAMPAIGN_BUDGET_CNY": "75",
+        "CAMPAIGN_SPEND_BEFORE_CNY": spend,
+        "CAMPAIGN_COST_UPPER_CNY": upper,
+    }
+
+    exact = subprocess.run(
+        ["bash", "-c", step["run"]],
+        check=False,
+        capture_output=True,
+        env=exact_environment,
+    )
+    over = subprocess.run(
+        ["bash", "-c", step["run"]],
+        check=False,
+        capture_output=True,
+        env={
+            **exact_environment,
+            "CAMPAIGN_SPEND_BEFORE_CNY": f"{float(spend) + 0.000001:.6f}",
+        },
+    )
+
+    assert exact.returncode == 0
+    assert over.returncode != 0
 
 
 def _manifest(count: int, *, task: SealedAgentTask | None = None) -> FormalManifestV2:

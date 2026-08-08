@@ -159,7 +159,10 @@ improvement language.
 ## 7. Remote execution and artifacts
 
 The protected `formal-evaluation` GitHub Environment requires explicit paid-run
-approval. Free tests and synthetic smoke run first. Formal preflight verifies
+approval, but approval alone is not a budget boundary. Its paid job is currently
+fail-closed until an atomic campaign reservation and access-controlled frozen
+input store are wired; free tests and synthetic smoke remain available. When
+re-enabled, formal preflight verifies
 inputs, rejects any MCP surface other than exactly `get_join_plan` and
 `validate_sql`, creates a content-addressed evaluation lineage, creates run and
 power plans, enforces power readiness, and only then starts remote work.
@@ -177,10 +180,11 @@ use the same separate `EvaluationDatabase.execute_sql` MCP. JoinLint never
 executes SQL or receives model credentials. Oracle diagnostics use a separate
 two-tool server backed only by frozen graphs.
 
-Raw Inspect logs remain private for 30 days. Sanitized artifacts are retained
-for 90 days and contain no question, schema text, gold SQL, source path, raw
-rows, key, or transcript. JSON and Markdown reports rebuild only from frozen
-manifests and sanitized rows.
+Raw Inspect logs remain only on the ephemeral Actions runner and are never
+uploaded. Sanitized artifacts are retained for 90 days only after their scan
+passes and contain no question, schema text, gold SQL, source path, raw rows,
+key, or transcript. JSON and Markdown reports rebuild only from frozen manifests
+and sanitized rows.
 
 The Agent export must equal the exact frozen run-plan ID set. The independent
 post-run review uses the exact preregistered sample and binds each decision to

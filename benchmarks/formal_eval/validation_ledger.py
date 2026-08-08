@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 from pathlib import Path
 
 
@@ -26,14 +27,19 @@ class ValidationLedger:
             },
             separators=(",", ":"),
         ).encode("utf-8")
-        temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
-        temporary.write_bytes(payload)
-        os.replace(temporary, self.path)
+        temporary = self.path.with_name(
+            f".{self.path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        )
+        try:
+            temporary.write_bytes(payload)
+            os.replace(temporary, self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def matches(self, sql: str) -> bool:
         try:
             payload = json.loads(self.path.read_bytes())
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return False
         return (
             isinstance(payload, dict)

@@ -344,9 +344,9 @@ remain separate observations.
 
 Inspect AI writes append-only local logs for prompts, messages, tool calls,
 tool results, outputs, usage, timing, errors, and run metadata. Raw logs are
-excluded from Git. Sanitized manifests, aggregate results, and reproduction
-instructions are committed. Public raw artifacts may be attached to a GitHub
-release only after secret and redistribution review.
+excluded from Git, remain only on the ephemeral Actions runner, and are never
+uploaded by the public workflows. Sanitized manifests, aggregate results, and
+reproduction instructions are committed only after their artifact scan passes.
 
 ## 12. Components and repository layout
 
@@ -482,6 +482,8 @@ evidence, and blocking compliance before Spider execution.
 
 Before the paid pilot, the repository runs targeted tests, the full existing
 test suite, Ruff, `git diff --check`, and a secret scan over all new artifacts.
+The paid path remains fail-closed until an authoritative atomic campaign
+reservation replaces the manually supplied prior-spend snapshot.
 
 ## 18. Delivery sequence
 
