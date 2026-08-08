@@ -137,6 +137,8 @@ product observations: they report planning, proof binding, MCP grounding,
 protocol compliance and any bounded protocol-violation code, scoring eligibility,
 parseability, and the evaluation-only submission guard decision. Guard rejection
 remains a product outcome; missing or malformed guard evidence blocks authorization.
+An evaluation-side ledger write failure is reported as infrastructure failure and
+also blocks authorization rather than increasing the product tool-error rate.
 Schema v6 otherwise authorizes only from infrastructure/resource/scoring-pipeline
 readiness and budget status, so a product failure cannot preselect tasks that
 already work.

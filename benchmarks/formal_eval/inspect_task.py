@@ -67,6 +67,7 @@ from benchmarks.formal_eval.lifecycle import (
 from benchmarks.formal_eval.oracle_mcp import OracleDocument
 from benchmarks.formal_eval.pilot import pilot_partition_tasks
 from benchmarks.formal_eval.trace import ToolEvent, assess_trace
+from benchmarks.formal_eval.validation_ledger import VALIDATION_LEDGER_WRITE_FAILED
 from joinlint.contracts import canonical_json
 
 
@@ -487,6 +488,8 @@ def formal_join_scorer() -> Scorer:
                     final_edges=set(),
                     submitted_sql=False,
                 )
+                if getattr(trace, "failure_code", None) == "INFRASTRUCTURE_FAILURE":
+                    payload["failure_code"] = "INFRASTRUCTURE_FAILURE"
                 payload["trace"] = trace.model_dump(mode="json")
             return Score(
                 value=0,
@@ -930,6 +933,7 @@ def evaluation_lifecycle(
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         done = Event()
         agent_error: Exception | None = None
+        evaluation_timed_out = False
         result_state = state
 
         async def run_agent() -> None:
@@ -999,16 +1003,18 @@ def evaluation_lifecycle(
                 await done.wait()
             if evaluation_scope.cancel_called:
                 tasks.cancel_scope.cancel()
+                evaluation_timed_out = True
+            elif _validation_ledger_write_failed(result_state.messages):
                 record = fail_evaluation(
-                    record,
-                    reason=LifecycleFailureReason.MODEL_TIMEOUT,
+                    _require_lifecycle(result_state),
+                    reason=LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED,
                     duration_seconds=perf_counter() - evaluation_started,
-                    detail="evaluation_timeout",
+                    detail=VALIDATION_LEDGER_WRITE_FAILED,
                 )
-                write_lifecycle(state.store, record)
-                state.completed = True
-                return state
-            if agent_error is not None:
+                write_lifecycle(result_state.store, record)
+                result_state.completed = True
+                return result_state
+            elif agent_error is not None:
                 reason = (
                     LifecycleFailureReason.MODEL_LIMIT
                     if _is_model_limit_error(agent_error) or _sample_model_limit_exceeded()
@@ -1023,6 +1029,26 @@ def evaluation_lifecycle(
                 write_lifecycle(state.store, record)
                 state.completed = True
                 return state
+
+        if evaluation_timed_out:
+            ledger_failed = _validation_ledger_write_failed(state.messages)
+            record = fail_evaluation(
+                _require_lifecycle(state),
+                reason=(
+                    LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED
+                    if ledger_failed
+                    else LifecycleFailureReason.MODEL_TIMEOUT
+                ),
+                duration_seconds=perf_counter() - evaluation_started,
+                detail=(
+                    VALIDATION_LEDGER_WRITE_FAILED
+                    if ledger_failed
+                    else "evaluation_timeout"
+                ),
+            )
+            write_lifecycle(state.store, record)
+            state.completed = True
+            return state
 
         record = complete_evaluation(
             _require_lifecycle(result_state),
@@ -1463,6 +1489,22 @@ def _tool_events(messages: list[object]) -> list[ToolEvent]:
                     )
                 )
     return events
+
+
+def _validation_ledger_write_failed(messages: list[object]) -> bool:
+    for message in messages:
+        if not isinstance(message, ChatMessageTool) or _tool_name(
+            message.function or ""
+        ) != "validate_sql":
+            continue
+        payload = _tool_result_payload(message.content)
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if (
+            isinstance(error, dict)
+            and error.get("code") == VALIDATION_LEDGER_WRITE_FAILED
+        ):
+            return True
+    return False
 
 
 def _tool_result_payload(content: object) -> dict[str, Any] | None:

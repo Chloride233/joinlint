@@ -6,6 +6,7 @@ from pydantic import model_validator
 
 from benchmarks.agent_join.sql_edges import canonical_edge
 from benchmarks.formal_eval.contracts import Edge, FailureCode, ProtocolViolation, StrictModel
+from benchmarks.formal_eval.validation_ledger import VALIDATION_LEDGER_WRITE_FAILED
 from joinlint.mcp_contracts import (
     GetJoinPlanResponse as PlanResponse,
 )
@@ -126,6 +127,10 @@ def assess_trace(
     exact_validation_call = False
     validation_passed = False
     blocking = False
+    evaluation_infrastructure_failure = any(
+        _is_validation_ledger_write_failure(results.get(call.call_id))
+        for call in validation_calls
+    )
     for call in validation_calls:
         arguments = call.arguments or {}
         if submitted_sql and arguments.get("sql") != final_sql:
@@ -139,6 +144,8 @@ def assess_trace(
             response = ValidationResponse.model_validate(result_event.result or {})
         except ValueError:
             tool_error = True
+            continue
+        if _is_validation_ledger_write_failure(result_event):
             continue
         response_edges = _validation_edges(response)
         blocking = blocking or _has_blocking(response.findings) or response.status == "inconclusive"
@@ -167,7 +174,9 @@ def assess_trace(
     )
     blocking_compliant = (not submitted_sql) if blocking else None
     failure: FailureCode | None = None
-    if tool_error:
+    if evaluation_infrastructure_failure:
+        failure = "INFRASTRUCTURE_FAILURE"
+    elif tool_error:
         failure = "MCP_TOOL_ERROR"
     elif not plan_called:
         failure = "TOOL_NOT_CALLED"
@@ -209,6 +218,15 @@ def assess_trace(
         protocol_violation=protocol_violation,
         returned_edges=tuple(sorted(returned_edges)),
         failure_code=failure,
+    )
+
+
+def _is_validation_ledger_write_failure(event: ToolEvent | None) -> bool:
+    result = event.result if event is not None else None
+    error = result.get("error") if isinstance(result, dict) else None
+    return (
+        isinstance(error, dict)
+        and error.get("code") == VALIDATION_LEDGER_WRITE_FAILED
     )
 
 

@@ -6,6 +6,9 @@ import os
 from pathlib import Path
 
 
+VALIDATION_LEDGER_WRITE_FAILED = "EVALUATION_VALIDATION_LEDGER_WRITE_FAILED"
+
+
 class ValidationLedger:
     """Evaluation-only record of the most recent successful SQL validation."""
 

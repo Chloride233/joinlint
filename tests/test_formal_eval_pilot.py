@@ -394,6 +394,43 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
         "submission_guard_decision"
     ] = "accepted_validated_sql"
 
+    original_lifecycle = samples[0].store["joinlint.formal_eval.lifecycle.v1"]
+    sample_host = samples[0].metadata["host"]
+    ledger_failed = new_lifecycle(
+        sample_host,
+        registration.host_versions[sample_host],
+    )
+    ledger_failed = infrastructure_prepared(
+        ledger_failed,
+        duration_seconds=1,
+        host_binary_sha256="c" * 64,
+    )
+    ledger_failed = readiness_passed(ledger_failed, duration_seconds=1)
+    ledger_failed = start_evaluation(ledger_failed)
+    ledger_failed = fail_evaluation(
+        ledger_failed,
+        reason=LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED,
+        duration_seconds=1,
+    )
+    samples[0].store[
+        "joinlint.formal_eval.lifecycle.v1"
+    ] = ledger_failed.model_dump(mode="json")
+    failed_infrastructure, still_accounted, _, still_emitted = attest_calibration_samples(
+        samples,
+        registration=registration,
+        task_ids=task_ids,
+    )
+    assert failed_infrastructure.status == "failed"
+    assert calibration_authorization_status(
+        infrastructure=failed_infrastructure,
+        resource=still_accounted,
+        scoring=still_emitted,
+        within_budget=True,
+    ) == "failed"
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        require_sample_batch_health([samples[0]], expected_sample_count=1)
+    samples[0].store["joinlint.formal_eval.lifecycle.v1"] = original_lifecycle
+
     report_values = {
         "calibration_task_ids": task_ids,
         "resource_contract": CalibrationResourceContract(

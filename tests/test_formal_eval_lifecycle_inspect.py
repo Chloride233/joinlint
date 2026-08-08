@@ -42,6 +42,15 @@ from benchmarks.formal_eval.lifecycle import (
 
 
 NOW = datetime(2026, 7, 27, tzinfo=timezone.utc)
+LEDGER_FAILURE_RESPONSE = (
+    '{"schema_version":3,"command":"validate_sql",'
+    '"status":"error","data":null,"findings":[],"error":{'
+    '"code":"EVALUATION_VALIDATION_LEDGER_WRITE_FAILED",'
+    '"message":"EVALUATION_VALIDATION_LEDGER_WRITE_FAILED",'
+    '"guidance":{"retryable":false,"next_action":"stop",'
+    '"affected_refs":[],"blocking_relationship_ids":[],'
+    '"freshness_reason":null}}}'
+)
 
 
 @pytest.mark.parametrize(
@@ -301,6 +310,127 @@ def test_codex_does_not_exceed_two_total_infrastructure_attempts() -> None:
     assert attempts == 1
     assert failed.infrastructure_attempts == 2
     assert failed.infrastructure_retry_reason == "sandbox_tools_readiness_failed"
+
+
+def test_ledger_failure_cannot_be_overridden_by_a_drifted_submission() -> None:
+    @agent
+    def ledger_failure_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            agent_state.messages.extend(
+                [
+                    ChatMessageAssistant(
+                        content="",
+                        tool_calls=[
+                            ToolCall(
+                                id="validate-one",
+                                function="mcp__JoinLint__validate_sql",
+                                arguments={"sql": "SELECT 1", "plan_id": "a" * 64},
+                            )
+                        ],
+                    ),
+                    ChatMessageTool(
+                        content=LEDGER_FAILURE_RESPONSE,
+                        tool_call_id="validate-one",
+                        function="mcp__JoinLint__validate_sql",
+                    ),
+                    *_submission_messages("submit-one", "SELECT 1 ", ""),
+                ]
+            )
+            agent_state.messages[-1] = ChatMessageTool(
+                content=(
+                    '{"status":"error","code":"FINAL_SQL_NOT_VALIDATED",'
+                    '"guard_contract_version":1,'
+                    '"guard_decision":"rejected_unvalidated_sql"}'
+                ),
+                tool_call_id="submit-one",
+                function="mcp__EvaluationDatabase__submit_sql",
+            )
+            return agent_state
+
+        return execute
+
+    state = _ready_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            ledger_failure_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED
+    assert record.infrastructure_status == "failed"
+    assert record.scoring_eligible is False
+
+
+def test_ledger_failure_takes_precedence_over_a_later_evaluation_timeout() -> None:
+    @agent
+    def stalled_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            agent_state.messages.extend(
+                [
+                    ChatMessageAssistant(
+                        content="",
+                        tool_calls=[
+                            ToolCall(
+                                id="validate-one",
+                                function="mcp__JoinLint__validate_sql",
+                                arguments={"sql": "SELECT 1", "plan_id": "a" * 64},
+                            )
+                        ],
+                    ),
+                    ChatMessageTool(
+                        content=LEDGER_FAILURE_RESPONSE,
+                        tool_call_id="validate-one",
+                        function="mcp__JoinLint__validate_sql",
+                    ),
+                ]
+            )
+            await asyncio.sleep(1)
+            return agent_state
+
+        return execute
+
+    state = _ready_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            stalled_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED
+    assert record.infrastructure_status == "failed"
+
+
+def test_product_validation_error_is_not_an_evaluation_infrastructure_failure() -> None:
+    product_error = ChatMessageTool(
+        content=LEDGER_FAILURE_RESPONSE.replace(
+            "EVALUATION_VALIDATION_LEDGER_WRITE_FAILED",
+            "UNCONNECTED_ENTITY_REF",
+        ),
+        tool_call_id="validate-one",
+        function="mcp__JoinLint__validate_sql",
+    )
+
+    assert inspect_task._validation_ledger_write_failed([product_error]) is False
 
 
 def test_readiness_forces_sandbox_tools_injection_before_agent_start(

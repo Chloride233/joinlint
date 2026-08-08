@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from benchmarks.agent_join.sql_edges import canonical_edge
 from benchmarks.formal_eval.trace import ToolEvent, ValidationResponse, assess_trace
+from benchmarks.formal_eval.validation_ledger import VALIDATION_LEDGER_WRITE_FAILED
 
 
 def _guidance(
@@ -164,6 +165,21 @@ def _validation_result(
     }
 
 
+def _ledger_write_failure_result() -> dict[str, object]:
+    return {
+        "schema_version": 3,
+        "command": "validate_sql",
+        "status": "error",
+        "data": None,
+        "findings": [],
+        "error": {
+            "code": VALIDATION_LEDGER_WRITE_FAILED,
+            "message": VALIDATION_LEDGER_WRITE_FAILED,
+            "guidance": _guidance(),
+        },
+    }
+
+
 def test_trace_requires_complete_plan_grounding_and_exact_final_validation() -> None:
     sql = "SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id"
     events = [
@@ -253,6 +269,48 @@ def test_trace_distinguishes_final_sql_drift_from_missing_validation() -> None:
 
     assert result.final_sql_validated is False
     assert result.failure_code == "FINAL_SQL_NOT_VALIDATED"
+
+
+def test_trace_classifies_ledger_write_failure_as_evaluation_infrastructure() -> None:
+    sql = "SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id"
+    events = [
+        ToolEvent(
+            kind="call",
+            call_id="plan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                ],
+                "start_ref": "orders",
+            },
+        ),
+        ToolEvent(kind="result", call_id="plan", tool="get_join_plan", result=_plan_result()),
+        ToolEvent(
+            kind="call",
+            call_id="validate",
+            tool="validate_sql",
+            arguments={"sql": sql, "dialect": "sqlite", "plan_id": "1" * 64},
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="validate",
+            tool="validate_sql",
+            result=_ledger_write_failure_result(),
+        ),
+    ]
+
+    result = assess_trace(
+        events,
+        expected_entities={"orders", "customers"},
+        final_sql=sql,
+        final_edges={canonical_edge("orders.customer_id", "customers.id")},
+        submitted_sql=True,
+    )
+
+    assert result.failure_code == "INFRASTRUCTURE_FAILURE"
+    assert result.tool_error is False
 
 
 def test_trace_allows_a_grounded_replan_after_unconnected_entity_ref() -> None:

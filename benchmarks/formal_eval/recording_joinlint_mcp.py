@@ -3,7 +3,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from benchmarks.formal_eval.validation_ledger import ValidationLedger
+from benchmarks.formal_eval.validation_ledger import (
+    VALIDATION_LEDGER_WRITE_FAILED,
+    ValidationLedger,
+)
+from joinlint.mcp_contracts import error_response
 from joinlint.mcp_server import create_server
 
 
@@ -13,7 +17,16 @@ def record_validation_outcome(
     response: dict[str, object],
 ) -> None:
     if response.get("status") == "ok":
-        ledger.record(sql)
+        try:
+            ledger.record(sql)
+        except OSError:
+            failure = error_response(
+                "validate_sql",
+                VALIDATION_LEDGER_WRITE_FAILED,
+                inconclusive=False,
+            )
+            response.clear()
+            response.update(failure.model_dump(mode="json"))
 
 
 def create_recording_server(project: Path, ledger: ValidationLedger):

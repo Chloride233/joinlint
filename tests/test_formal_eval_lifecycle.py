@@ -142,3 +142,23 @@ def test_model_timeout_remains_distinct_from_infrastructure_failure() -> None:
 
     assert eligibility.failure_code == "MODEL_TIMEOUT"
     assert eligibility.lifecycle_reason == LifecycleFailureReason.MODEL_TIMEOUT
+
+
+def test_validation_ledger_failure_marks_evaluation_infrastructure_failed() -> None:
+    record = readiness_passed(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=1,
+        now=NOW,
+    )
+    record = start_evaluation(record, now=NOW)
+
+    failed = fail_evaluation(
+        record,
+        reason=LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED,
+        duration_seconds=2,
+        now=NOW,
+    )
+
+    assert failed.infrastructure_status == "failed"
+    assert failed.evaluation_status == "failed"
+    assert scoring_eligibility(failed).failure_code == "INFRASTRUCTURE_FAILURE"

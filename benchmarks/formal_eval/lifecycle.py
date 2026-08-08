@@ -44,6 +44,7 @@ class LifecycleFailureReason(StrEnum):
     MODEL_TIMEOUT = "MODEL_TIMEOUT"
     MODEL_LIMIT = "MODEL_LIMIT"
     EVALUATION_FAILED = "EVALUATION_FAILED"
+    VALIDATION_LEDGER_WRITE_FAILED = "VALIDATION_LEDGER_WRITE_FAILED"
     SCORING_FAILURE = "SCORING_FAILURE"
 
 
@@ -231,6 +232,7 @@ def fail_evaluation(
         LifecycleFailureReason.MODEL_TIMEOUT,
         LifecycleFailureReason.MODEL_LIMIT,
         LifecycleFailureReason.EVALUATION_FAILED,
+        LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED,
     }:
         raise ValueError("evaluation failure requires an evaluation reason")
     status = (
@@ -241,6 +243,11 @@ def fail_evaluation(
     return record.model_copy(
         update={
             "phase": LifecyclePhase.FAILED,
+            "infrastructure_status": (
+                InfrastructureStatus.FAILED
+                if reason == LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED
+                else record.infrastructure_status
+            ),
             "evaluation_status": status,
             "evaluation_completed_at": now or _utc_now(),
             "evaluation_duration_seconds": duration_seconds,
