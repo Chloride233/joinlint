@@ -85,6 +85,12 @@ ProtocolViolation = Literal[
     "VALIDATION_RETRY_NOT_ALLOWED",
     "VALIDATION_RETRY_NOT_CHANGED",
 ]
+SubmissionGuardDecision = Literal[
+    "accepted_validated_sql",
+    "rejected_unvalidated_sql",
+    "accepted_abstention",
+    "not_observed",
+]
 Edge = tuple[str, str]
 
 

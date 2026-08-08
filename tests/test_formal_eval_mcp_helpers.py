@@ -43,12 +43,26 @@ def test_submission_payload_requires_exact_successfully_validated_sql(tmp_path: 
         "SELECT id FROM records",
         "",
         validation_ledger=ledger,
-    ) == {"status": "ok"}
+    ) == {
+        "status": "ok",
+        "guard_contract_version": 1,
+        "guard_decision": "accepted_validated_sql",
+    }
     assert submit_sql_payload(
         "SELECT id FROM records ",
         "",
         validation_ledger=ledger,
-    ) == {"status": "error", "code": "FINAL_SQL_NOT_VALIDATED"}
+    ) == {
+        "status": "error",
+        "code": "FINAL_SQL_NOT_VALIDATED",
+        "guard_contract_version": 1,
+        "guard_decision": "rejected_unvalidated_sql",
+    }
+    assert submit_sql_payload("", "no safe join", validation_ledger=ledger) == {
+        "status": "ok",
+        "guard_contract_version": 1,
+        "guard_decision": "accepted_abstention",
+    }
 
 
 def test_recording_joinlint_mcp_records_only_successful_validation(tmp_path: Path) -> None:

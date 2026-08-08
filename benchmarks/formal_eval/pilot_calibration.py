@@ -11,7 +11,13 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from benchmarks.formal_eval.contracts import Host, InputLockV2, ProtocolViolation, StrictModel
+from benchmarks.formal_eval.contracts import (
+    Host,
+    InputLockV2,
+    ProtocolViolation,
+    StrictModel,
+    SubmissionGuardDecision,
+)
 from benchmarks.formal_eval.dispatch import inspect_subprocess_environment
 from benchmarks.formal_eval.lifecycle import (
     LIFECYCLE_STORE_KEY,
@@ -55,6 +61,27 @@ class CalibrationBudgetEnvelope(StrictModel):
     modal_compute_upper_cny: float
     modal_image_build_reserve_cny: float
     total_upper_cny: float
+
+
+class CalibrationFailureReport(StrictModel):
+    schema_version: Literal[1] = 1
+    status: Literal["failed"] = "failed"
+    failure_code: Literal[
+        "CALIBRATION_DID_NOT_COMPLETE",
+        "INCOMPLETE_SAMPLE_SET",
+        "INFRASTRUCTURE_FAILURE",
+        "SYSTEMIC_INFRASTRUCTURE_FAILURE",
+        "INSPECT_COMMAND_FAILED",
+        "CALIBRATION_FAILED",
+    ]
+    expected_sample_count: Literal[8] = 8
+    observed_sample_count: int = Field(ge=0)
+    actual_model_cost_cny: float = Field(ge=0)
+    workflow_run_id: int = Field(gt=0)
+    campaign_spend_before_cny: float = Field(ge=0)
+    campaign_budget_cny: float = Field(gt=0)
+    joinlint_commit: str | None = None
+    input_lock_sha256: str | None = None
 
 
 class CalibrationResourceContract(StrictModel):
@@ -207,6 +234,8 @@ class HarnessCell(StrictModel):
     mcp_grounded: bool
     protocol_compliant: bool | None = None
     protocol_violation: ProtocolViolation | None = None
+    submission_guard_contract_version: Literal[1] | None = None
+    submission_guard_decision: SubmissionGuardDecision | None = None
     tool_error: bool
 
 
@@ -275,7 +304,7 @@ class ScoringAttestation(StrictModel):
 
 
 class PilotCalibrationReport(StrictModel):
-    schema_version: Literal[1, 2, 3, 4, 5] = 5
+    schema_version: Literal[1, 2, 3, 4, 5, 6] = 6
     status: Literal["passed", "failed"]
     readiness_status: Literal["passed", "failed"] | None = None
     calibration_task_ids: tuple[str, str]
@@ -299,6 +328,29 @@ class PilotCalibrationReport(StrictModel):
 
     @model_validator(mode="after")
     def require_consistent_status_and_budget(self) -> PilotCalibrationReport:
+        if self.schema_version >= 6:
+            expected_total = (
+                self.actual_model_cost_cny
+                + self.modal_compute_upper_cny
+                + self.modal_image_build_reserve_cny
+            )
+            if not math.isclose(
+                self.total_cost_upper_cny,
+                expected_total,
+                rel_tol=0,
+                abs_tol=1e-9,
+            ):
+                raise ValueError("pilot calibration total cost is inconsistent")
+            expected_campaign_total = (
+                self.campaign_spend_before_cny + self.total_cost_upper_cny
+            )
+            if not math.isclose(
+                self.campaign_total_upper_cny,
+                expected_campaign_total,
+                rel_tol=0,
+                abs_tol=1e-9,
+            ):
+                raise ValueError("pilot calibration campaign total is inconsistent")
         within_budget = (
             self.total_cost_upper_cny <= self.approved_run_budget_cny
             and self.campaign_total_upper_cny <= self.campaign_budget_cny
@@ -319,6 +371,19 @@ class PilotCalibrationReport(StrictModel):
             return self
         if self.resource is None:
             raise ValueError("schema v2+ requires a resource attestation")
+        if self.schema_version >= 6:
+            usage_costs = [
+                cell.usage.calculated_cost_cny
+                for cell in self.resource.cells
+                if cell.usage is not None
+            ]
+            if len(usage_costs) != len(self.resource.cells) or not math.isclose(
+                self.actual_model_cost_cny,
+                sum(usage_costs),
+                rel_tol=0,
+                abs_tol=1e-9,
+            ):
+                raise ValueError("pilot calibration actual model cost is inconsistent")
         if (
             self.schema_version >= 4
             and self.resource_contract.token_accounting_ceiling_by_host
@@ -343,6 +408,11 @@ class PilotCalibrationReport(StrictModel):
                     if self.schema_version == 3
                     else CALIBRATION_TOKEN_ACCOUNTING_CEILINGS
                 ),
+                submission_guard_available=(
+                    submission_guard_pipeline_available(self.harness)
+                    if self.schema_version >= 6
+                    else True
+                ),
             )
         )
         if self.readiness_status != readiness:
@@ -350,10 +420,10 @@ class PilotCalibrationReport(StrictModel):
         expected_passed = legacy_passed if self.schema_version == 2 else readiness == "passed"
         if (self.status == "passed") != expected_passed:
             raise ValueError("pilot calibration report status is inconsistent")
-        if self.schema_version == 5 and any(
+        if self.schema_version >= 5 and any(
             cell.protocol_compliant is None for cell in self.harness.cells
         ):
-            raise ValueError("schema v5 requires protocol compliance evidence")
+            raise ValueError("schema v5+ requires protocol compliance evidence")
         return self
 
 
@@ -380,6 +450,7 @@ def calibration_authorization_status(
     scoring: ScoringAttestation,
     within_budget: bool,
     accounting_ceiling_by_host: dict[Host, int] = CALIBRATION_TOKEN_ACCOUNTING_CEILINGS,
+    submission_guard_available: bool = True,
 ) -> Literal["passed", "failed"]:
     passed = (
         infrastructure.status == "passed"
@@ -388,6 +459,7 @@ def calibration_authorization_status(
             accounting_ceiling_by_host=accounting_ceiling_by_host,
         )
         and scoring_pipeline_available(scoring)
+        and submission_guard_available
         and within_budget
     )
     return "passed" if passed else "failed"
@@ -416,6 +488,23 @@ def scoring_pipeline_available(scoring: ScoringAttestation) -> bool:
         len(scoring.cells) == 8
         and len({_cell_key(cell) for cell in scoring.cells}) == 8
         and all(required <= set(cell.scorer_artifacts) for cell in scoring.cells)
+    )
+
+
+def submission_guard_pipeline_available(harness: HarnessAttestation) -> bool:
+    observed = {
+        "accepted_validated_sql",
+        "rejected_unvalidated_sql",
+        "accepted_abstention",
+    }
+    return (
+        len(harness.cells) == 8
+        and len({_cell_key(cell) for cell in harness.cells}) == 8
+        and all(
+            cell.submission_guard_contract_version == 1
+            and cell.submission_guard_decision in observed
+            for cell in harness.cells
+        )
     )
 
 
@@ -517,7 +606,26 @@ def run_calibration(
     campaign_budget_cny: float,
     campaign_spend_before_cny: float,
 ) -> PilotCalibrationReport:
+    output.mkdir(parents=True, exist_ok=True)
+    failure_path = output / "calibration-failure.json"
+    failure_report = CalibrationFailureReport(
+        failure_code="CALIBRATION_DID_NOT_COMPLETE",
+        observed_sample_count=0,
+        actual_model_cost_cny=0,
+        workflow_run_id=workflow_run_id,
+        campaign_spend_before_cny=campaign_spend_before_cny,
+        campaign_budget_cny=campaign_budget_cny,
+    )
+    _write_calibration_failure(failure_path, failure_report)
     registration, manifest, run_plan = verify_pilot_inputs(root)
+    input_lock_sha256 = _input_lock_sha256(root)
+    failure_report = failure_report.model_copy(
+        update={
+            "joinlint_commit": registration.joinlint_commit,
+            "input_lock_sha256": input_lock_sha256,
+        }
+    )
+    _write_calibration_failure(failure_path, failure_report)
     specification = load_pilot_calibration_spec(root, manifest)
     envelope = calibration_budget_envelope(registration)
     if envelope.total_upper_cny > CALIBRATION_BUDGET_CNY:
@@ -534,12 +642,37 @@ def run_calibration(
         log_dir=log_dir,
         lineage_id=run_plan.lineage_id,
     )
-    output.mkdir(parents=True, exist_ok=True)
-    for command in commands:
-        batch_log_dir = Path(command[command.index("--log-dir") + 1])
-        batch_log_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run(command, check=True, env=inspect_subprocess_environment())
-        require_batch_health(batch_log_dir, expected_sample_count=2)
+    try:
+        for command in commands:
+            batch_log_dir = Path(command[command.index("--log-dir") + 1])
+            batch_log_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.run(command, check=True, env=inspect_subprocess_environment())
+            require_batch_health(batch_log_dir, expected_sample_count=2)
+            failure_report = failure_report.model_copy(
+                update={
+                    "observed_sample_count": _observed_sample_count(log_dir),
+                    "actual_model_cost_cny": observed_model_cost_cny(
+                        log_dir, registration
+                    ),
+                }
+            )
+            _write_calibration_failure(failure_path, failure_report)
+    except Exception as error:
+        try:
+            observed_count = _observed_sample_count(log_dir)
+            observed_cost = observed_model_cost_cny(log_dir, registration)
+        except Exception:
+            observed_count = failure_report.observed_sample_count
+            observed_cost = failure_report.actual_model_cost_cny
+        failure_report = failure_report.model_copy(
+            update={
+                "failure_code": _calibration_failure_code(error),
+                "observed_sample_count": observed_count,
+                "actual_model_cost_cny": observed_cost,
+            }
+        )
+        _write_calibration_failure(failure_path, failure_report)
+        raise
     actual_model_cost = observed_model_cost_cny(log_dir, registration)
     total_upper = (
         actual_model_cost
@@ -556,6 +689,7 @@ def run_calibration(
         infrastructure=infrastructure,
         resource=resource,
         scoring=scoring,
+        submission_guard_available=submission_guard_pipeline_available(harness),
         within_budget=(
             total_upper <= CALIBRATION_BUDGET_CNY
             and campaign_total <= campaign_budget_cny
@@ -588,13 +722,43 @@ def run_calibration(
         campaign_total_upper_cny=campaign_total,
         workflow_run_id=workflow_run_id,
         joinlint_commit=registration.joinlint_commit,
-        input_lock_sha256=_input_lock_sha256(root),
+        input_lock_sha256=input_lock_sha256,
         dependency_versions=dependency_versions(),
     )
     (output / "calibration.json").write_bytes(
         canonical_json(report.model_dump(mode="json")) + b"\n"
     )
+    failure_path.unlink()
     return report
+
+
+def _write_calibration_failure(
+    path: Path,
+    report: CalibrationFailureReport,
+) -> None:
+    path.write_bytes(canonical_json(report.model_dump(mode="json")) + b"\n")
+
+
+def _calibration_failure_code(error: Exception) -> str:
+    detail = str(error)
+    if detail == "pilot batch produced an incomplete sample set":
+        return "INCOMPLETE_SAMPLE_SET"
+    if detail == "pilot batch contains an infrastructure failure":
+        return "INFRASTRUCTURE_FAILURE"
+    if detail == "pilot batch has a systemic infrastructure failure":
+        return "SYSTEMIC_INFRASTRUCTURE_FAILURE"
+    if isinstance(error, subprocess.CalledProcessError):
+        return "INSPECT_COMMAND_FAILED"
+    return "CALIBRATION_FAILED"
+
+
+def _observed_sample_count(log_dir: Path) -> int:
+    from inspect_ai.log import list_eval_logs, read_eval_log
+
+    return sum(
+        len(read_eval_log(info.name, header_only=False).samples or [])
+        for info in list_eval_logs(str(log_dir), recursive=True)
+    )
 
 
 def verify_calibration_logs(
@@ -752,6 +916,22 @@ def attest_calibration_samples(
                     if isinstance(trace.get("protocol_violation"), str)
                     else None
                 ),
+                submission_guard_contract_version=(
+                    join_metadata.get("submission_guard_contract_version")
+                    if join_metadata.get("submission_guard_contract_version") == 1
+                    else None
+                ),
+                submission_guard_decision=(
+                    join_metadata.get("submission_guard_decision")
+                    if join_metadata.get("submission_guard_decision")
+                    in {
+                        "accepted_validated_sql",
+                        "rejected_unvalidated_sql",
+                        "accepted_abstention",
+                        "not_observed",
+                    }
+                    else None
+                ),
                 tool_error=bool(trace.get("tool_error", True)),
             )
         )
@@ -849,6 +1029,29 @@ def verify_calibration_attestation_values(
         raise ValueError("calibration attestation dependency versions mismatch")
 
 
+def verify_calibration_budget_values(
+    report: PilotCalibrationReport,
+    registration: PilotRegistration,
+) -> None:
+    envelope = calibration_budget_envelope(registration)
+    if not math.isclose(
+        report.modal_compute_upper_cny,
+        envelope.modal_compute_upper_cny,
+        rel_tol=0,
+        abs_tol=1e-9,
+    ):
+        raise ValueError("calibration Modal compute bound mismatch")
+    if not math.isclose(
+        report.modal_image_build_reserve_cny,
+        envelope.modal_image_build_reserve_cny,
+        rel_tol=0,
+        abs_tol=1e-9,
+    ):
+        raise ValueError("calibration image-build reserve mismatch")
+    if report.actual_model_cost_cny > envelope.model_cost_upper_cny + 1e-9:
+        raise ValueError("calibration actual model cost exceeds the frozen bound")
+
+
 def verify_calibration_attestation(
     root: Path,
     attestation_path: Path,
@@ -862,7 +1065,7 @@ def verify_calibration_attestation(
     if registration.joinlint_commit != current_commit:
         raise ValueError("checked-out JoinLint commit does not match the pilot registration")
     report = PilotCalibrationReport.model_validate_json(attestation_path.read_bytes())
-    if report.schema_version != 5:
+    if report.schema_version != 6:
         raise ValueError("pilot calibration attestation schema is not current")
     specification = load_pilot_calibration_spec(root, manifest)
     if report.calibration_task_ids != specification.task_ids:
@@ -881,6 +1084,7 @@ def verify_calibration_attestation(
         != formal_accounting_ceilings
     ):
         raise ValueError("calibration accounting contract does not match the formal Pilot")
+    verify_calibration_budget_values(report, registration)
     expected_keys = {
         (model.returned_id, host, task_id)
         for model in registration.models

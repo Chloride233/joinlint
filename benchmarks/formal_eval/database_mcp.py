@@ -57,11 +57,28 @@ def submit_sql_payload(
     warning: str,
     *,
     validation_ledger: ValidationLedger | None = None,
-) -> dict[str, str]:
+) -> dict[str, str | int]:
     del warning
-    if sql and validation_ledger is not None and not validation_ledger.matches(sql):
-        return {"status": "error", "code": "FINAL_SQL_NOT_VALIDATED"}
-    return {"status": "ok"}
+    if validation_ledger is None:
+        return {"status": "ok"}
+    if not sql:
+        return {
+            "status": "ok",
+            "guard_contract_version": 1,
+            "guard_decision": "accepted_abstention",
+        }
+    if not validation_ledger.matches(sql):
+        return {
+            "status": "error",
+            "code": "FINAL_SQL_NOT_VALIDATED",
+            "guard_contract_version": 1,
+            "guard_decision": "rejected_unvalidated_sql",
+        }
+    return {
+        "status": "ok",
+        "guard_contract_version": 1,
+        "guard_decision": "accepted_validated_sql",
+    }
 
 
 def create_database_server(
@@ -77,7 +94,7 @@ def create_database_server(
         return execute_readonly_sql(database, sql)
 
     @mcp.tool(name="submit_sql")
-    def submit_sql(sql: str, warning: str) -> dict[str, str]:
+    def submit_sql(sql: str, warning: str) -> dict[str, str | int]:
         """Submit the final SQL and warning to the evaluator without executing it."""
         return submit_sql_payload(sql, warning, validation_ledger=validation_ledger)
 

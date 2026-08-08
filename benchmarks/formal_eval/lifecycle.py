@@ -139,6 +139,22 @@ def infrastructure_prepared(
     )
 
 
+def record_infrastructure_retry(
+    record: LifecycleRecord,
+    *,
+    reason: str,
+) -> LifecycleRecord:
+    _require_phase(record, LifecyclePhase.INFRASTRUCTURE_PENDING)
+    if record.infrastructure_attempts != 1 or record.infrastructure_retry_reason is not None:
+        raise ValueError("infrastructure retry is already exhausted")
+    return record.model_copy(
+        update={
+            "infrastructure_attempts": 2,
+            "infrastructure_retry_reason": _bounded_detail(reason),
+        }
+    )
+
+
 def readiness_failed(
     record: LifecycleRecord,
     *,

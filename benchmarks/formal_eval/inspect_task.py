@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -40,6 +41,7 @@ from benchmarks.formal_eval.contracts import (
     FormalManifestV2,
     Host,
     SealedAgentTask,
+    SubmissionGuardDecision,
 )
 from benchmarks.formal_eval.deterministic import sanitized_mcp_environment
 from benchmarks.formal_eval.manifest import load_document, verify_sealed_task_hashes
@@ -47,6 +49,7 @@ from benchmarks.formal_eval.modal_compat import install_modal_filesystem_compat
 from benchmarks.formal_eval.lifecycle import (
     LIFECYCLE_STORE_KEY,
     LifecycleFailureReason,
+    LifecycleRecord,
     allow_scoring,
     complete_evaluation,
     elapsed_seconds_since,
@@ -54,6 +57,7 @@ from benchmarks.formal_eval.lifecycle import (
     infrastructure_prepared,
     new_lifecycle,
     parse_lifecycle,
+    record_infrastructure_retry,
     readiness_failed,
     readiness_passed,
     scoring_eligibility,
@@ -71,6 +75,10 @@ HARNESS_PROMPT = """The schema is already provided, so your first tool call must
 HOST_CONTEXT_STORE_KEY = "joinlint.formal_eval.host_context.v1"
 MCP_READINESS_HANDSHAKE_STORE_KEY = "joinlint.formal_eval.mcp_readiness_handshake.v1"
 VALIDATION_LEDGER_PATH = "/tmp/joinlint-formal-validation-ledger.json"
+CODEX_ALL_MCP_MISSING_DETAIL = (
+    "host_tool_surface_mismatch:"
+    "missing=execute_sql,get_join_plan,submit_sql,validate_sql;unexpected=-"
+)
 
 CODEX_CONTEXT_CONFIG_OVERRIDES = {
     "features.apps": "false",
@@ -126,6 +134,13 @@ CODEX_ALLOWED_BUILTIN_TOOLS = {
 
 class HostContextDriftError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class SubmissionResult:
+    submission: Submission
+    guard_contract_version: int | None
+    guard_decision: SubmissionGuardDecision
 
 
 @task
@@ -419,7 +434,7 @@ def _forced_trace(state: TaskState) -> dict[str, Any] | None:
         if condition not in {"treatment", "oracle_mcp", "no_harness"}:
             return None
         try:
-            submission = _extract_submission_tool_call(state.messages)
+            submission = _extract_submission_result(state.messages).submission
             sql = submission.sql
             submitted = bool(sql)
         except ValueError:
@@ -457,9 +472,13 @@ def formal_join_scorer() -> Scorer:
         metadata = state.metadata or {}
         condition = str(metadata["condition"])
         try:
-            submission = _extract_submission_tool_call(state.messages)
+            submission_result = _extract_submission_result(state.messages)
         except ValueError:
-            payload: dict[str, Any] = {"failure_code": "SQL_PARSE_FAILED"}
+            payload: dict[str, Any] = {
+                "failure_code": "SQL_PARSE_FAILED",
+                "submission_guard_contract_version": None,
+                "submission_guard_decision": "not_observed",
+            }
             if condition in {"treatment", "oracle_mcp", "no_harness"}:
                 trace = assess_trace(
                     _tool_events(state.messages),
@@ -472,6 +491,38 @@ def formal_join_scorer() -> Scorer:
             return Score(
                 value=0,
                 metadata=_semantic_metadata(payload),
+            )
+        submission = submission_result.submission
+        guard_metadata = _submission_guard_metadata(submission_result)
+        if submission_result.guard_decision == "rejected_unvalidated_sql":
+            try:
+                rejected_edges = set(
+                    extract_join_edges(submission.sql, metadata.get("schema") or {})
+                )
+            except (KeyError, ValueError):
+                rejected_edges = set()
+            trace = assess_trace(
+                _tool_events(state.messages),
+                expected_entities=set(metadata.get("expected_entities") or []),
+                final_sql=submission.sql,
+                final_edges=rejected_edges,
+                submitted_sql=True,
+            )
+            return Score(
+                value=0,
+                metadata=_semantic_metadata(
+                    {
+                        "submitted_sql": True,
+                        "safe_abstention": False,
+                        "join_correct_task_completion": False,
+                        "join_graph_correct": False,
+                        "evaluator_validation_passed": False,
+                        "dangerous_sql_submitted": False,
+                        "failure_code": "FINAL_SQL_NOT_VALIDATED",
+                        "trace": trace.model_dump(mode="json"),
+                        **guard_metadata,
+                    }
+                ),
             )
         allowed = metadata.get("allowed_graphs") or []
         oracle_has_safe_path = bool(metadata.get("oracle_has_safe_path"))
@@ -499,6 +550,7 @@ def formal_join_scorer() -> Scorer:
                 "evaluator_validation_passed": False,
                 "dangerous_sql_submitted": False,
                 "failure_code": failure,
+                **guard_metadata,
             }
             if trace is not None:
                 payload["trace"] = trace.model_dump(mode="json")
@@ -512,7 +564,9 @@ def formal_join_scorer() -> Scorer:
         except (KeyError, ValueError):
             return Score(
                 value=0,
-                metadata=_semantic_metadata({"failure_code": "SQL_PARSE_FAILED"}),
+                metadata=_semantic_metadata(
+                    {"failure_code": "SQL_PARSE_FAILED", **guard_metadata}
+                ),
             )
         if condition in {"treatment", "oracle_mcp", "no_harness"}:
             trace = assess_trace(
@@ -539,6 +593,7 @@ def formal_join_scorer() -> Scorer:
             "evaluator_validation_passed": validation_passed,
             "dangerous_sql_submitted": join_score.wrong_join,
             "failure_code": failure,
+            **guard_metadata,
         }
         if trace is not None:
             payload["trace"] = trace.model_dump(mode="json")
@@ -556,16 +611,25 @@ def formal_execution_scorer() -> Scorer:
             return blocked
         metadata = state.metadata or {}
         try:
-            sql = _extract_submission_tool_call(state.messages).sql
+            submission_result = _extract_submission_result(state.messages)
         except ValueError:
             return Score(
                 value=0,
                 metadata=_semantic_metadata({"error_code": "SQL_PARSE_FAILED"}),
             )
+        guard_metadata = _submission_guard_metadata(submission_result)
+        if submission_result.guard_decision == "rejected_unvalidated_sql":
+            return Score(
+                value=0,
+                metadata=_semantic_metadata(
+                    {"error_code": "FINAL_SQL_NOT_VALIDATED", **guard_metadata}
+                ),
+            )
+        sql = submission_result.submission.sql
         if not sql:
             return Score(
                 value=0,
-                metadata=_semantic_metadata({"error_code": "NO_SQL"}),
+                metadata=_semantic_metadata({"error_code": "NO_SQL", **guard_metadata}),
             )
         result = execution_matches(
             Path(str(metadata["database_path"])),
@@ -577,7 +641,9 @@ def formal_execution_scorer() -> Scorer:
         )
         return Score(
             value=1 if result.equivalent else 0,
-            metadata=_semantic_metadata({"error_code": result.error_code}),
+            metadata=_semantic_metadata(
+                {"error_code": result.error_code, **guard_metadata}
+            ),
         )
 
     return score
@@ -764,7 +830,13 @@ def _solver(
         )
     return chain(
         infrastructure_readiness(host, agent_version, readiness_time_limit),
-        evaluation_lifecycle(agent, readiness_time_limit, evaluation_time_limit),
+        evaluation_lifecycle(
+            agent,
+            readiness_time_limit,
+            evaluation_time_limit,
+            host=host,
+            condition=condition,
+        ),
     )
 
 
@@ -849,6 +921,9 @@ def evaluation_lifecycle(
     agent: Agent,
     preparation_timeout_seconds: int,
     evaluation_timeout_seconds: int,
+    *,
+    host: Host | None = None,
+    condition: Condition | None = None,
 ) -> Solver:
     agent_solver = as_solver(agent)
 
@@ -859,12 +934,29 @@ def evaluation_lifecycle(
 
         async def run_agent() -> None:
             nonlocal agent_error, result_state
-            try:
-                result_state = await agent_solver(state, generate)
-            except Exception as error:
-                agent_error = error
-            finally:
-                done.set()
+            while True:
+                try:
+                    result_state = await agent_solver(state, generate)
+                    break
+                except Exception as error:
+                    record = _require_lifecycle(state)
+                    if _should_retry_agent_startup(
+                        error,
+                        record=record,
+                        host=host,
+                        condition=condition,
+                    ):
+                        write_lifecycle(
+                            state.store,
+                            record_infrastructure_retry(
+                                record,
+                                reason=CODEX_ALL_MCP_MISSING_DETAIL,
+                            ),
+                        )
+                        continue
+                    agent_error = error
+                    break
+            done.set()
 
         async with create_task_group() as tasks:
             tasks.start_soon(run_agent)
@@ -880,7 +972,7 @@ def evaluation_lifecycle(
                 tasks.cancel_scope.cancel()
                 reason = (
                     LifecycleFailureReason.HOST_CONTEXT_DRIFT
-                    if isinstance(agent_error, HostContextDriftError)
+                    if _is_host_context_drift_error(agent_error)
                     else LifecycleFailureReason.EVALUATION_NOT_STARTED
                 )
                 detail = (
@@ -895,6 +987,8 @@ def evaluation_lifecycle(
                     reason=reason,
                     duration_seconds=elapsed_seconds_since(record.readiness_started_at),
                     detail=detail,
+                    infrastructure_attempts=record.infrastructure_attempts,
+                    infrastructure_retry_reason=record.infrastructure_retry_reason,
                 )
                 write_lifecycle(state.store, record)
                 state.completed = True
@@ -938,6 +1032,29 @@ def evaluation_lifecycle(
         return result_state
 
     return solve
+
+
+def _should_retry_agent_startup(
+    error: Exception,
+    *,
+    record: LifecycleRecord,
+    host: Host | None,
+    condition: Condition | None,
+) -> bool:
+    return (
+        host == "codex"
+        and condition in {"treatment", "oracle_mcp", "no_harness"}
+        and record.infrastructure_attempts == 1
+        and record.infrastructure_retry_reason is None
+        and CODEX_ALL_MCP_MISSING_DETAIL in str(error)
+    )
+
+
+def _is_host_context_drift_error(error: Exception | None) -> bool:
+    return error is not None and (
+        isinstance(error, HostContextDriftError)
+        or "host_tool_surface_mismatch:" in str(error)
+    )
 
 
 async def _prepare_host_binary(host: Host, agent_version: str) -> str:
@@ -1175,6 +1292,12 @@ def _semantic_metadata(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _safe_failure_detail(error: Exception) -> str:
+    detail = str(error)
+    if isinstance(error, HostContextDriftError):
+        return detail[:512]
+    marker = "host_tool_surface_mismatch:"
+    if marker in detail:
+        return detail[detail.index(marker) :].splitlines()[0][:512]
     if isinstance(error, RuntimeError) and str(error) in {
         "host_binary_missing_from_image",
         "host_binary_digest_failed",
@@ -1220,6 +1343,13 @@ def _sample_model_limit_exceeded() -> bool:
 
 
 def _extract_submission_tool_call(messages: list[object]) -> Submission:
+    result = _extract_submission_result(messages)
+    if result.guard_decision == "rejected_unvalidated_sql":
+        raise ValueError("submission guard rejected the final SQL")
+    return result.submission
+
+
+def _extract_submission_result(messages: list[object]) -> SubmissionResult:
     calls = []
     results: dict[str, ChatMessageTool] = {}
     for message in messages:
@@ -1244,9 +1374,49 @@ def _extract_submission_tool_call(messages: list[object]) -> Submission:
     if result is None or result.error is not None:
         raise ValueError("submission call did not complete")
     payload = _tool_result_payload(result.content)
-    if payload != {"status": "ok"}:
+    submission = Submission.model_validate(call.arguments)
+    if payload == {"status": "ok"}:
+        return SubmissionResult(
+            submission=submission,
+            guard_contract_version=None,
+            guard_decision="not_observed",
+        )
+    accepted_sql = {
+        "status": "ok",
+        "guard_contract_version": 1,
+        "guard_decision": "accepted_validated_sql",
+    }
+    accepted_abstention = {
+        "status": "ok",
+        "guard_contract_version": 1,
+        "guard_decision": "accepted_abstention",
+    }
+    rejected_sql = {
+        "status": "error",
+        "code": "FINAL_SQL_NOT_VALIDATED",
+        "guard_contract_version": 1,
+        "guard_decision": "rejected_unvalidated_sql",
+    }
+    if payload == accepted_sql and submission.sql:
+        decision: SubmissionGuardDecision = "accepted_validated_sql"
+    elif payload == accepted_abstention and not submission.sql:
+        decision = "accepted_abstention"
+    elif payload == rejected_sql and submission.sql:
+        decision = "rejected_unvalidated_sql"
+    else:
         raise ValueError("submission acknowledgement is invalid")
-    return Submission.model_validate(call.arguments)
+    return SubmissionResult(
+        submission=submission,
+        guard_contract_version=1,
+        guard_decision=decision,
+    )
+
+
+def _submission_guard_metadata(result: SubmissionResult) -> dict[str, object]:
+    return {
+        "submission_guard_contract_version": result.guard_contract_version,
+        "submission_guard_decision": result.guard_decision,
+    }
 
 
 def _is_submission_tool(value: str) -> bool:

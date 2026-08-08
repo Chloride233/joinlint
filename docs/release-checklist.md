@@ -69,8 +69,9 @@
   Pilot, require the bound four-cell calibration attestation with the exact
   Pilot limits; neither diagnostic output enters the confirmatory report. Check
   infrastructure, resource sufficiency, and scorer availability independently
-  from Harness/task success, and do not raise a frozen limit from a censored
-  model-limit sample.
+  from Harness/task success. Require parseable submission-guard evidence for all
+  eight treatment cells, and do not raise a frozen limit from a censored model-limit
+  sample.
 - Verify sanitized exports reject unexpected returned model IDs, duplicate run
   identities, missing scorer artifacts, raw questions, schema text, gold SQL,
   database paths, transcripts, and common credential prefixes.

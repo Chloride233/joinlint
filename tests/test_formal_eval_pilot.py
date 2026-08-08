@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from benchmarks.formal_eval import pilot_calibration
 from benchmarks.formal_eval.contracts import (
     AgentResultBundle,
     FormalManifestV2,
@@ -32,6 +33,7 @@ from benchmarks.formal_eval.pilot_calibration import (
     CALIBRATION_BUDGET_CNY,
     CALIBRATION_TOKEN_ACCOUNTING_CEILINGS,
     CALIBRATION_TOKEN_LIMITS,
+    CalibrationFailureReport,
     CalibrationResourceContract,
     InfrastructureAttestation,
     PilotCalibrationReport,
@@ -40,7 +42,9 @@ from benchmarks.formal_eval.pilot_calibration import (
     calibration_authorization_status,
     calibration_budget_envelope,
     calibration_readiness_status,
+    submission_guard_pipeline_available,
     usage_breakdown,
+    verify_calibration_budget_values,
 )
 from benchmarks.formal_eval.pilot_dispatch import (
     build_pilot_commands,
@@ -279,7 +283,14 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
                         },
                         scores={
                             "formal_join_scorer": SimpleNamespace(
-                                metadata={"failure_code": None, "trace": trace}
+                                metadata={
+                                    "failure_code": None,
+                                    "trace": trace,
+                                    "submission_guard_contract_version": 1,
+                                    "submission_guard_decision": (
+                                        "accepted_validated_sql"
+                                    ),
+                                }
                             ),
                             "formal_execution_scorer": SimpleNamespace(
                                 metadata={"error_code": None}
@@ -304,6 +315,7 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
     assert len(harness.cells) == len(scoring.cells) == 8
     assert all(cell.protocol_compliant is True for cell in harness.cells)
     assert all(cell.protocol_violation is None for cell in harness.cells)
+    assert submission_guard_pipeline_available(harness) is True
     assert {summary.observed_cache_read_floor_tokens for summary in resource.hosts} == {
         43_008
     }
@@ -314,6 +326,73 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
         scoring=scoring,
         within_budget=True,
     ) == "passed"
+
+    actual_model_cost = sum(
+        cell.usage.calculated_cost_cny
+        for cell in resource.cells
+        if cell.usage is not None
+    )
+    envelope = calibration_budget_envelope(registration)
+    total_cost_upper = (
+        actual_model_cost
+        + envelope.modal_compute_upper_cny
+        + envelope.modal_image_build_reserve_cny
+    )
+    current_report = PilotCalibrationReport(
+        schema_version=6,
+        status="passed",
+        readiness_status="passed",
+        calibration_task_ids=task_ids,
+        resource_contract=CalibrationResourceContract(
+            token_limit_by_host=CALIBRATION_TOKEN_LIMITS,
+            token_accounting_ceiling_by_host=CALIBRATION_TOKEN_ACCOUNTING_CEILINGS,
+        ),
+        infrastructure=infrastructure,
+        resource=resource,
+        harness=harness,
+        scoring=scoring,
+        actual_model_cost_cny=actual_model_cost,
+        modal_compute_upper_cny=envelope.modal_compute_upper_cny,
+        modal_image_build_reserve_cny=envelope.modal_image_build_reserve_cny,
+        total_cost_upper_cny=total_cost_upper,
+        campaign_spend_before_cny=8.0,
+        campaign_budget_cny=20.0,
+        campaign_total_upper_cny=8.0 + total_cost_upper,
+        workflow_run_id=123,
+        joinlint_commit=COMMIT,
+        input_lock_sha256="c" * 64,
+        dependency_versions={},
+    )
+    verify_calibration_budget_values(current_report, registration)
+
+    tampered = current_report.model_dump()
+    tampered["actual_model_cost_cny"] += 0.01
+    tampered["total_cost_upper_cny"] += 0.01
+    tampered["campaign_total_upper_cny"] += 0.01
+    with pytest.raises(ValueError, match="actual model cost"):
+        PilotCalibrationReport.model_validate(tampered)
+
+    samples[0].scores["formal_join_scorer"].metadata[
+        "submission_guard_decision"
+    ] = "rejected_unvalidated_sql"
+    _, _, rejected_harness, _ = attest_calibration_samples(
+        samples,
+        registration=registration,
+        task_ids=task_ids,
+    )
+    assert submission_guard_pipeline_available(rejected_harness) is True
+    samples[0].scores["formal_join_scorer"].metadata[
+        "submission_guard_decision"
+    ] = "not_observed"
+    _, _, missing_guard, _ = attest_calibration_samples(
+        samples,
+        registration=registration,
+        task_ids=task_ids,
+    )
+    assert submission_guard_pipeline_available(missing_guard) is False
+    samples[0].scores["formal_join_scorer"].metadata[
+        "submission_guard_decision"
+    ] = "accepted_validated_sql"
 
     report_values = {
         "calibration_task_ids": task_ids,
@@ -454,6 +533,66 @@ def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -
 
     with pytest.raises(ValueError, match="status is inconsistent"):
         InfrastructureAttestation(status="passed", cells=())
+
+
+def test_calibration_batch_failure_writes_a_sanitized_failure_attestation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = frozen_pilot_registration(COMMIT)
+    log_dir = tmp_path / "logs"
+    output = tmp_path / "artifacts"
+    monkeypatch.setattr(
+        pilot_calibration,
+        "verify_pilot_inputs",
+        lambda root: (
+            registration,
+            SimpleNamespace(),
+            SimpleNamespace(lineage_id=LINEAGE_ID),
+        ),
+    )
+    monkeypatch.setattr(
+        pilot_calibration,
+        "load_pilot_calibration_spec",
+        lambda root, manifest: SimpleNamespace(task_ids=("task-a", "task-b")),
+    )
+    monkeypatch.setattr(pilot_calibration.shutil, "which", lambda name: "/inspect")
+    monkeypatch.setattr(
+        pilot_calibration,
+        "build_calibration_commands",
+        lambda **kwargs: (["/inspect", "--log-dir", str(log_dir / "batch")],),
+    )
+    monkeypatch.setattr(pilot_calibration.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        pilot_calibration,
+        "require_batch_health",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("pilot batch contains an infrastructure failure")
+        ),
+    )
+    monkeypatch.setattr(pilot_calibration, "observed_model_cost_cny", lambda *args: 0.12)
+    monkeypatch.setattr(pilot_calibration, "_observed_sample_count", lambda path: 6)
+    monkeypatch.setattr(pilot_calibration, "_input_lock_sha256", lambda root: "c" * 64)
+
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        pilot_calibration.run_calibration(
+            tmp_path / "sealed",
+            log_dir,
+            output,
+            workflow_run_id=123,
+            campaign_budget_cny=75,
+            campaign_spend_before_cny=64,
+        )
+
+    report = CalibrationFailureReport.model_validate_json(
+        (output / "calibration-failure.json").read_bytes()
+    )
+    assert report.failure_code == "INFRASTRUCTURE_FAILURE"
+    assert report.observed_sample_count == 6
+    assert report.actual_model_cost_cny == pytest.approx(0.12)
+    assert report.joinlint_commit == COMMIT
+    assert report.input_lock_sha256 == "c" * 64
+    assert "SELECT" not in (output / "calibration-failure.json").read_text()
 
 
 def test_pilot_canary_requires_model_usage_and_both_scorers() -> None:
@@ -966,6 +1105,13 @@ def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() ->
     }
     assert "--campaign-budget-cny \"$CAMPAIGN_BUDGET_CNY\"" in run_step["run"]
     assert "--campaign-spend-before-cny \"$CAMPAIGN_SPEND_BEFORE_CNY\"" in run_step["run"]
+    sanitized_upload = next(
+        step
+        for step in job["steps"]
+        if (step.get("with") or {}).get("name")
+        == "joinlint-formal-pilot-calibration-sanitized"
+    )
+    assert sanitized_upload["with"]["if-no-files-found"] == "error"
 
 
 def _manifest(count: int, *, task: SealedAgentTask | None = None) -> FormalManifestV2:

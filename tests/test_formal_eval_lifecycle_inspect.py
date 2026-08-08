@@ -183,6 +183,126 @@ def test_host_context_drift_is_a_distinct_pre_model_readiness_failure() -> None:
     assert scoring_eligibility(record).failure_code == "INFRASTRUCTURE_FAILURE"
 
 
+def test_codex_retries_one_all_mcp_missing_startup_race_before_model() -> None:
+    attempts = 0
+
+    @agent
+    def transient_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError(
+                    "codex bridge failed: host_tool_surface_mismatch:"
+                    "missing=execute_sql,get_join_plan,submit_sql,validate_sql;"
+                    "unexpected=-"
+                )
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            record = readiness_passed(record, duration_seconds=0, now=NOW)
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            return agent_state
+
+        return execute
+
+    state = _pending_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            transient_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 2
+    assert record.scoring_eligible is True
+    assert record.infrastructure_attempts == 2
+    assert record.infrastructure_retry_reason == (
+        "host_tool_surface_mismatch:"
+        "missing=execute_sql,get_join_plan,submit_sql,validate_sql;unexpected=-"
+    )
+
+
+def test_codex_does_not_retry_partial_or_unexpected_tool_surface_drift() -> None:
+    attempts = 0
+
+    @agent
+    def drift_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            nonlocal attempts
+            del agent_state
+            attempts += 1
+            raise RuntimeError(
+                "host_tool_surface_mismatch:missing=execute_sql;unexpected=shell"
+            )
+
+        return execute
+
+    state = _pending_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            drift_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 1
+    assert record.failure_reason == LifecycleFailureReason.HOST_CONTEXT_DRIFT
+    assert record.infrastructure_attempts == 1
+    assert record.infrastructure_retry_reason is None
+
+
+def test_codex_does_not_exceed_two_total_infrastructure_attempts() -> None:
+    attempts = 0
+
+    @agent
+    def missing_mcp_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            nonlocal attempts
+            del agent_state
+            attempts += 1
+            raise RuntimeError(inspect_task.CODEX_ALL_MCP_MISSING_DETAIL)
+
+        return execute
+
+    record = infrastructure_prepared(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=0,
+        host_binary_sha256="a" * 64,
+        infrastructure_attempts=2,
+        infrastructure_retry_reason="sandbox_tools_readiness_failed",
+        now=NOW,
+    )
+    state = _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            missing_mcp_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    failed = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 1
+    assert failed.infrastructure_attempts == 2
+    assert failed.infrastructure_retry_reason == "sandbox_tools_readiness_failed"
+
+
 def test_readiness_forces_sandbox_tools_injection_before_agent_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -414,6 +534,57 @@ def test_formal_join_scorer_rejects_duplicate_submission_tool_calls() -> None:
 
     assert score.value == 0
     assert score.metadata["failure_code"] == "SQL_PARSE_FAILED"
+
+
+def test_submission_guard_rejection_is_not_collapsed_into_a_parse_failure() -> None:
+    state = _eligible_state()
+    state.metadata = {
+        "condition": "treatment",
+        "allowed_graphs": [[]],
+        "schema": {},
+        "oracle_has_safe_path": True,
+        "expected_entities": [],
+        "database_path": "unused.sqlite",
+        "task_id": "guard-rejection",
+        "gold_sql": "SELECT 1",
+    }
+    state.messages = [
+        ChatMessageAssistant(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="submit-one",
+                    function="mcp__EvaluationDatabase__submit_sql",
+                    arguments={"sql": "SELECT 1", "warning": ""},
+                )
+            ],
+        ),
+        ChatMessageTool(
+            content=(
+                '{"status":"error","code":"FINAL_SQL_NOT_VALIDATED",'
+                '"guard_contract_version":1,'
+                '"guard_decision":"rejected_unvalidated_sql"}'
+            ),
+            tool_call_id="submit-one",
+            function="mcp__EvaluationDatabase__submit_sql",
+        ),
+    ]
+
+    join_score = asyncio.run(
+        inspect_task.formal_join_scorer()(state, Target("SELECT 1"))
+    )
+    execution_score = asyncio.run(
+        inspect_task.formal_execution_scorer()(state, Target("SELECT 1"))
+    )
+
+    assert join_score.value == 0
+    assert join_score.metadata["failure_code"] == "FINAL_SQL_NOT_VALIDATED"
+    assert join_score.metadata["submission_guard_contract_version"] == 1
+    assert (
+        join_score.metadata["submission_guard_decision"]
+        == "rejected_unvalidated_sql"
+    )
+    assert execution_score.metadata["error_code"] == "FINAL_SQL_NOT_VALIDATED"
 
 
 def test_sql_parse_failure_still_reports_treatment_tool_funnel(

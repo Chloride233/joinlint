@@ -10,6 +10,7 @@ from benchmarks.formal_eval.lifecycle import (
     complete_evaluation,
     fail_evaluation,
     infrastructure_prepared,
+    record_infrastructure_retry,
     new_lifecycle,
     readiness_failed,
     readiness_passed,
@@ -57,6 +58,28 @@ def test_infrastructure_retry_evidence_is_preserved() -> None:
 
     assert record.infrastructure_attempts == 2
     assert record.infrastructure_retry_reason == "readiness_timeout"
+
+
+def test_agent_startup_retry_preserves_the_prepared_infrastructure() -> None:
+    record = infrastructure_prepared(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=1,
+        host_binary_sha256="a" * 64,
+        now=NOW,
+    )
+
+    retried = record_infrastructure_retry(
+        record,
+        reason=(
+            "host_tool_surface_mismatch:"
+            "missing=execute_sql,get_join_plan,submit_sql,validate_sql;unexpected=-"
+        ),
+    )
+
+    assert retried.infrastructure_attempts == 2
+    assert retried.infrastructure_retry_reason is not None
+    assert retried.host_binary_sha256 == "a" * 64
+    assert retried.phase == "INFRASTRUCTURE_PENDING"
 
 
 def test_readiness_failure_is_scoring_ineligible() -> None:
