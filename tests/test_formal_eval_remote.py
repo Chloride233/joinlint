@@ -234,6 +234,10 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
     report_workflow = yaml.load(report_text, Loader=yaml.BaseLoader)
     assert report_workflow["jobs"]["report"]["runs-on"] == "ubuntu-latest"
     report_steps = report_workflow["jobs"]["report"]["steps"]
+    assert report_steps[0]["name"] == (
+        "Block report generation pending trusted evidence verification"
+    )
+    assert report_steps[0]["run"] == "exit 1"
     report_checkout = next(
         step for step in report_steps if step.get("uses") == "actions/checkout@v4"
     )

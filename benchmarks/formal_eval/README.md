@@ -264,10 +264,12 @@ After the batch, independently review the exact sample IDs frozen in the run
 plan without arm labels. Store per-sample `BlindReviewDecision` records, output
 digests, reviewer-ID digests, and the arm-blinding attestation in a private
 `joinlint-formal-blind-review` artifact.
-Run `formal-evaluation-report.yml` with the original formal, frozen-input, and
-review artifact run IDs. That workflow checks out the preregistered commit,
-revalidates the original input lock, and rebuilds the only report eligible for
-a public improvement claim. This post-run step prevents review agreement from
+The `formal-evaluation-report.yml` workflow is currently fail-closed until a
+workflow-owned verifier validates the source workflow, repository, commit,
+conclusion, and first-attempt metadata for the formal, frozen-input, and review
+artifact runs before downloading private evidence. Once re-enabled, it
+revalidates the original input lock and rebuilds the only report eligible for a
+public improvement claim. This post-run step prevents review agreement from
 being frozen before the outputs being reviewed exist; reviewer identity and
 blinding remain part of the controlled review procedure.
 

@@ -39,6 +39,8 @@ jobs:
     env:
       JOINLINT_COMMIT: ${{ inputs.joinlint_commit }}
     steps:
+      - name: Block report generation pending trusted evidence verification
+        run: exit 1
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.joinlint_commit }}
