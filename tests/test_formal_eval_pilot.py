@@ -58,6 +58,7 @@ from benchmarks.formal_eval.pilot_canary import (
     CANARY_BUDGET_CNY,
     CANARY_HOST,
     CANARY_SANDBOX_TIMEOUT_SECONDS,
+    CANARY_TOKEN_ACCOUNTING_CEILING,
     CANARY_TOKEN_LIMIT,
     CANARY_TOKEN_LIMIT_TYPE,
     PilotCanaryReport,
@@ -165,7 +166,9 @@ def test_current_pilot_registration_requires_explicit_schema_and_timeout() -> No
         )
 
 
-def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
+def test_pilot_canary_command_and_response_overshoot_envelope_are_frozen(
+    tmp_path: Path,
+) -> None:
     registration = frozen_pilot_registration(COMMIT)
 
     envelope = canary_budget_envelope(registration)
@@ -180,13 +183,14 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
     assert CANARY_BUDGET_CNY == 2.25
     assert CANARY_SANDBOX_TIMEOUT_SECONDS == 170
     assert CANARY_TOKEN_LIMIT == 60_000
+    assert CANARY_TOKEN_ACCOUNTING_CEILING == 504_096
     assert CANARY_TOKEN_LIMIT_TYPE == "(input*0.5)+output"
     assert envelope.run_count == 1
-    assert envelope.model_cost_upper_cny == pytest.approx(0.12)
+    assert envelope.model_cost_upper_cny == pytest.approx(1.008192)
     assert envelope.modal_compute_upper_cny == pytest.approx(0.044948)
     assert envelope.modal_image_build_reserve_cny == 2.0
-    assert envelope.total_upper_cny == pytest.approx(2.164948)
-    assert envelope.total_upper_cny < CANARY_BUDGET_CNY
+    assert envelope.total_upper_cny == pytest.approx(3.05314)
+    assert envelope.total_upper_cny > CANARY_BUDGET_CNY
     assert command[command.index("--limit") + 1] == "1"
     assert CANARY_HOST == "claude_code"
     assert "host=claude_code" in command
@@ -197,6 +201,51 @@ def test_pilot_canary_is_one_bounded_treatment_run(tmp_path: Path) -> None:
     assert "sandbox_timeout=170" in command
     assert "sandbox_timeout=120" not in command
     assert registration.models[1].id in command
+
+
+def test_pilot_canary_prices_input_tokens_at_their_half_weight_equivalent() -> None:
+    frozen = frozen_pilot_registration(COMMIT)
+    payload = frozen.model_dump(mode="python")
+    payload["models"][0]["pricing_cny"].update(
+        input_cache_miss_per_million_cny=2.0,
+        output_per_million_cny=4.0,
+    )
+    payload["models"][1]["pricing_cny"].update(
+        input_cache_miss_per_million_cny=1.5,
+        output_per_million_cny=2.0,
+    )
+    registration = type(frozen).model_validate(payload)
+
+    assert budget_envelope(registration).total_upper_cny < registration.budget_cny
+    assert canary_budget_envelope(registration).model_cost_upper_cny == pytest.approx(
+        CANARY_TOKEN_ACCOUNTING_CEILING * 3.0 / 1_000_000
+    )
+
+
+def test_pilot_canary_rejects_response_overshoot_ceiling_before_inspect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = frozen_pilot_registration(COMMIT)
+    monkeypatch.setattr(
+        pilot_canary,
+        "verify_pilot_inputs",
+        lambda root: (
+            registration,
+            SimpleNamespace(),
+            SimpleNamespace(lineage_id=LINEAGE_ID),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="upper-bound cost"):
+        pilot_canary.run_canary(
+            tmp_path / "sealed",
+            tmp_path / "logs",
+            tmp_path / "artifacts",
+            workflow_run_id=123,
+            campaign_budget_cny=50,
+            campaign_spend_before_cny=0,
+        )
 
 
 def test_pilot_canary_rejects_exhausted_campaign_before_inspect(
@@ -215,6 +264,16 @@ def test_pilot_canary_rejects_exhausted_campaign_before_inspect(
         ),
     )
     monkeypatch.setattr(pilot_canary.shutil, "which", lambda name: "/inspect")
+    monkeypatch.setattr(
+        pilot_canary,
+        "canary_budget_envelope",
+        lambda registration: pilot_canary.PilotCanaryBudget(
+            model_cost_upper_cny=0.12,
+            modal_compute_upper_cny=0.044948,
+            modal_image_build_reserve_cny=2.0,
+            total_upper_cny=2.164948,
+        ),
+    )
 
     def unexpected_inspect(*args: object, **kwargs: object) -> None:
         nonlocal inspect_calls

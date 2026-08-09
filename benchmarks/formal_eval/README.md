@@ -101,6 +101,15 @@ concurrency group with cancellation disabled, so at most one can run at a time
 after they are re-enabled. This single-flight guard is defense in depth only:
 it does not reserve funds atomically, and GitHub may replace an older pending
 job with a newer pending job.
+`campaign_ledger.py` now supplies the tested reservation primitive for the next
+gate: strict integer micro-CNY accounting, an append-only full-upper-bound
+reservation, and a non-force GitHub ref compare-and-swap. Exact replays are
+recorded as already consumed and never authorize another paid call. Deterministic
+tests cover same-head writers, response loss, replay, and exhausted-budget
+conflicts. This primitive is not yet a production accounting authority: the
+campaign genesis, opening reserved balance, branch rules, trusted run-identity
+and fixed mode-to-upper mapping, and workflow receipt verification remain to be
+frozen, so every paid entry point stays hard-blocked and disabled.
 The paid one-task canary uses a 170-second sandbox envelope: its independently
 measured 60-second readiness window and 90-second evaluation window leave 20
 seconds for lifecycle handoff and evidence finalization. Pilot v3 targets Claude
@@ -108,8 +117,13 @@ Code with the cost-efficient model so the host
 bridge dependency is exercised before any full matrix run. Its Inspect accounting
 limit uses the native price-weighted expression `(input*0.5)+output:60000`:
 input is weighted at the cache-miss CNY 1 rate relative to the CNY 2 output rate,
-while cache hits are conservatively treated as misses. The resulting CNY 0.12
-model ceiling keeps the complete canary under its CNY 2.25 gate. This
+while cache hits are conservatively treated as misses. Because Inspect checks
+that stop line only after a complete response, the monetary envelope separately
+allows a final full provider context plus the 4,096-token response cap. Its
+504,096 weighted-token accounting ceiling produces a CNY 1.008192 model upper
+bound and CNY 3.05314 total, which exceeds the old CNY 2.25 approval. The canary
+therefore remains fail-closed pending a new frozen budget or a provider-enforced
+pre-response limit. This
 canary-only envelope does not change the separately frozen 20-task Pilot
 registration. A green result proves only that the selected Claude/Flash path
 reached scoring; it does not authorize a full Pilot dispatch.

@@ -33,6 +33,9 @@ CANARY_BUDGET_CNY = 2.25
 CANARY_SANDBOX_TIMEOUT_SECONDS = 170
 CANARY_TOKEN_LIMIT = 60_000
 CANARY_TOKEN_LIMIT_TYPE = "(input*0.5)+output"
+# Inspect checks its stop line after a response. This ceiling therefore includes
+# one final 1M-token provider input at half weight plus the 4,096 output cap.
+CANARY_TOKEN_ACCOUNTING_CEILING = 504_096
 CANARY_HOST: Host = "claude_code"
 REMOTE_DEPENDENCIES = ("anthropic", "inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
 
@@ -67,11 +70,11 @@ class PilotCanaryReport(StrictModel):
 def canary_budget_envelope(registration: PilotRegistration) -> PilotCanaryBudget:
     model = _canary_model(registration)
     rate = max(
-        model.pricing_cny.input_cache_hit_per_million_cny,
-        model.pricing_cny.input_cache_miss_per_million_cny,
+        model.pricing_cny.input_cache_hit_per_million_cny / 0.5,
+        model.pricing_cny.input_cache_miss_per_million_cny / 0.5,
         model.pricing_cny.output_per_million_cny,
     )
-    model_upper = CANARY_TOKEN_LIMIT * rate / 1_000_000
+    model_upper = CANARY_TOKEN_ACCOUNTING_CEILING * rate / 1_000_000
     modal_usd = CANARY_SANDBOX_TIMEOUT_SECONDS * (
         registration.cpu_cores * MODAL_CPU_USD_PER_CORE_SECOND
         + (registration.memory_mib / 1024) * MODAL_MEMORY_USD_PER_GIB_SECOND

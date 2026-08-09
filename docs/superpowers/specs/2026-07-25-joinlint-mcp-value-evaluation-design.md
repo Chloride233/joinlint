@@ -486,6 +486,13 @@ validator over formal evidentiary and paid sanitized outputs. The synthetic
 smoke artifact remains non-evidentiary and uses its smaller smoke-only scan.
 The paid path remains fail-closed until an authoritative atomic campaign
 reservation replaces the manually supplied prior-spend snapshot.
+The repository now contains a tested reserved-upper primitive using exact
+micro-CNY values and a non-force GitHub ref compare-and-swap. It only appends a
+complete per-run upper bound; it does not settle, release, or expire a failed or
+cancelled reservation. A same-payload replay is non-authorizing. This primitive
+does not become authoritative until the production campaign genesis, opening
+balance, protected ledger ref, and workflow receipt binding are frozen and
+verified, so it does not remove the paid-path block.
 
 ## 18. Delivery sequence
 
