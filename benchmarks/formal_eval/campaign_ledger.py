@@ -640,18 +640,37 @@ class GitHubGitLedgerStore:
         api: GitHubApi,
         repository: str,
         branch: str,
+        expected_repository_id: int,
+        expected_genesis_commit: str | None,
         nonce_factory: Callable[[], str] = lambda: secrets.token_hex(16),
     ) -> None:
         if _REPOSITORY_PATTERN.fullmatch(repository) is None:
             raise GitHubLedgerError("GitHub repository identity is invalid")
         if _BRANCH_PATTERN.fullmatch(branch) is None:
             raise GitHubLedgerError("GitHub ledger branch is invalid")
+        if type(expected_repository_id) is not int or expected_repository_id < 1:
+            raise GitHubLedgerError("expected GitHub repository ID is invalid")
+        if (
+            expected_genesis_commit is not None
+            and (
+                type(expected_genesis_commit) is not str
+                or _SHA1_PATTERN.fullmatch(expected_genesis_commit) is None
+            )
+        ):
+            raise GitHubLedgerError("expected GitHub genesis commit is invalid")
         self._api = api
         self._repository = repository
         self._branch = branch
+        self._expected_repository_id = expected_repository_id
+        self._expected_genesis_commit = expected_genesis_commit
         self._nonce_factory = nonce_factory
 
     def initialize(self, ledger: CampaignLedger) -> str:
+        if self._expected_genesis_commit is not None:
+            raise GitHubLedgerError("GitHub ledger genesis is already pinned")
+        if ledger.reservations:
+            raise GitHubLedgerError("GitHub ledger genesis must have no reservations")
+        self._verify_repository_identity()
         blob_sha = self._create_blob(ledger.to_bytes())
         tree_sha = self._create_tree(blob_sha=blob_sha, base_tree=None)
         commit_sha = self._create_commit(
@@ -659,27 +678,46 @@ class GitHubGitLedgerStore:
             parents=[],
             message=f"initialize campaign {ledger.campaign_id}",
         )
-        ref = self._api.request(
-            "POST",
-            f"repos/{self._repository}/git/refs",
-            {
-                "ref": f"refs/heads/{self._branch}",
-                "sha": commit_sha,
-            },
-        )
-        ref_object = _github_mapping(ref.get("object"), field="created ref object")
-        if (
-            ref.get("ref") != f"refs/heads/{self._branch}"
-            or ref_object.get("type") != "commit"
-            or ref_object.get("sha") != commit_sha
-        ):
-            raise GitHubLedgerError("created GitHub ledger ref is invalid")
-        current = self.read()
-        if current.commit_sha != commit_sha or current.ledger != ledger:
-            raise GitHubLedgerError("created GitHub ledger failed readback")
+        try:
+            ref = self._api.request(
+                "POST",
+                f"repos/{self._repository}/git/refs",
+                {
+                    "ref": f"refs/heads/{self._branch}",
+                    "sha": commit_sha,
+                },
+            )
+            ref_object = _github_mapping(
+                ref.get("object"),
+                field="created ref object",
+            )
+            if (
+                ref.get("ref") != f"refs/heads/{self._branch}"
+                or ref_object.get("type") != "commit"
+                or ref_object.get("sha") != commit_sha
+            ):
+                raise GitHubLedgerError("created GitHub ledger ref is invalid")
+        except GitHubApiError as error:
+            if error.status not in {None, 409, 422}:
+                raise
+        except GitHubLedgerError:
+            pass
+        self._expected_genesis_commit = commit_sha
+        try:
+            current = self.read()
+            if current.commit_sha != commit_sha or current.ledger != ledger:
+                raise GitHubLedgerError("created GitHub ledger failed readback")
+        except (GitHubApiError, GitHubLedgerError) as error:
+            self._expected_genesis_commit = None
+            raise GitHubLedgerError(
+                "created GitHub ledger could not be verified"
+            ) from error
         return commit_sha
 
     def read(self) -> LedgerSnapshot:
+        if self._expected_genesis_commit is None:
+            raise GitHubLedgerError("GitHub ledger genesis commit is not pinned")
+        self._verify_repository_identity()
         ref_name = f"refs/heads/{self._branch}"
         ref = self._api.request(
             "GET",
@@ -689,15 +727,45 @@ class GitHubGitLedgerStore:
         if ref.get("ref") != ref_name or ref_object.get("type") != "commit":
             raise GitHubLedgerError("GitHub ledger ref is invalid")
         commit_sha = _github_sha(ref_object.get("sha"), field="ref commit")
+        head, parents = self._read_commit(commit_sha)
+        current = head
+        for depth in range(len(head.ledger.reservations) + 1):
+            if current.commit_sha == self._expected_genesis_commit:
+                if current.ledger.reservations or parents:
+                    raise GitHubLedgerError("GitHub ledger genesis is invalid")
+                return head
+            if depth == len(head.ledger.reservations):
+                break
+            if len(parents) != 1:
+                raise GitHubLedgerError(
+                    "GitHub ledger lineage must have exactly one parent"
+                )
+            parent, parent_parents = self._read_commit(parents[0])
+            _require_append_only_transition(parent.ledger, current.ledger)
+            current = parent
+            parents = parent_parents
+        raise GitHubLedgerError("GitHub ledger lineage did not reach pinned genesis")
 
+    def _read_commit(
+        self,
+        commit_sha: str,
+    ) -> tuple[LedgerSnapshot, tuple[str, ...]]:
         commit = self._api.request(
             "GET",
             f"repos/{self._repository}/git/commits/{commit_sha}",
         )
         commit_tree = _github_mapping(commit.get("tree"), field="commit tree")
-        if commit.get("sha") != commit_sha:
+        commit_parents = commit.get("parents")
+        if commit.get("sha") != commit_sha or type(commit_parents) is not list:
             raise GitHubLedgerError("GitHub ledger commit identity is invalid")
         tree_sha = _github_sha(commit_tree.get("sha"), field="commit tree")
+        parents = tuple(
+            _github_sha(
+                _github_mapping(parent, field="commit parent").get("sha"),
+                field="commit parent",
+            )
+            for parent in commit_parents
+        )
 
         tree = self._api.request(
             "GET",
@@ -738,10 +806,13 @@ class GitHubGitLedgerStore:
             ledger = CampaignLedger.from_bytes(raw)
         except CampaignLedgerError as error:
             raise GitHubLedgerError("GitHub ledger content is invalid") from error
-        return LedgerSnapshot(
-            commit_sha=commit_sha,
-            tree_sha=tree_sha,
-            ledger=ledger,
+        return (
+            LedgerSnapshot(
+                commit_sha=commit_sha,
+                tree_sha=tree_sha,
+                ledger=ledger,
+            ),
+            parents,
         )
 
     def compare_and_swap(
@@ -752,6 +823,9 @@ class GitHubGitLedgerStore:
         if expected.tree_sha is None:
             raise GitHubLedgerError("GitHub ledger snapshot is missing its tree")
         _require_append_only_transition(expected.ledger, updated)
+        current = self.read()
+        if current != expected:
+            raise CasConflict("GitHub ledger ref advanced before reservation")
         reservation_id = updated.reservations[-1].reservation_id
         raw = updated.to_bytes()
         blob_sha = self._create_blob(raw)
@@ -791,6 +865,14 @@ class GitHubGitLedgerStore:
         if not _ledger_is_prefix(updated, current.ledger):
             raise GitHubLedgerError("GitHub ledger ref readback lost the reservation")
         return commit_sha
+
+    def _verify_repository_identity(self) -> None:
+        repository = self._api.request("GET", f"repos/{self._repository}")
+        if (
+            type(repository.get("id")) is not int
+            or repository.get("id") != self._expected_repository_id
+        ):
+            raise GitHubLedgerError("GitHub repository identity does not match")
 
     def _create_blob(self, raw: bytes) -> str:
         blob = self._api.request(

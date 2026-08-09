@@ -27,6 +27,9 @@ from benchmarks.formal_eval.campaign_ledger import (
 
 CAMPAIGN_ID = "joinlint-formal-v1"
 INPUT_LOCK_SHA256 = "d" * 64
+REPOSITORY = "Chloride233/joinlint"
+REPOSITORY_ID = 1_311_654_200
+LEDGER_BRANCH = "joinlint-campaign-ledger"
 
 
 def _request(
@@ -420,15 +423,38 @@ def _remote_read_responses(
     *,
     head_sha: str,
     tree_sha: str,
+    parents: tuple[str, ...] = (),
+) -> tuple[dict[str, object], ...]:
+    return (
+        {"id": REPOSITORY_ID},
+        {
+            "ref": "refs/heads/joinlint-campaign-ledger",
+            "object": {"type": "commit", "sha": head_sha},
+        },
+        *_remote_commit_responses(
+            ledger,
+            commit_sha=head_sha,
+            tree_sha=tree_sha,
+            parents=parents,
+        ),
+    )
+
+
+def _remote_commit_responses(
+    ledger: CampaignLedger,
+    *,
+    commit_sha: str,
+    tree_sha: str,
+    parents: tuple[str, ...],
 ) -> tuple[dict[str, object], ...]:
     raw = ledger.to_bytes()
     blob_sha = _git_blob_sha(raw)
     return (
         {
-            "ref": "refs/heads/joinlint-campaign-ledger",
-            "object": {"type": "commit", "sha": head_sha},
+            "sha": commit_sha,
+            "tree": {"sha": tree_sha},
+            "parents": [{"sha": parent} for parent in parents],
         },
-        {"sha": head_sha, "tree": {"sha": tree_sha}},
         {
             "sha": tree_sha,
             "truncated": False,
@@ -449,6 +475,374 @@ def _remote_read_responses(
     )
 
 
+def _lineage_read_responses(
+    *history: tuple[CampaignLedger, str, str, tuple[str, ...]],
+    repository_id: int = REPOSITORY_ID,
+) -> tuple[dict[str, object], ...]:
+    head_sha = history[0][1]
+    responses: list[dict[str, object]] = [
+        {"id": repository_id},
+        {
+            "ref": f"refs/heads/{LEDGER_BRANCH}",
+            "object": {"type": "commit", "sha": head_sha},
+        },
+    ]
+    for ledger, commit_sha, tree_sha, parents in history:
+        responses.extend(
+            _remote_commit_responses(
+                ledger,
+                commit_sha=commit_sha,
+                tree_sha=tree_sha,
+                parents=parents,
+            )
+        )
+    return tuple(responses)
+
+
+def _lineage_store(
+    api: _StubGitHubApi,
+    *,
+    genesis_sha: str | None,
+) -> GitHubGitLedgerStore:
+    return GitHubGitLedgerStore(
+        api=api,
+        repository=REPOSITORY,
+        branch=LEDGER_BRANCH,
+        expected_repository_id=REPOSITORY_ID,
+        expected_genesis_commit=genesis_sha,
+    )
+
+
+def _initialize_candidate_responses(
+    ledger: CampaignLedger,
+    *,
+    tree_sha: str,
+    commit_sha: str,
+) -> tuple[dict[str, object], ...]:
+    return (
+        {"id": REPOSITORY_ID},
+        {"sha": _git_blob_sha(ledger.to_bytes())},
+        {"sha": tree_sha},
+        {"sha": commit_sha},
+    )
+
+
+def test_github_store_verifies_two_appends_from_its_pinned_empty_genesis() -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="10.56",
+    )
+    first = root.reserve(_request()).ledger
+    second = first.reserve(
+        _request(
+            run_id=124,
+            mode="readiness",
+            upper_cny="2.10",
+            input_lock_sha256=None,
+        )
+    ).ledger
+    root_sha, first_sha, second_sha = "1" * 40, "2" * 40, "3" * 40
+    api = _StubGitHubApi(
+        *_lineage_read_responses(
+            (second, second_sha, "6" * 40, (first_sha,)),
+            (first, first_sha, "5" * 40, (root_sha,)),
+            (root, root_sha, "4" * 40, ()),
+        )
+    )
+
+    snapshot = _lineage_store(api, genesis_sha=root_sha).read()
+
+    assert snapshot.ledger == second
+    commit_reads = [call for call in api.calls if "/git/commits/" in call[1]]
+    assert len(commit_reads) == len(second.reservations) + 1
+
+
+def test_github_store_accepts_a_valid_ancestor_prefix_so_rollback_needs_an_external_checkpoint() -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="0",
+    )
+    first = root.reserve(_request()).ledger
+    second = first.reserve(
+        _request(
+            run_id=124,
+            mode="readiness",
+            upper_cny="2.10",
+            input_lock_sha256=None,
+        )
+    ).ledger
+    root_sha, first_sha, second_sha = "1" * 40, "2" * 40, "3" * 40
+    api = _StubGitHubApi(
+        *_lineage_read_responses(
+            (second, second_sha, "6" * 40, (first_sha,)),
+            (first, first_sha, "5" * 40, (root_sha,)),
+            (root, root_sha, "4" * 40, ()),
+        ),
+        *_lineage_read_responses(
+            (first, first_sha, "5" * 40, (root_sha,)),
+            (root, root_sha, "4" * 40, ()),
+        ),
+    )
+    store = _lineage_store(api, genesis_sha=root_sha)
+
+    assert store.read().ledger == second
+    # A valid ancestor has no intrinsic marker that a later head once existed.
+    # Branch protection or an external checkpoint must prevent/detect this rollback.
+    assert store.read().ledger == first
+
+
+def test_github_store_rejects_the_wrong_repository_identity_before_reading_ref() -> None:
+    store = _lineage_store(
+        _StubGitHubApi({"id": REPOSITORY_ID + 1}),
+        genesis_sha="1" * 40,
+    )
+
+    with pytest.raises(GitHubLedgerError, match="repository"):
+        store.read()
+
+
+def test_github_store_rejects_a_canonical_reset_outside_the_pinned_genesis() -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="10.56",
+    )
+    head = root.reserve(_request()).ledger
+    rogue_root_sha, head_sha = "8" * 40, "9" * 40
+    api = _StubGitHubApi(
+        *_lineage_read_responses(
+            (head, head_sha, "7" * 40, (rogue_root_sha,)),
+            (root, rogue_root_sha, "6" * 40, ()),
+        )
+    )
+    store = _lineage_store(api, genesis_sha="1" * 40)
+
+    with pytest.raises(GitHubLedgerError, match="genesis"):
+        store.read()
+    assert len([call for call in api.calls if "/git/commits/" in call[1]]) == 2
+
+
+def test_github_store_rejects_a_merge_commit() -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="0",
+    )
+    head = root.reserve(_request()).ledger
+    store = _lineage_store(
+        _StubGitHubApi(
+            *_lineage_read_responses(
+                (head, "3" * 40, "4" * 40, ("1" * 40, "2" * 40)),
+            )
+        ),
+        genesis_sha="1" * 40,
+    )
+
+    with pytest.raises(GitHubLedgerError, match="parent"):
+        store.read()
+
+
+@pytest.mark.parametrize("mutation", ("skip", "replace", "budget", "opening"))
+def test_github_store_rejects_a_non_append_history_transition(mutation: str) -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="0",
+    )
+    first = root.reserve(_request()).ledger
+    second = first.reserve(
+        _request(
+            run_id=124,
+            mode="readiness",
+            upper_cny="2.10",
+            input_lock_sha256=None,
+        )
+    ).ledger
+    if mutation == "skip":
+        parent, head = root, second
+    elif mutation == "replace":
+        parent = first
+        replaced = root.reserve(_request(run_id=125)).ledger
+        head = replaced.reserve(
+            _request(
+                run_id=124,
+                mode="readiness",
+                upper_cny="2.10",
+                input_lock_sha256=None,
+            )
+        ).ledger
+    elif mutation == "budget":
+        parent = first
+        head = CampaignLedger(
+            campaign_id=second.campaign_id,
+            budget_micro_cny=second.budget_micro_cny + 1,
+            opening_reserved_upper_micro_cny=second.opening_reserved_upper_micro_cny,
+            reservations=second.reservations,
+        )
+    else:
+        parent = first
+        head = CampaignLedger(
+            campaign_id=second.campaign_id,
+            budget_micro_cny=second.budget_micro_cny,
+            opening_reserved_upper_micro_cny=1,
+            reservations=second.reservations,
+        )
+    root_sha, parent_sha, head_sha = "1" * 40, "2" * 40, "3" * 40
+    store = _lineage_store(
+        _StubGitHubApi(
+            *_lineage_read_responses(
+                (head, head_sha, "6" * 40, (parent_sha,)),
+                (parent, parent_sha, "5" * 40, (root_sha,)),
+            )
+        ),
+        genesis_sha=root_sha,
+    )
+
+    with pytest.raises(GitHubLedgerError, match="append"):
+        store.read()
+
+
+def test_github_store_rejects_nonempty_or_parented_pinned_genesis() -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="0",
+    )
+    nonempty = root.reserve(_request()).ledger
+    genesis_sha = "1" * 40
+    nonempty_store = _lineage_store(
+        _StubGitHubApi(
+            *_lineage_read_responses(
+                (nonempty, genesis_sha, "2" * 40, ()),
+            )
+        ),
+        genesis_sha=genesis_sha,
+    )
+    with pytest.raises(GitHubLedgerError, match="genesis"):
+        nonempty_store.read()
+
+    parented_store = _lineage_store(
+        _StubGitHubApi(
+            *_lineage_read_responses(
+                (root, genesis_sha, "2" * 40, ("0" * 40,)),
+            )
+        ),
+        genesis_sha=genesis_sha,
+    )
+    with pytest.raises(GitHubLedgerError, match="genesis"):
+        parented_store.read()
+
+
+def test_github_store_rejects_cas_without_a_pinned_genesis_before_any_write() -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="0",
+    )
+    updated = root.reserve(_request()).ledger
+    api = _StubGitHubApi()
+    store = _lineage_store(api, genesis_sha=None)
+
+    with pytest.raises(GitHubLedgerError, match="genesis"):
+        store.compare_and_swap(
+            LedgerSnapshot(
+                commit_sha="1" * 40,
+                tree_sha="2" * 40,
+                ledger=root,
+            ),
+            updated,
+        )
+    assert api.calls == []
+
+
+def test_github_store_rejects_a_tree_less_cas_before_any_api_call() -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="0",
+    )
+    api = _StubGitHubApi()
+    store = _lineage_store(api, genesis_sha="1" * 40)
+
+    with pytest.raises(GitHubLedgerError, match="missing its tree"):
+        store.compare_and_swap(
+            LedgerSnapshot(commit_sha="1" * 40, ledger=root),
+            root.reserve(_request()).ledger,
+        )
+    assert api.calls == []
+
+
+def test_github_store_rejects_a_non_append_cas_before_any_api_call() -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="0",
+    )
+    first = root.reserve(_request()).ledger
+    skipped = first.reserve(
+        _request(
+            run_id=124,
+            mode="readiness",
+            upper_cny="2.10",
+            input_lock_sha256=None,
+        )
+    ).ledger
+    api = _StubGitHubApi()
+    store = _lineage_store(api, genesis_sha="1" * 40)
+
+    with pytest.raises(GitHubLedgerError, match="append"):
+        store.compare_and_swap(
+            LedgerSnapshot(
+                commit_sha="1" * 40,
+                tree_sha="2" * 40,
+                ledger=root,
+            ),
+            skipped,
+        )
+    assert api.calls == []
+
+
+def test_github_store_rechecks_the_verified_snapshot_before_any_write() -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="0",
+    )
+    competitor = root.reserve(
+        _request(
+            run_id=124,
+            mode="readiness",
+            upper_cny="2.10",
+            input_lock_sha256=None,
+        )
+    ).ledger
+    root_sha = "1" * 40
+    api = _StubGitHubApi(
+        *_remote_read_responses(root, head_sha=root_sha, tree_sha="2" * 40),
+        *_lineage_read_responses(
+            (competitor, "3" * 40, "4" * 40, (root_sha,)),
+            (root, root_sha, "2" * 40, ()),
+        ),
+    )
+    store = _lineage_store(api, genesis_sha=root_sha)
+    expected = store.read()
+
+    with pytest.raises(CasConflict, match="advanced"):
+        store.compare_and_swap(expected, root.reserve(_request()).ledger)
+    assert not any(call[0] == "POST" for call in api.calls)
+
+
+def test_github_store_requires_a_pinned_genesis_to_read_an_existing_branch() -> None:
+    api = _StubGitHubApi()
+    store = _lineage_store(api, genesis_sha=None)
+
+    with pytest.raises(GitHubLedgerError, match="genesis"):
+        store.read()
+    assert api.calls == []
+
+
 def test_github_store_reads_and_verifies_the_exact_git_object_chain() -> None:
     ledger = CampaignLedger.create(
         campaign_id=CAMPAIGN_ID,
@@ -458,11 +852,7 @@ def test_github_store_reads_and_verifies_the_exact_git_object_chain() -> None:
     api = _StubGitHubApi(
         *_remote_read_responses(ledger, head_sha="1" * 40, tree_sha="2" * 40)
     )
-    store = GitHubGitLedgerStore(
-        api=api,
-        repository="Chloride233/joinlint",
-        branch="joinlint-campaign-ledger",
-    )
+    store = _lineage_store(api, genesis_sha="1" * 40)
 
     snapshot = store.read()
 
@@ -472,6 +862,7 @@ def test_github_store_reads_and_verifies_the_exact_git_object_chain() -> None:
         ledger=ledger,
     )
     assert [call[:2] for call in api.calls] == [
+        ("GET", "repos/Chloride233/joinlint"),
         (
             "GET",
             "repos/Chloride233/joinlint/git/ref/heads/joinlint-campaign-ledger",
@@ -490,7 +881,14 @@ def test_github_store_creates_one_parent_commit_and_non_force_ref_update() -> No
     )
     updated = initial.reserve(_request()).ledger
     new_blob_sha = _git_blob_sha(updated.to_bytes())
+    initial_read = _remote_read_responses(
+        initial,
+        head_sha="1" * 40,
+        tree_sha="2" * 40,
+    )
     api = _StubGitHubApi(
+        *initial_read,
+        *initial_read,
         {"sha": new_blob_sha},
         {"sha": "3" * 40},
         {"sha": "4" * 40},
@@ -498,21 +896,20 @@ def test_github_store_creates_one_parent_commit_and_non_force_ref_update() -> No
             "ref": "refs/heads/joinlint-campaign-ledger",
             "object": {"type": "commit", "sha": "4" * 40},
         },
-        *_remote_read_responses(updated, head_sha="4" * 40, tree_sha="3" * 40),
+        *_lineage_read_responses(
+            (updated, "4" * 40, "3" * 40, ("1" * 40,)),
+            (initial, "1" * 40, "2" * 40, ()),
+        ),
     )
-    store = GitHubGitLedgerStore(
-        api=api,
-        repository="Chloride233/joinlint",
-        branch="joinlint-campaign-ledger",
-    )
-    snapshot = LedgerSnapshot(
-        commit_sha="1" * 40,
-        tree_sha="2" * 40,
-        ledger=initial,
-    )
+    store = _lineage_store(api, genesis_sha="1" * 40)
+    snapshot = store.read()
 
     assert store.compare_and_swap(snapshot, updated) == "4" * 40
-    create_tree = api.calls[1]
+    create_tree = next(
+        call
+        for call in api.calls
+        if call[0] == "POST" and call[1].endswith("/git/trees")
+    )
     assert create_tree[2] == {
         "base_tree": "2" * 40,
         "tree": [
@@ -524,13 +921,18 @@ def test_github_store_creates_one_parent_commit_and_non_force_ref_update() -> No
             }
         ],
     }
-    create_commit = api.calls[2]
+    create_commit = next(
+        call
+        for call in api.calls
+        if call[0] == "POST" and call[1].endswith("/git/commits")
+    )
     assert create_commit[2]["parents"] == ["1" * 40]
     assert create_commit[2]["message"].startswith(
         f"reserve {updated.reservations[-1].reservation_id} "
     )
     assert create_commit[2]["author"] == create_commit[2]["committer"]
-    assert api.calls[3][2] == {"force": False, "sha": "4" * 40}
+    update_ref = next(call for call in api.calls if call[0] == "PATCH")
+    assert update_ref[2] == {"force": False, "sha": "4" * 40}
 
 
 def test_github_store_recovers_only_an_exact_commit_after_unknown_patch_result() -> None:
@@ -541,25 +943,28 @@ def test_github_store_recovers_only_an_exact_commit_after_unknown_patch_result()
     )
     updated = initial.reserve(_request()).ledger
     new_blob_sha = _git_blob_sha(updated.to_bytes())
+    initial_read = _remote_read_responses(
+        initial,
+        head_sha="1" * 40,
+        tree_sha="2" * 40,
+    )
     api = _StubGitHubApi(
+        *initial_read,
+        *initial_read,
         {"sha": new_blob_sha},
         {"sha": "3" * 40},
         {"sha": "4" * 40},
         GitHubApiError(status=None),
-        *_remote_read_responses(updated, head_sha="4" * 40, tree_sha="3" * 40),
+        *_lineage_read_responses(
+            (updated, "4" * 40, "3" * 40, ("1" * 40,)),
+            (initial, "1" * 40, "2" * 40, ()),
+        ),
     )
-    store = GitHubGitLedgerStore(
-        api=api,
-        repository="Chloride233/joinlint",
-        branch="joinlint-campaign-ledger",
-    )
+    store = _lineage_store(api, genesis_sha="1" * 40)
+    snapshot = store.read()
 
     assert store.compare_and_swap(
-        LedgerSnapshot(
-            commit_sha="1" * 40,
-            tree_sha="2" * 40,
-            ledger=initial,
-        ),
+        snapshot,
         updated,
     ) == ("4" * 40)
 
@@ -575,13 +980,15 @@ def test_duplicate_candidates_use_distinct_commits_and_only_winner_can_own_updat
     )
     updated = initial.reserve(_request()).ledger
     new_blob_sha = _git_blob_sha(updated.to_bytes())
-    snapshot = LedgerSnapshot(
-        commit_sha="1" * 40,
+    initial_read = _remote_read_responses(
+        initial,
+        head_sha="1" * 40,
         tree_sha="2" * 40,
-        ledger=initial,
     )
 
     winner_api = _StubGitHubApi(
+        *initial_read,
+        *initial_read,
         {"sha": new_blob_sha},
         {"sha": "3" * 40},
         {"sha": "4" * 40},
@@ -589,33 +996,57 @@ def test_duplicate_candidates_use_distinct_commits_and_only_winner_can_own_updat
             "ref": "refs/heads/joinlint-campaign-ledger",
             "object": {"type": "commit", "sha": "4" * 40},
         },
-        *_remote_read_responses(updated, head_sha="4" * 40, tree_sha="3" * 40),
+        *_lineage_read_responses(
+            (updated, "4" * 40, "3" * 40, ("1" * 40,)),
+            (initial, "1" * 40, "2" * 40, ()),
+        ),
     )
     winner = GitHubGitLedgerStore(
         api=winner_api,
-        repository="Chloride233/joinlint",
-        branch="joinlint-campaign-ledger",
+        repository=REPOSITORY,
+        branch=LEDGER_BRANCH,
+        expected_repository_id=REPOSITORY_ID,
+        expected_genesis_commit="1" * 40,
         nonce_factory=lambda: "a" * 32,
     )
+    snapshot = winner.read()
     assert winner.compare_and_swap(snapshot, updated) == "4" * 40
 
     loser_api = _StubGitHubApi(
+        *initial_read,
+        *initial_read,
         {"sha": new_blob_sha},
         {"sha": "3" * 40},
         {"sha": "5" * 40},
         GitHubApiError(status=loser_status),
-        *_remote_read_responses(updated, head_sha="4" * 40, tree_sha="3" * 40),
+        *_lineage_read_responses(
+            (updated, "4" * 40, "3" * 40, ("1" * 40,)),
+            (initial, "1" * 40, "2" * 40, ()),
+        ),
     )
     loser = GitHubGitLedgerStore(
         api=loser_api,
-        repository="Chloride233/joinlint",
-        branch="joinlint-campaign-ledger",
+        repository=REPOSITORY,
+        branch=LEDGER_BRANCH,
+        expected_repository_id=REPOSITORY_ID,
+        expected_genesis_commit="1" * 40,
         nonce_factory=lambda: "b" * 32,
     )
+    loser_snapshot = loser.read()
     with pytest.raises(CasConflict):
-        loser.compare_and_swap(snapshot, updated)
+        loser.compare_and_swap(loser_snapshot, updated)
 
-    assert winner_api.calls[2][2]["message"] != loser_api.calls[2][2]["message"]
+    winner_commit = next(
+        call
+        for call in winner_api.calls
+        if call[0] == "POST" and call[1].endswith("/git/commits")
+    )
+    loser_commit = next(
+        call
+        for call in loser_api.calls
+        if call[0] == "POST" and call[1].endswith("/git/commits")
+    )
+    assert winner_commit[2]["message"] != loser_commit[2]["message"]
 
 
 def test_github_store_distinguishes_ref_rejection_from_a_sibling_commit() -> None:
@@ -626,24 +1057,23 @@ def test_github_store_distinguishes_ref_rejection_from_a_sibling_commit() -> Non
     )
     updated = initial.reserve(_request()).ledger
     new_blob_sha = _git_blob_sha(updated.to_bytes())
+    initial_read = _remote_read_responses(
+        initial,
+        head_sha="1" * 40,
+        tree_sha="2" * 40,
+    )
 
     unchanged_api = _StubGitHubApi(
+        *initial_read,
+        *initial_read,
         {"sha": new_blob_sha},
         {"sha": "3" * 40},
         {"sha": "4" * 40},
         GitHubApiError(status=422),
-        *_remote_read_responses(initial, head_sha="1" * 40, tree_sha="2" * 40),
+        *initial_read,
     )
-    unchanged_store = GitHubGitLedgerStore(
-        api=unchanged_api,
-        repository="Chloride233/joinlint",
-        branch="joinlint-campaign-ledger",
-    )
-    snapshot = LedgerSnapshot(
-        commit_sha="1" * 40,
-        tree_sha="2" * 40,
-        ledger=initial,
-    )
+    unchanged_store = _lineage_store(unchanged_api, genesis_sha="1" * 40)
+    snapshot = unchanged_store.read()
     with pytest.raises(GitHubLedgerError, match="rejected"):
         unchanged_store.compare_and_swap(snapshot, updated)
 
@@ -656,19 +1086,21 @@ def test_github_store_distinguishes_ref_rejection_from_a_sibling_commit() -> Non
         )
     ).ledger
     changed_api = _StubGitHubApi(
+        *initial_read,
+        *initial_read,
         {"sha": new_blob_sha},
         {"sha": "3" * 40},
         {"sha": "4" * 40},
         GitHubApiError(status=409),
-        *_remote_read_responses(competitor, head_sha="5" * 40, tree_sha="6" * 40),
+        *_lineage_read_responses(
+            (competitor, "5" * 40, "6" * 40, ("1" * 40,)),
+            (initial, "1" * 40, "2" * 40, ()),
+        ),
     )
-    changed_store = GitHubGitLedgerStore(
-        api=changed_api,
-        repository="Chloride233/joinlint",
-        branch="joinlint-campaign-ledger",
-    )
+    changed_store = _lineage_store(changed_api, genesis_sha="1" * 40)
+    changed_snapshot = changed_store.read()
     with pytest.raises(CasConflict, match="advanced"):
-        changed_store.compare_and_swap(snapshot, updated)
+        changed_store.compare_and_swap(changed_snapshot, updated)
 
 
 def test_github_store_rejects_extra_tree_entries_and_wrong_blob_identity() -> None:
@@ -680,26 +1112,18 @@ def test_github_store_rejects_extra_tree_entries_and_wrong_blob_identity() -> No
     responses = list(
         _remote_read_responses(ledger, head_sha="1" * 40, tree_sha="2" * 40)
     )
-    responses[2]["tree"].append(
+    responses[3]["tree"].append(
         {"path": "extra", "mode": "100644", "type": "blob", "sha": "3" * 40}
     )
-    store = GitHubGitLedgerStore(
-        api=_StubGitHubApi(*responses),
-        repository="Chloride233/joinlint",
-        branch="joinlint-campaign-ledger",
-    )
+    store = _lineage_store(_StubGitHubApi(*responses), genesis_sha="1" * 40)
     with pytest.raises(GitHubLedgerError, match="tree"):
         store.read()
 
     responses = list(
         _remote_read_responses(ledger, head_sha="1" * 40, tree_sha="2" * 40)
     )
-    responses[3]["sha"] = "0" * 40
-    store = GitHubGitLedgerStore(
-        api=_StubGitHubApi(*responses),
-        repository="Chloride233/joinlint",
-        branch="joinlint-campaign-ledger",
-    )
+    responses[4]["sha"] = "0" * 40
+    store = _lineage_store(_StubGitHubApi(*responses), genesis_sha="1" * 40)
     with pytest.raises(GitHubLedgerError, match="blob"):
         store.read()
 
@@ -748,6 +1172,7 @@ def test_github_store_initializes_a_single_file_root_commit() -> None:
     )
     blob_sha = _git_blob_sha(ledger.to_bytes())
     api = _StubGitHubApi(
+        {"id": REPOSITORY_ID},
         {"sha": blob_sha},
         {"sha": "2" * 40},
         {"sha": "3" * 40},
@@ -757,14 +1182,15 @@ def test_github_store_initializes_a_single_file_root_commit() -> None:
         },
         *_remote_read_responses(ledger, head_sha="3" * 40, tree_sha="2" * 40),
     )
-    store = GitHubGitLedgerStore(
-        api=api,
-        repository="Chloride233/joinlint",
-        branch="joinlint-campaign-ledger",
-    )
+    store = _lineage_store(api, genesis_sha=None)
 
     assert store.initialize(ledger) == "3" * 40
-    assert api.calls[1][2] == {
+    create_tree = next(
+        call
+        for call in api.calls
+        if call[0] == "POST" and call[1].endswith("/git/trees")
+    )
+    assert create_tree[2] == {
         "tree": [
             {
                 "mode": "100644",
@@ -774,11 +1200,177 @@ def test_github_store_initializes_a_single_file_root_commit() -> None:
             }
         ]
     }
-    assert api.calls[2][2]["parents"] == []
-    assert api.calls[3][2] == {
+    create_commit = next(
+        call
+        for call in api.calls
+        if call[0] == "POST" and call[1].endswith("/git/commits")
+    )
+    assert create_commit[2]["parents"] == []
+    create_ref = next(
+        call
+        for call in api.calls
+        if call[0] == "POST" and call[1].endswith("/git/refs")
+    )
+    assert create_ref[2] == {
         "ref": "refs/heads/joinlint-campaign-ledger",
         "sha": "3" * 40,
     }
+
+
+@pytest.mark.parametrize("status", (None, 409, 422))
+def test_github_store_recovers_an_exact_initialized_root_after_an_uncertain_ref_result(
+    status: int | None,
+) -> None:
+    ledger = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="0.000001",
+        opening_reserved_upper_cny="0",
+    )
+    candidate_sha, tree_sha = "3" * 40, "2" * 40
+    api = _StubGitHubApi(
+        *_initialize_candidate_responses(
+            ledger,
+            tree_sha=tree_sha,
+            commit_sha=candidate_sha,
+        ),
+        GitHubApiError(status=status),
+        *_remote_read_responses(
+            ledger,
+            head_sha=candidate_sha,
+            tree_sha=tree_sha,
+        ),
+    )
+
+    assert _lineage_store(api, genesis_sha=None).initialize(ledger) == candidate_sha
+
+
+def test_github_store_recovers_an_exact_initialized_root_after_a_malformed_ref_response() -> None:
+    ledger = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="0.000001",
+        opening_reserved_upper_cny="0",
+    )
+    candidate_sha, tree_sha = "3" * 40, "2" * 40
+    api = _StubGitHubApi(
+        *_initialize_candidate_responses(
+            ledger,
+            tree_sha=tree_sha,
+            commit_sha=candidate_sha,
+        ),
+        {
+            "ref": "refs/heads/wrong-branch",
+            "object": {"type": "commit", "sha": candidate_sha},
+        },
+        *_remote_read_responses(
+            ledger,
+            head_sha=candidate_sha,
+            tree_sha=tree_sha,
+        ),
+    )
+
+    assert _lineage_store(api, genesis_sha=None).initialize(ledger) == candidate_sha
+
+
+@pytest.mark.parametrize("readback", ("competitor", "wrong-ledger"))
+def test_github_store_fails_closed_when_uncertain_initialization_readback_is_not_exact(
+    readback: str,
+) -> None:
+    ledger = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="0.000001",
+        opening_reserved_upper_cny="0",
+    )
+    candidate_sha, tree_sha = "3" * 40, "2" * 40
+    if readback == "competitor":
+        current_ledger = ledger
+        current_sha = "4" * 40
+    else:
+        current_ledger = CampaignLedger.create(
+            campaign_id=CAMPAIGN_ID,
+            budget_cny="0.000002",
+            opening_reserved_upper_cny="0",
+        )
+        current_sha = candidate_sha
+    api = _StubGitHubApi(
+        *_initialize_candidate_responses(
+            ledger,
+            tree_sha=tree_sha,
+            commit_sha=candidate_sha,
+        ),
+        GitHubApiError(status=None),
+        *_remote_read_responses(
+            current_ledger,
+            head_sha=current_sha,
+            tree_sha="5" * 40,
+        ),
+    )
+    store = _lineage_store(api, genesis_sha=None)
+
+    with pytest.raises(GitHubLedgerError, match="could not be verified"):
+        store.initialize(ledger)
+    calls_before_unpinned_read = len(api.calls)
+    with pytest.raises(GitHubLedgerError, match="not pinned"):
+        store.read()
+    assert len(api.calls) == calls_before_unpinned_read
+
+
+def test_github_store_can_retry_initialization_after_an_unverifiable_ref_result() -> None:
+    ledger = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="0.000001",
+        opening_reserved_upper_cny="0",
+    )
+    candidate_sha, tree_sha = "3" * 40, "2" * 40
+    candidate_responses = _initialize_candidate_responses(
+        ledger,
+        tree_sha=tree_sha,
+        commit_sha=candidate_sha,
+    )
+    api = _StubGitHubApi(
+        *candidate_responses,
+        GitHubApiError(status=None),
+        GitHubApiError(status=None),
+        *candidate_responses,
+        GitHubApiError(status=422),
+        *_remote_read_responses(
+            ledger,
+            head_sha=candidate_sha,
+            tree_sha=tree_sha,
+        ),
+    )
+    store = _lineage_store(api, genesis_sha=None)
+
+    with pytest.raises(GitHubLedgerError, match="could not be verified"):
+        store.initialize(ledger)
+    assert store.initialize(ledger) == candidate_sha
+
+
+def test_github_store_rejects_a_nonempty_genesis_before_any_api_call() -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="10",
+        opening_reserved_upper_cny="0",
+    )
+    api = _StubGitHubApi()
+    store = _lineage_store(api, genesis_sha=None)
+
+    with pytest.raises(GitHubLedgerError, match="no reservations"):
+        store.initialize(root.reserve(_request()).ledger)
+    assert api.calls == []
+
+
+def test_github_store_rejects_initialization_after_genesis_is_pinned() -> None:
+    ledger = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="10",
+        opening_reserved_upper_cny="0",
+    )
+    api = _StubGitHubApi()
+    store = _lineage_store(api, genesis_sha="1" * 40)
+
+    with pytest.raises(GitHubLedgerError, match="already pinned"):
+        store.initialize(ledger)
+    assert api.calls == []
 
 
 def test_campaign_ledger_cli_creates_and_verifies_local_genesis(tmp_path) -> None:

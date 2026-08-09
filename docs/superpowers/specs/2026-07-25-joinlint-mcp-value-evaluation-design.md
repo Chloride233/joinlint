@@ -489,9 +489,15 @@ reservation replaces the manually supplied prior-spend snapshot.
 The repository now contains a tested reserved-upper primitive using exact
 micro-CNY values and a non-force GitHub ref compare-and-swap. It only appends a
 complete per-run upper bound; it does not settle, release, or expire a failed or
-cancelled reservation. A same-payload replay is non-authorizing. This primitive
-does not become authoritative until the production campaign genesis, opening
-balance, and protected ledger ref are frozen. The separate admission wrapper
+cancelled reservation. A same-payload replay is non-authorizing. Reads of an
+existing ledger bind the expected GitHub repository ID and a caller-pinned empty
+genesis commit, walk no more than the reservation count plus that genesis, and
+reject histories outside that genesis, merges, non-append transitions, or
+mutable budget fields. CAS repeats that full check before its first Git object
+write. A force-reset to a formerly valid prefix is indistinguishable without a
+protected non-force/non-delete ref or an external monotonic checkpoint. This
+primitive does not become authoritative until the actual production campaign
+genesis, opening balance, and protected ledger ref are frozen. The separate admission wrapper
 now derives repository/run/workflow identity only from GitHub's default variables
 on protected `main`, admits only the frozen readiness/CNY 2.10,
 calibration/CNY 4, and Pilot/CNY 20 pairs, and verifies an authorized receipt

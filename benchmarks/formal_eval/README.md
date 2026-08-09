@@ -106,9 +106,17 @@ gate: schema-v2 strict integer micro-CNY accounting, an append-only full-upper-b
 reservation, and a non-force GitHub ref compare-and-swap. Exact replays are
 recorded as already consumed and never authorize another paid call. Deterministic
 tests cover same-head writers, response loss, replay, and exhausted-budget
-conflicts. This primitive is not yet a production accounting authority: the
-campaign genesis, opening reserved balance, and branch rules remain to be
-frozen. `campaign_reservation.py` narrows the future workflow-owned consumer to
+conflicts. Existing-branch reads require the expected GitHub repository ID and
+an externally pinned empty genesis commit, then verify at most one Git commit
+per recorded reservation plus the genesis. Histories outside that genesis,
+merges, skipped or replaced reservations, and changed budget or opening-balance
+fields fail closed; CAS rechecks that lineage before creating any Git object.
+Genesis ancestry alone cannot distinguish the current head from a force-reset
+to one of its formerly valid prefixes, so a protected non-force/non-delete ref
+or an independent monotonic checkpoint remains mandatory. This primitive is
+not yet a production accounting authority: the actual campaign genesis,
+opening reserved balance, and branch rules remain to be frozen.
+`campaign_reservation.py` narrows the future workflow-owned consumer to
 GitHub's default run variables on protected `main`, fixes the only admitted
 mode/upper pairs to readiness/CNY 2.10, calibration/CNY 4, and Pilot/CNY 20,
 requires the exact matching policy-driving dispatch flags and budget string,

@@ -169,7 +169,13 @@ power plans, enforces power readiness, and only then starts remote work.
 
 The available campaign-ledger primitive reserves an exact micro-CNY full upper
 bound by append-only GitHub ref compare-and-swap and treats exact replays as
-non-authorizing. It intentionally has no automatic release or settlement path.
+non-authorizing. Existing-branch reads require the expected repository ID and a
+caller-pinned empty genesis commit, validate every one-reservation transition,
+and reject histories outside that genesis or merged/non-append histories before
+CAS creates Git objects. They cannot independently detect a force-reset to a
+formerly valid prefix, so protected non-force/non-delete ref policy or an
+external monotonic checkpoint remains required. The primitive intentionally has
+no automatic release or settlement path.
 Formal evaluation still lacks a frozen per-run upper bound, authoritative
 genesis and opening balance, and protected ledger ref. The workflow-owned
 admission wrapper deliberately has no formal-evaluation policy; its fixed
