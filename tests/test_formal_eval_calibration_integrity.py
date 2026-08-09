@@ -18,6 +18,7 @@ from benchmarks.formal_eval.pilot_calibration import (
     ResourceAttestation,
     ScoringAttestation,
 )
+from benchmarks.formal_eval.public_artifacts import validate_public_artifacts
 
 
 COMMIT = "a" * 40
@@ -237,6 +238,9 @@ def test_calibration_nan_cost_does_not_mask_original_error_and_keeps_count(
     )
     assert failure.observed_sample_count == 6
     assert failure.actual_model_cost_cny == 0
+    assert validate_public_artifacts(output, "pilot-calibration") == (
+        "calibration-failure.json",
+    )
 
 
 def test_calibration_publishes_success_atomically_before_clearing_failure(
@@ -280,6 +284,9 @@ def test_calibration_publishes_success_atomically_before_clearing_failure(
 
     assert (output / "calibration.json").is_file()
     assert not (output / "calibration-failure.json").exists()
+    assert validate_public_artifacts(output, "pilot-calibration") == (
+        "calibration.json",
+    )
 
 
 @pytest.mark.parametrize(

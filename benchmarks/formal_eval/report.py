@@ -8,6 +8,10 @@ from benchmarks.formal_eval.gates import AgentGateReport, RelationshipGateReport
 from joinlint.contracts import canonical_json
 
 
+def _render_mapping(value: dict[str, object]) -> str:
+    return canonical_json(value).decode("utf-8")
+
+
 class ReportProvenance(StrictModel):
     lineage_id: str
     dataset_release: str
@@ -91,15 +95,20 @@ def render_markdown(report: FormalEvaluationReport) -> str:
         or "- None"
     )
     cell_lines = "\n".join(
-        f"- `{name}`: {value:.4f}" for name, value in agent.cell_completion_effects.items()
+        f"- `{name}`: {value:.4f}"
+        for name, value in sorted(agent.cell_completion_effects.items())
     )
     strata_lines = "\n".join(
         f"- `{name}`: {value:.4f}"
-        for name, value in agent.stratified_completion_effects.items()
+        for name, value in sorted(agent.stratified_completion_effects.items())
     )
-    funnel_lines = "\n".join(f"- {name}: {value}" for name, value in agent.funnel.items())
+    funnel_lines = "\n".join(
+        f"- {name}: {value}" for name, value in sorted(agent.funnel.items())
+    )
     agent_failure_lines = (
-        "\n".join(f"- `{name}`: {value}" for name, value in agent.failure_counts.items())
+        "\n".join(
+            f"- `{name}`: {value}" for name, value in sorted(agent.failure_counts.items())
+        )
         or "- None"
     )
     no_improvement_lines = (
@@ -107,8 +116,8 @@ def render_markdown(report: FormalEvaluationReport) -> str:
         or "- None"
     )
     resource_lines = "\n".join(
-        f"- `{condition}`: {values}"
-        for condition, values in agent.resource_usage.items()
+        f"- `{condition}`: {_render_mapping(values)}"
+        for condition, values in sorted(agent.resource_usage.items())
     )
     return f"""# JoinLint Formal Evaluation
 
@@ -129,7 +138,7 @@ def render_markdown(report: FormalEvaluationReport) -> str:
 - Model families: `{provenance.model_families}`
 - Model comparison scope: `{provenance.model_comparison_scope}`
 - Cross-family generalization: `not evaluated`
-- Host versions: `{provenance.host_versions}`
+- Host versions: `{_render_mapping(provenance.host_versions)}`
 - Preregistration SHA-256: `{provenance.preregistration_sha256}`
 - Manifest SHA-256: `{provenance.manifest_sha256}`
 - Input lock SHA-256: `{provenance.input_lock_sha256}`
@@ -149,7 +158,7 @@ def render_markdown(report: FormalEvaluationReport) -> str:
 - Declared visible/ablated pairs: {relationship.declared_variant_pair_count}
 - Annotated absent-FK databases: {relationship.annotated_absent_fk_database_count}
 - Adversarial candidates: {relationship.adversarial_candidate_count}
-- Adversarial trap counts: {relationship.adversarial_type_counts}
+- Adversarial trap counts: {_render_mapping(relationship.adversarial_type_counts)}
 - Verified selective precision: {relationship.verified_precision:.4f}
 - Verified Wilson lower bound: {relationship.verified_wilson_lower:.4f}
 - Verified coverage: {relationship.verified_coverage:.4f}
@@ -174,8 +183,8 @@ def render_markdown(report: FormalEvaluationReport) -> str:
 - Edge extraction accuracy: {sql.edge_extraction_accuracy:.4f}
 - Unsafe repairs: {sql.unsafe_repairs}
 - Repair safety: {sql.repair_safety:.4f}
-- SQL shape counts: {sql.sql_shape_counts}
-- Dangerous-type counts: {sql.danger_type_counts}
+- SQL shape counts: {_render_mapping(sql.sql_shape_counts)}
+- Dangerous-type counts: {_render_mapping(sql.danger_type_counts)}
 - Runtime-attested SQL executions during validation: {sql.execution_count}
 - Cached plan p95: {sql.performance.cached_plan_p95_ms:.2f} ms
 - Cached validation p95: {sql.performance.cached_validation_p95_ms:.2f} ms

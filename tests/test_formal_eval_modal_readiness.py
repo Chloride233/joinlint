@@ -13,6 +13,7 @@ from benchmarks.formal_eval.modal_readiness import (
     MODAL_READINESS_COMPUTE_UPPER_CNY,
     verify_modal_readiness,
 )
+from benchmarks.formal_eval.public_artifacts import validate_public_artifacts
 
 
 def test_host_context_task_uses_real_hosts_but_short_circuits_provider(
@@ -103,6 +104,9 @@ def test_modal_readiness_requires_two_short_circuited_host_profiles(
     assert report.total_cost_upper_cny == pytest.approx(2.063456)
     assert [cell.host for cell in report.cells] == ["claude_code", "codex"]
     assert (tmp_path / "output" / "modal-readiness.json").is_file()
+    assert validate_public_artifacts(tmp_path / "output", "modal-readiness") == (
+        "modal-readiness.json",
+    )
 
     samples["codex"].model_usage = {
         "unexpected": SimpleNamespace(
