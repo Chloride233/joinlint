@@ -123,9 +123,13 @@ protected `formal-evaluation` environment requires explicit approval, verifies
 the input lock and content-derived duplicate fingerprints, freezes one lineage,
 checks the pilot-derived power requirement against the exact run plan, and
 generates deterministic evidence from the raw locked suite. It runs the
-diagnostic canary before the confirmatory batch in Modal and uploads private
-Inspect logs separately from sanitized report inputs. Formal runs must not be
-launched from a developer machine.
+diagnostic canary before the confirmatory batch in Modal. Raw Inspect logs stay
+runner-ephemeral and are never uploaded. Formal evidentiary sanitized outputs
+are uploaded only after the separate, commit-pinned strict verifier accepts
+their exact inventory and content contract. Formal runs must not be launched
+from a developer machine. The separate checkout pins code origin, not process
+isolation from an adversarial target commit; paid execution remains blocked
+until that trust boundary is approved or moved to a clean verifier runner.
 
 Every deterministic bundle carries the raw-suite digest and fixed runner ID.
 Every Agent bundle must contain exactly the sample IDs in the frozen run plan.

@@ -1672,16 +1672,15 @@ def test_public_formal_workflows_keep_raw_inspect_logs_runner_ephemeral(
         for job in workflow["jobs"].values()
         for step in job["steps"]
         if str(step.get("name", "")).startswith("Scan sanitized")
+        and step.get("id") != "scan_formal_smoke_sanitized"
     ]
     assert scans
     assert all(
-        secret_name in step["run"]
+        "benchmarks.formal_eval.public_artifacts" in step["run"] for step in scans
+    )
+    assert all(
+        "steps.public_artifact_verifier.outcome == 'success'" in step["if"]
         for step in scans
-        for secret_name in (
-            "MODAL_TOKEN_ID",
-            "MODAL_TOKEN_SECRET",
-            "DEEPSEEK_API_KEY",
-        )
     )
 
 

@@ -481,7 +481,9 @@ four-case local MCP safety run validates stdio lifecycle, tool traces, stale
 evidence, and blocking compliance before Spider execution.
 
 Before the paid pilot, the repository runs targeted tests, the full existing
-test suite, Ruff, `git diff --check`, and a secret scan over all new artifacts.
+test suite, Ruff, `git diff --check`, and the pinned strict public-artifact
+validator over formal evidentiary and paid sanitized outputs. The synthetic
+smoke artifact remains non-evidentiary and uses its smaller smoke-only scan.
 The paid path remains fail-closed until an authoritative atomic campaign
 reservation replaces the manually supplied prior-spend snapshot.
 

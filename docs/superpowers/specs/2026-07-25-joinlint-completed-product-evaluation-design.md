@@ -181,10 +181,18 @@ executes SQL or receives model credentials. Oracle diagnostics use a separate
 two-tool server backed only by frozen graphs.
 
 Raw Inspect logs remain only on the ephemeral Actions runner and are never
-uploaded. Sanitized artifacts are retained for 90 days only after their scan
-passes and contain no question, schema text, gold SQL, source path, raw rows,
-key, or transcript. JSON and Markdown reports rebuild only from frozen manifests
-and sanitized rows.
+uploaded. Formal evidentiary and paid sanitized artifacts are retained for 90
+days only after a strict verifier from a separate, commit-pinned workflow
+checkout accepts their profile-specific inventory, typed schema, canonical
+duplicate-free finite JSON, private-content boundary, and cross-file
+consistency. Markdown must rebuild byte-for-byte from its verified JSON.
+Unknown paths, symbolic links, special files, questions, schema text, gold SQL,
+source paths, raw rows, keys, and transcripts fail closed. The non-evidentiary
+deterministic smoke artifact is outside this stronger contract. This content
+gate does not replace source-run metadata attestation or atomic campaign
+reservation. The checkout pins validator code provenance but shares the job
+runner, so it is not an adversarial process sandbox; re-enablement also requires
+an approved target commit or a clean verifier runner.
 
 The Agent export must equal the exact frozen run-plan ID set. The independent
 post-run review uses the exact preregistered sample and binds each decision to

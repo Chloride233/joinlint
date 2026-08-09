@@ -164,11 +164,26 @@ jobs:
           --output modal-readiness-artifacts
           --workflow-run-id "${{ github.run_id }}"
           --joinlint-commit "${{ steps.commit.outputs.sha }}"
+      - name: Checkout pinned public artifact verifier
+        id: public_artifact_verifier
+        if: always()
+        uses: actions/checkout@v4
+        with:
+          ref: 0389c4bd34597f06676d4c560f5e7683fd2b20c9
+          path: .workflow-verifier
+          persist-credentials: false
       - name: Scan sanitized readiness artifacts
         id: scan_readiness_sanitized
-        if: always()
+        if: >-
+          always() &&
+          steps.public_artifact_verifier.outcome == 'success'
+        working-directory: .workflow-verifier
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-verifier/src:${{ github.workspace }}/.workflow-verifier
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('modal-readiness-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_ID','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile modal-readiness
+          --root "$GITHUB_WORKSPACE/modal-readiness-artifacts"
       - uses: actions/upload-artifact@v4
         if: always() && steps.scan_readiness_sanitized.outcome == 'success'
         with:
@@ -313,11 +328,26 @@ jobs:
           --workflow-run-id "${{ github.run_id }}"
           --campaign-budget-cny "$CAMPAIGN_BUDGET_CNY"
           --campaign-spend-before-cny "$CAMPAIGN_SPEND_BEFORE_CNY"
+      - name: Checkout pinned public artifact verifier
+        id: public_artifact_verifier
+        if: always()
+        uses: actions/checkout@v4
+        with:
+          ref: 0389c4bd34597f06676d4c560f5e7683fd2b20c9
+          path: .workflow-verifier
+          persist-credentials: false
       - name: Scan sanitized canary artifacts
         id: scan_canary_sanitized
-        if: always() && inputs.calibration != true
+        if: >-
+          always() && inputs.calibration != true &&
+          steps.public_artifact_verifier.outcome == 'success'
+        working-directory: .workflow-verifier
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-verifier/src:${{ github.workspace }}/.workflow-verifier
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-canary-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_ID','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile pilot-canary
+          --root "$GITHUB_WORKSPACE/pilot-canary-artifacts"
       - uses: actions/upload-artifact@v4
         if: >-
           always() && inputs.calibration != true &&
@@ -329,9 +359,16 @@ jobs:
           retention-days: 90
       - name: Scan sanitized calibration artifacts
         id: scan_calibration_sanitized
-        if: always() && inputs.calibration == true
+        if: >-
+          always() && inputs.calibration == true &&
+          steps.public_artifact_verifier.outcome == 'success'
+        working-directory: .workflow-verifier
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-verifier/src:${{ github.workspace }}/.workflow-verifier
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-calibration-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_ID','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile pilot-calibration
+          --root "$GITHUB_WORKSPACE/pilot-calibration-artifacts"
       - uses: actions/upload-artifact@v4
         if: >-
           always() && inputs.calibration == true &&

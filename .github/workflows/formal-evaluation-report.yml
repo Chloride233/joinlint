@@ -95,10 +95,24 @@ jobs:
           --agent-results formal-artifacts/agent-results.json
           --output final-report
           --require none
+      - name: Checkout pinned public artifact verifier
+        id: public_artifact_verifier
+        if: always()
+        uses: actions/checkout@v4
+        with:
+          ref: 0389c4bd34597f06676d4c560f5e7683fd2b20c9
+          path: .workflow-verifier
+          persist-credentials: false
       - name: Scan final public artifacts
         id: scan_final_report
+        if: steps.public_artifact_verifier.outcome == 'success'
+        working-directory: .workflow-verifier
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-verifier/src:${{ github.workspace }}/.workflow-verifier
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('final-report').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','OPENAI_API_KEY','ANTHROPIC_API_KEY','DEEPSEEK_API_KEY','MODAL_TOKEN_ID','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile formal-report
+          --root "$GITHUB_WORKSPACE/final-report"
       - uses: actions/upload-artifact@v4
         if: steps.scan_final_report.outcome == 'success'
         with:

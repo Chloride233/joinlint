@@ -234,6 +234,21 @@ Partial sanitized budget checkpoints are retained if a batch stops. Raw Inspect
 logs remain only on the ephemeral Actions runner and are never uploaded. This
 code-side envelope does not replace provider billing alerts or account spend limits.
 
+Formal evidentiary and paid sanitized uploads run a strict public-artifact
+verifier from a separate checkout pinned to a reviewed commit, never from the
+evaluated or frozen Pilot checkout. Each profile requires its exact terminal
+inventory or documented ordered failure prefix, strict typed schemas,
+duplicate-free finite RFC 8785 JSON, and deterministic JSON-to-Markdown and
+cross-file consistency where applicable. Unknown paths, symbolic links,
+special files, raw private fields, SQL-shaped text, and credential-shaped text
+fail closed. The lightweight deterministic smoke artifact is not evidentiary
+and remains outside this stronger contract. Content validation does not prove
+source-run identity or reserve campaign funds; those remain separate gates.
+The separate checkout pins validator code provenance but shares the job runner;
+it is not an adversarial process sandbox. Paid and report jobs therefore stay
+hard-blocked until the evaluated commit is an approved trust input or content
+validation moves to a clean verifier runner, in addition to their other gates.
+
 ## Formal remote run
 
 Formal inputs stay under the ignored `sealed/` boundary described in
@@ -270,13 +285,13 @@ plan without arm labels. Store per-sample `BlindReviewDecision` records, output
 digests, reviewer-ID digests, and the arm-blinding attestation in a private
 `joinlint-formal-blind-review` artifact.
 The `formal-evaluation-report.yml` workflow is currently fail-closed until a
-workflow-owned verifier validates the source workflow, repository, commit,
-conclusion, and first-attempt metadata for the formal, frozen-input, and review
-artifact runs before downloading private evidence. Once re-enabled, it
-revalidates the original input lock and rebuilds the only report eligible for a
-public improvement claim. This post-run step prevents review agreement from
-being frozen before the outputs being reviewed exist; reviewer identity and
-blinding remain part of the controlled review procedure.
+workflow-owned source-run verifier validates the source workflow, repository,
+commit, conclusion, and first-attempt metadata for the formal, frozen-input,
+and review artifact runs before downloading private evidence. Once re-enabled,
+it revalidates the original input lock and rebuilds the only report eligible
+for a public improvement claim. This post-run step prevents review agreement
+from being frozen before the outputs being reviewed exist; reviewer identity
+and blinding remain part of the controlled review procedure.
 
 Provider credentials are scoped only to the two Modal dispatch steps. The
 runtime contract check and deterministic JoinLint MCP subprocesses receive a
@@ -324,9 +339,9 @@ the workflow is not called by ordinary CI or by the formal-evaluation workflow.
   the access-controlled frozen-input boundary.
 - Raw Inspect transcripts remain runner-ephemeral; public Actions never upload
   them.
-- Uploaded artifacts pass the sanitized-artifact scan and contain identifiers,
-  hashes, counts, rates, intervals,
-  failure categories, model and host versions, commit and image identity,
-  lineage and input digests, latency, memory, tokens, and cost only.
+- Formal evidentiary and paid sanitized artifacts pass the pinned strict
+  public-artifact verifier and contain identifiers, hashes, counts, rates,
+  intervals, failure categories, model and host versions, commit and image
+  identity, lineage and input digests, latency, memory, tokens, and cost only.
 - Join correctness is never described as proof of metric meaning or complete
   answer correctness.

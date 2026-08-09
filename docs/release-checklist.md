@@ -75,6 +75,13 @@
 - Verify sanitized exports reject unexpected returned model IDs, duplicate run
   identities, missing scorer artifacts, raw questions, schema text, gold SQL,
   database paths, transcripts, and common credential prefixes.
+- Verify formal evidentiary and paid sanitized uploads use the separate,
+  commit-pinned public-artifact verifier and reject unknown inventories,
+  symbolic links, special files, duplicate or non-finite JSON, non-canonical
+  bytes, schema drift, and JSON/Markdown disagreement.
+- Before re-enabling paid or report jobs, approve the evaluated commit as a
+  runner trust input or move validation to a clean runner; a separate checkout
+  alone is not adversarial process isolation.
 - Blind-review the exact run-plan sample of at least 80 runs or 10 percent of
   all runs, whichever is larger. Require arm-removal attestation, per-output
   digests, reviewer digests, and at least 95 percent scorer agreement.

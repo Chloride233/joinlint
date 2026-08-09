@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 
 from benchmarks.formal_eval.cli import main as formal_eval_main
 from benchmarks.formal_eval.manifest import ManifestReadiness
@@ -16,6 +17,9 @@ from benchmarks.formal_eval.public_artifacts import (
     validate_public_artifacts,
 )
 from joinlint.contracts import canonical_json
+
+
+VERIFIER_COMMIT = "0389c4bd34597f06676d4c560f5e7683fd2b20c9"
 
 
 def _canary_report(**updates: object) -> PilotCanaryReport:
@@ -241,3 +245,97 @@ def test_calibration_public_artifact_terminal_states_are_mutually_exclusive(
 
     with pytest.raises(ValueError, match="terminal inventory"):
         validate_public_artifacts(tmp_path, "pilot-calibration")
+
+
+@pytest.mark.parametrize(
+    (
+        "workflow_path",
+        "job_name",
+        "scan_name",
+        "profile",
+        "artifact_root",
+    ),
+    (
+        (
+            ".github/workflows/formal-evaluation.yml",
+            "formal",
+            "Scan sanitized formal evidence",
+            "formal-evaluation",
+            "formal-artifacts",
+        ),
+        (
+            ".github/workflows/formal-pilot-canary.yml",
+            "readiness",
+            "Scan sanitized readiness artifacts",
+            "modal-readiness",
+            "modal-readiness-artifacts",
+        ),
+        (
+            ".github/workflows/formal-pilot-canary.yml",
+            "canary",
+            "Scan sanitized canary artifacts",
+            "pilot-canary",
+            "pilot-canary-artifacts",
+        ),
+        (
+            ".github/workflows/formal-pilot-canary.yml",
+            "canary",
+            "Scan sanitized calibration artifacts",
+            "pilot-calibration",
+            "pilot-calibration-artifacts",
+        ),
+        (
+            ".github/workflows/formal-pilot.yml",
+            "pilot",
+            "Scan sanitized pilot artifacts",
+            "pilot",
+            "pilot-artifacts",
+        ),
+        (
+            ".github/workflows/formal-evaluation-report.yml",
+            "report",
+            "Scan final public artifacts",
+            "formal-report",
+            "final-report",
+        ),
+    ),
+)
+def test_evidence_scans_run_only_from_the_pinned_verifier_checkout(
+    workflow_path: str,
+    job_name: str,
+    scan_name: str,
+    profile: str,
+    artifact_root: str,
+) -> None:
+    workflow = yaml.load(
+        Path(workflow_path).read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    steps = workflow["jobs"][job_name]["steps"]
+    checkout = next(
+        step
+        for step in steps
+        if step.get("name") == "Checkout pinned public artifact verifier"
+    )
+    assert checkout["id"] == "public_artifact_verifier"
+    assert checkout["if"] == "always()"
+    assert checkout["uses"] == "actions/checkout@v4"
+    assert checkout["with"] == {
+        "ref": VERIFIER_COMMIT,
+        "path": ".workflow-verifier",
+        "persist-credentials": "false",
+    }
+
+    scan = next(step for step in steps if step.get("name") == scan_name)
+    assert "steps.public_artifact_verifier.outcome == 'success'" in scan["if"]
+    assert scan["working-directory"] == ".workflow-verifier"
+    assert scan["env"] == {
+        "PYTHONPATH": (
+            "${{ github.workspace }}/.workflow-verifier/src:"
+            "${{ github.workspace }}/.workflow-verifier"
+        )
+    }
+    assert scan["run"] == (
+        "python -m benchmarks.formal_eval.public_artifacts "
+        f"--profile {profile} --root \"$GITHUB_WORKSPACE/{artifact_root}\""
+    )

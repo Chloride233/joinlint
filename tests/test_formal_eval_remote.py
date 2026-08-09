@@ -246,16 +246,7 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
         step for step in report_steps if step.get("name") == "Scan final public artifacts"
     )
     assert report_scan["id"] == "scan_final_report"
-    assert all(
-        secret_name in report_scan["run"]
-        for secret_name in (
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "DEEPSEEK_API_KEY",
-            "MODAL_TOKEN_ID",
-            "MODAL_TOKEN_SECRET",
-        )
-    )
+    assert "benchmarks.formal_eval.public_artifacts" in report_scan["run"]
     report_upload = next(
         step
         for step in report_steps
@@ -296,8 +287,7 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
     sanitized_scan = next(
         step
         for step in workflow["jobs"]["formal"]["steps"]
-        if step.get("name")
-        == "Scan sanitized artifacts for forbidden raw fields and common secret prefixes"
+        if step.get("name") == "Scan sanitized formal evidence"
     )
     sanitized_upload = next(
         step
