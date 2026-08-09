@@ -104,6 +104,7 @@ class ReservationRequest:
     run_attempt: int
     workflow_sha: str
     evaluated_commit: str
+    input_lock_sha256: str | None
     upper_micro_cny: int
 
     def __post_init__(self) -> None:
@@ -129,6 +130,12 @@ class ReservationRequest:
             field="evaluated_commit",
             pattern=_SHA1_PATTERN,
         )
+        if self.input_lock_sha256 is not None:
+            _require_pattern(
+                self.input_lock_sha256,
+                field="input_lock_sha256",
+                pattern=_SHA256_PATTERN,
+            )
         _require_exact_int(self.upper_micro_cny, field="upper_micro_cny", minimum=1)
 
     @classmethod
@@ -144,6 +151,7 @@ class ReservationRequest:
         run_attempt: int,
         workflow_sha: str,
         evaluated_commit: str,
+        input_lock_sha256: str | None,
         upper_cny: str,
     ) -> ReservationRequest:
         upper_micro_cny = parse_cny_micro(upper_cny)
@@ -159,6 +167,7 @@ class ReservationRequest:
             run_attempt=run_attempt,
             workflow_sha=workflow_sha,
             evaluated_commit=evaluated_commit,
+            input_lock_sha256=input_lock_sha256,
             upper_micro_cny=upper_micro_cny,
         )
 
@@ -169,6 +178,7 @@ class ReservationRequest:
     def to_dict(self) -> dict[str, object]:
         return {
             "evaluated_commit": self.evaluated_commit,
+            "input_lock_sha256": self.input_lock_sha256,
             "job": self.job,
             "mode": self.mode,
             "repository": self.repository,
@@ -203,6 +213,7 @@ class Reservation:
     run_attempt: int
     workflow_sha: str
     evaluated_commit: str
+    input_lock_sha256: str | None
     upper_micro_cny: int
 
     def __post_init__(self) -> None:
@@ -227,6 +238,7 @@ class Reservation:
             run_attempt=self.run_attempt,
             workflow_sha=self.workflow_sha,
             evaluated_commit=self.evaluated_commit,
+            input_lock_sha256=self.input_lock_sha256,
             upper_micro_cny=self.upper_micro_cny,
         )
 
@@ -241,6 +253,7 @@ class Reservation:
     def from_dict(cls, value: object) -> Reservation:
         if type(value) is not dict or set(value) != {
             "evaluated_commit",
+            "input_lock_sha256",
             "job",
             "mode",
             "repository",
@@ -269,12 +282,12 @@ class CampaignLedger:
     budget_micro_cny: int
     opening_reserved_upper_micro_cny: int
     reservations: tuple[Reservation, ...] = ()
-    schema_version: int = 1
+    schema_version: int = 2
     currency: str = "CNY"
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version != 1:
-            raise CampaignLedgerError("campaign ledger schema_version must equal 1")
+        if type(self.schema_version) is not int or self.schema_version != 2:
+            raise CampaignLedgerError("campaign ledger schema_version must equal 2")
         if self.currency != "CNY":
             raise CampaignLedgerError("campaign ledger currency must be CNY")
         _require_pattern(
@@ -494,7 +507,7 @@ class ReservationReceipt:
             "reservation": self.reservation.to_dict(),
             "reserved_after_micro_cny": self.reserved_after_micro_cny,
             "reserved_before_micro_cny": self.reserved_before_micro_cny,
-            "schema_version": 1,
+            "schema_version": 2,
             "upper_micro_cny": self.upper_micro_cny,
         }
 
@@ -528,7 +541,7 @@ class ReservationReceipt:
             "upper_micro_cny",
         }:
             raise CampaignLedgerError("reservation receipt fields are invalid")
-        if decoded["schema_version"] != 1 or decoded["currency"] != "CNY":
+        if decoded["schema_version"] != 2 or decoded["currency"] != "CNY":
             raise CampaignLedgerError("reservation receipt contract is invalid")
         receipt = cls(
             authorized=decoded["authorized"],

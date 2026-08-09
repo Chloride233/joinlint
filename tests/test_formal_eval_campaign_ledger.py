@@ -26,6 +26,7 @@ from benchmarks.formal_eval.campaign_ledger import (
 
 
 CAMPAIGN_ID = "joinlint-formal-v1"
+INPUT_LOCK_SHA256 = "d" * 64
 
 
 def _request(
@@ -34,6 +35,7 @@ def _request(
     mode: str = "calibration",
     upper_cny: str = "4",
     evaluated_commit: str = "b" * 40,
+    input_lock_sha256: str | None = INPUT_LOCK_SHA256,
 ) -> ReservationRequest:
     return ReservationRequest.create(
         repository_id=1_311_654_200,
@@ -45,6 +47,7 @@ def _request(
         run_attempt=1,
         workflow_sha="a" * 40,
         evaluated_commit=evaluated_commit,
+        input_lock_sha256=input_lock_sha256,
         upper_cny=upper_cny,
     )
 
@@ -95,7 +98,7 @@ def test_campaign_ledger_is_strict_canonical_and_round_trips() -> None:
     assert raw == (
         b'{"budget_micro_cny":50000000,"campaign_id":"joinlint-formal-v1",'
         b'"currency":"CNY","opening_reserved_upper_micro_cny":10560000,'
-        b'"reservations":[],"schema_version":1}\n'
+        b'"reservations":[],"schema_version":2}\n'
     )
     assert CampaignLedger.from_bytes(raw) == ledger
 
@@ -105,15 +108,18 @@ def test_campaign_ledger_is_strict_canonical_and_round_trips() -> None:
     (
         b'{"budget_micro_cny":1,"campaign_id":"c","currency":"CNY",'
         b'"opening_reserved_upper_micro_cny":0,"reservations":[],'
-        b'"schema_version":1}',
+        b'"schema_version":2}',
         b'{"budget_micro_cny":1,"campaign_id":"c","currency":"CNY",'
         b'"opening_reserved_upper_micro_cny":0,"reservations":[],'
-        b'"schema_version":1}\n\n',
+        b'"schema_version":2}\n\n',
         b'\xef\xbb\xbf{}\n',
-        b'{"schema_version":1, "campaign_id":"c"}\n',
+        b'{"schema_version":2, "campaign_id":"c"}\n',
         b'{"budget_micro_cny":1,"budget_micro_cny":1,"campaign_id":"c",'
         b'"currency":"CNY","opening_reserved_upper_micro_cny":0,'
-        b'"reservations":[],"schema_version":1}\n',
+        b'"reservations":[],"schema_version":2}\n',
+        b'{"budget_micro_cny":1,"campaign_id":"c","currency":"CNY",'
+        b'"opening_reserved_upper_micro_cny":0,"reservations":[],'
+        b'"schema_version":1}\n',
         b'{}\n',
     ),
 )
@@ -165,6 +171,27 @@ def test_same_reservation_key_with_different_payload_fails_closed() -> None:
         ledger.reserve(_request(upper_cny="5"))
     with pytest.raises(ReservationConflict):
         ledger.reserve(_request(evaluated_commit="c" * 40))
+    with pytest.raises(ReservationConflict):
+        ledger.reserve(_request(input_lock_sha256="e" * 64))
+
+
+def test_reservation_identity_round_trips_without_a_frozen_input_for_readiness() -> None:
+    request = _request(
+        mode="readiness",
+        upper_cny="2.10",
+        input_lock_sha256=None,
+    )
+
+    reservation = request.to_reservation()
+
+    assert reservation.input_lock_sha256 is None
+    assert reservation.request == request
+
+
+@pytest.mark.parametrize("digest", ("", "d" * 63, "D" * 64))
+def test_reservation_rejects_invalid_input_lock_digest(digest: str) -> None:
+    with pytest.raises(CampaignLedgerError, match="input_lock_sha256"):
+        _request(input_lock_sha256=digest)
 
 
 def test_same_github_run_cannot_change_mode_to_obtain_another_reservation() -> None:
@@ -221,7 +248,12 @@ def test_cas_reservation_reloads_after_a_sibling_commit() -> None:
             opening_reserved_upper_cny="0",
         )
     )
-    store.conflicting_request = _request(run_id=200, mode="readiness", upper_cny="2.10")
+    store.conflicting_request = _request(
+        run_id=200,
+        mode="readiness",
+        upper_cny="2.10",
+        input_lock_sha256=None,
+    )
 
     receipt = reserve_with_store(
         store,
@@ -243,7 +275,12 @@ def test_cas_conflict_rechecks_the_budget_before_retrying() -> None:
             opening_reserved_upper_cny="0",
         )
     )
-    store.conflicting_request = _request(run_id=200, mode="readiness", upper_cny="2")
+    store.conflicting_request = _request(
+        run_id=200,
+        mode="readiness",
+        upper_cny="2",
+        input_lock_sha256=None,
+    )
 
     with pytest.raises(CampaignBudgetExceeded):
         reserve_with_store(
@@ -288,6 +325,17 @@ def test_reservation_receipt_round_trips_with_its_complete_reservation() -> None
 
     assert ReservationReceipt.from_bytes(receipt.to_bytes()) == receipt
     assert receipt.to_dict()["reservation"] == _request().to_reservation().to_dict()
+
+    legacy = receipt.to_bytes().replace(b'"schema_version":2', b'"schema_version":1')
+    with pytest.raises(CampaignLedgerError, match="contract"):
+        ReservationReceipt.from_bytes(legacy)
+
+    tampered_lock = receipt.to_bytes().replace(
+        INPUT_LOCK_SHA256.encode("ascii"),
+        ("e" * 64).encode("ascii"),
+    )
+    with pytest.raises(CampaignLedgerError, match="identity"):
+        ReservationReceipt.from_bytes(tampered_lock)
 
 
 def test_cas_retry_exhaustion_fails_closed_without_authorization() -> None:
@@ -584,7 +632,12 @@ def test_github_store_distinguishes_ref_rejection_from_a_sibling_commit() -> Non
         unchanged_store.compare_and_swap(snapshot, updated)
 
     competitor = initial.reserve(
-        _request(run_id=200, mode="readiness", upper_cny="2.10")
+        _request(
+            run_id=200,
+            mode="readiness",
+            upper_cny="2.10",
+            input_lock_sha256=None,
+        )
     ).ledger
     changed_api = _StubGitHubApi(
         {"sha": new_blob_sha},

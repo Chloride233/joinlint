@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from benchmarks.formal_eval import pilot_calibration, pilot_canary
+from benchmarks.formal_eval import pilot, pilot_calibration, pilot_canary
 from benchmarks.formal_eval.contracts import (
     AgentResultBundle,
     FormalManifestV2,
@@ -1379,6 +1379,56 @@ def test_pilot_task_resolves_database_relative_to_sealed_root(tmp_path: Path) ->
 
     assert samples[0].files == {"/workspace/data/database.sqlite": str(database.resolve())}
     assert samples[0].metadata["database_path"] == str(database.resolve())
+
+
+def test_pilot_input_lock_must_cover_every_consumed_frozen_input(tmp_path: Path) -> None:
+    root = tmp_path / "sealed"
+    database = root / "databases" / "case.sqlite"
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"SQLite fixture")
+    required = (
+        "registration.json",
+        "manifest.json",
+        "calibration.json",
+        "agent-tasks.json",
+        "source-manifest.json",
+    )
+    for name in required:
+        (root / name).write_text("{}\n", encoding="utf-8")
+    complete = pilot._input_lock(root)
+
+    task = _sealed_task()
+    pilot._require_pilot_locked_inputs(complete, root, [task])
+
+    without_registration = complete.model_copy(
+        update={
+            "files": {
+                name: digest
+                for name, digest in complete.files.items()
+                if name != "registration.json"
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="registration.json"):
+        pilot._require_pilot_locked_inputs(without_registration, root, [task])
+
+    without_database = complete.model_copy(
+        update={
+            "files": {
+                name: digest
+                for name, digest in complete.files.items()
+                if name != "databases/case.sqlite"
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="databases/case.sqlite"):
+        pilot._require_pilot_locked_inputs(without_database, root, [task])
+
+    actual = root / "actual.sqlite"
+    actual.write_bytes(b"actual database")
+    outside_databases = task.model_copy(update={"database_path": "actual.sqlite"})
+    with pytest.raises(ValueError, match="actual.sqlite"):
+        pilot._require_pilot_locked_inputs(complete, root, [outside_databases])
 
 
 def test_pilot_task_uses_modal_compose_build_and_resource_limits(

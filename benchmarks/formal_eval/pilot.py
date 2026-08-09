@@ -36,6 +36,7 @@ from benchmarks.formal_eval.contracts import (
 from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.manifest import (
     load_document,
+    require_locked_inputs,
     semantic_fingerprint,
     verify_input_lock,
     verify_sealed_manifest,
@@ -617,6 +618,26 @@ def _input_lock(root: Path) -> InputLockV2:
     return InputLockV2(files=files)
 
 
+def _require_pilot_locked_inputs(
+    lock: InputLockV2,
+    root: Path,
+    tasks: list[SealedAgentTask],
+) -> None:
+    require_locked_inputs(
+        lock,
+        root,
+        [
+            root / "registration.json",
+            root / "manifest.json",
+            root / "calibration.json",
+            root / "agent-tasks.json",
+            root / "source-manifest.json",
+            root / "databases",
+            *(root / task.database_path for task in tasks),
+        ],
+    )
+
+
 def verify_pilot_inputs(root: Path) -> tuple[PilotRegistration, FormalManifestV2, RunPlanV2]:
     registration = load_document(root / "registration.json", PilotRegistration)
     manifest = load_document(root / "manifest.json", FormalManifestV2)
@@ -626,6 +647,7 @@ def verify_pilot_inputs(root: Path) -> tuple[PilotRegistration, FormalManifestV2
     tasks = TypeAdapter(list[SealedAgentTask]).validate_json(
         (root / "agent-tasks.json").read_bytes()
     )
+    _require_pilot_locked_inputs(lock, root, tasks)
     verify_sealed_manifest(manifest, tasks)
     load_pilot_calibration_spec(root, manifest)
     if manifest.dataset_release != registration.dataset_release:

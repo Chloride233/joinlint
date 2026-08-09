@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from benchmarks.formal_eval import campaign_reservation
 from benchmarks.formal_eval.campaign_ledger import (
     CampaignLedger,
     LedgerSnapshot,
@@ -22,6 +27,9 @@ REPOSITORY = "Chloride233/joinlint"
 REPOSITORY_ID = 1_311_654_200
 WORKFLOW_SHA = "a" * 40
 EVALUATED_COMMIT = "b" * 40
+INPUT_LOCK_SHA256 = "d" * 64
+_READ_CHECKOUT_HEAD = campaign_reservation._read_checkout_head
+_VERIFY_FROZEN_PILOT_INPUT = campaign_reservation._verify_frozen_pilot_input
 
 POLICIES = {
     "readiness": (
@@ -57,6 +65,7 @@ def _environment(mode: str, *, run_id: str = "123") -> dict[str, str]:
         "GITHUB_SHA": WORKFLOW_SHA,
         "GITHUB_WORKFLOW_REF": f"{REPOSITORY}/{workflow_path}@refs/heads/main",
         "GITHUB_WORKFLOW_SHA": WORKFLOW_SHA,
+        "GITHUB_WORKSPACE": f"/trusted/{mode}",
     }
 
 
@@ -85,6 +94,29 @@ def _workflow_inputs(mode: str) -> dict[str, str]:
     return {"budget_cny": "2.25", "confirm_paid": "true"}
 
 
+@pytest.fixture(autouse=True)
+def _stub_workspace_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        campaign_reservation,
+        "_workspace_root",
+        lambda value: Path(value),
+    )
+    monkeypatch.setattr(
+        campaign_reservation,
+        "_read_checkout_head",
+        lambda root: (
+            WORKFLOW_SHA if root.parent.name == "readiness" else EVALUATED_COMMIT
+        ),
+    )
+    monkeypatch.setattr(
+        campaign_reservation,
+        "_verify_frozen_pilot_input",
+        lambda root, evaluated_commit: INPUT_LOCK_SHA256,
+    )
+
+
 @pytest.mark.parametrize("mode", tuple(POLICIES))
 def test_current_run_request_uses_trusted_identity_and_fixed_upper(mode: str) -> None:
     workflow_path, job, upper = POLICIES[mode]
@@ -93,9 +125,6 @@ def test_current_run_request_uses_trusted_identity_and_fixed_upper(mode: str) ->
         _environment(mode),
         mode=mode,
         workflow_inputs=_workflow_inputs(mode),
-        caller_attested_evaluated_commit=(
-            None if mode == "readiness" else EVALUATED_COMMIT
-        ),
     )
 
     assert request.repository_id == REPOSITORY_ID
@@ -108,6 +137,9 @@ def test_current_run_request_uses_trusted_identity_and_fixed_upper(mode: str) ->
     assert request.workflow_sha == WORKFLOW_SHA
     assert request.evaluated_commit == (
         WORKFLOW_SHA if mode == "readiness" else EVALUATED_COMMIT
+    )
+    assert request.input_lock_sha256 == (
+        None if mode == "readiness" else INPUT_LOCK_SHA256
     )
     assert request.upper_micro_cny == upper
 
@@ -141,11 +173,12 @@ def test_current_run_request_rejects_untrusted_github_context(
             environment,
             mode="calibration",
             workflow_inputs=_workflow_inputs("calibration"),
-            caller_attested_evaluated_commit=EVALUATED_COMMIT,
         )
 
 
-def test_current_run_request_rejects_missing_context_and_unverified_commit() -> None:
+def test_current_run_request_rejects_missing_context_and_checkout_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     environment = _environment("calibration")
     environment.pop("GITHUB_WORKFLOW_SHA")
     with pytest.raises(CampaignReservationError, match="GITHUB_WORKFLOW_SHA"):
@@ -153,22 +186,24 @@ def test_current_run_request_rejects_missing_context_and_unverified_commit() -> 
             environment,
             mode="calibration",
             workflow_inputs=_workflow_inputs("calibration"),
-            caller_attested_evaluated_commit=EVALUATED_COMMIT,
         )
 
-    with pytest.raises(CampaignReservationError, match="evaluated commit"):
+    monkeypatch.setattr(
+        campaign_reservation,
+        "_read_checkout_head",
+        lambda root: "c" * 40,
+    )
+    with pytest.raises(CampaignReservationError, match="checkout HEAD"):
         reservation_request_for_current_run(
             _environment("calibration"),
             mode="calibration",
             workflow_inputs=_workflow_inputs("calibration"),
-            caller_attested_evaluated_commit=None,
         )
-    with pytest.raises(CampaignReservationError, match="readiness commit"):
+    with pytest.raises(CampaignReservationError, match="workflow commit"):
         reservation_request_for_current_run(
             _environment("readiness"),
             mode="readiness",
             workflow_inputs=_workflow_inputs("readiness"),
-            caller_attested_evaluated_commit=EVALUATED_COMMIT,
         )
 
 
@@ -200,9 +235,6 @@ def test_mode_must_match_exact_dispatch_inputs(
             _environment(mode),
             mode=mode,
             workflow_inputs=inputs,
-            caller_attested_evaluated_commit=(
-                None if mode == "readiness" else EVALUATED_COMMIT
-            ),
         )
 
 
@@ -245,7 +277,6 @@ def test_unsupported_paid_modes_fail_before_the_ledger_is_read(mode: str) -> Non
             environment=_environment(mode),
             mode=mode,
             workflow_inputs=_workflow_inputs(mode),
-            caller_attested_evaluated_commit=EVALUATED_COMMIT,
         )
     assert store.read_calls == 0
     assert store.cas_calls == 0
@@ -267,7 +298,6 @@ def test_current_run_reserves_once_and_replay_never_authorizes() -> None:
         environment=environment,
         mode="calibration",
         workflow_inputs=_workflow_inputs("calibration"),
-        caller_attested_evaluated_commit=EVALUATED_COMMIT,
     )
     with pytest.raises(CampaignReservationError, match="not authorize"):
         reserve_current_run(
@@ -276,7 +306,6 @@ def test_current_run_reserves_once_and_replay_never_authorizes() -> None:
             environment=environment,
             mode="calibration",
             workflow_inputs=_workflow_inputs("calibration"),
-            caller_attested_evaluated_commit=EVALUATED_COMMIT,
         )
 
     assert first.authorized is True
@@ -284,7 +313,9 @@ def test_current_run_reserves_once_and_replay_never_authorizes() -> None:
     assert store.cas_calls == 1
 
 
-def test_receipt_verification_requires_live_exact_head_and_current_identity() -> None:
+def test_receipt_verification_requires_live_exact_head_and_current_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     store = _MemoryStore(
         CampaignLedger.create(
             campaign_id=CAMPAIGN_ID,
@@ -299,7 +330,6 @@ def test_receipt_verification_requires_live_exact_head_and_current_identity() ->
         environment=environment,
         mode="calibration",
         workflow_inputs=_workflow_inputs("calibration"),
-        caller_attested_evaluated_commit=EVALUATED_COMMIT,
     )
 
     assert verify_current_run_receipt(
@@ -309,8 +339,27 @@ def test_receipt_verification_requires_live_exact_head_and_current_identity() ->
         environment=environment,
         mode="calibration",
         workflow_inputs=_workflow_inputs("calibration"),
-        caller_attested_evaluated_commit=EVALUATED_COMMIT,
     ) == receipt
+
+    monkeypatch.setattr(
+        campaign_reservation,
+        "_verify_frozen_pilot_input",
+        lambda root, evaluated_commit: "e" * 64,
+    )
+    with pytest.raises(CampaignReservationError, match="reservation"):
+        verify_current_run_receipt(
+            store,
+            receipt_bytes=receipt.to_bytes(),
+            expected_campaign_id=CAMPAIGN_ID,
+            environment=environment,
+            mode="calibration",
+            workflow_inputs=_workflow_inputs("calibration"),
+        )
+    monkeypatch.setattr(
+        campaign_reservation,
+        "_verify_frozen_pilot_input",
+        lambda root, evaluated_commit: INPUT_LOCK_SHA256,
+    )
     assert verify_current_run_receipt(
         store,
         receipt_bytes=receipt.to_bytes(),
@@ -318,7 +367,6 @@ def test_receipt_verification_requires_live_exact_head_and_current_identity() ->
         environment=environment,
         mode="calibration",
         workflow_inputs=_workflow_inputs("calibration"),
-        caller_attested_evaluated_commit=EVALUATED_COMMIT,
     ) == receipt
 
     reserve_current_run(
@@ -327,7 +375,6 @@ def test_receipt_verification_requires_live_exact_head_and_current_identity() ->
         environment=_environment("calibration", run_id="124"),
         mode="calibration",
         workflow_inputs=_workflow_inputs("calibration"),
-        caller_attested_evaluated_commit=EVALUATED_COMMIT,
     )
     with pytest.raises(CampaignReservationError, match="ledger head"):
         verify_current_run_receipt(
@@ -337,7 +384,6 @@ def test_receipt_verification_requires_live_exact_head_and_current_identity() ->
             environment=environment,
             mode="calibration",
             workflow_inputs=_workflow_inputs("calibration"),
-            caller_attested_evaluated_commit=EVALUATED_COMMIT,
         )
 
 
@@ -355,7 +401,6 @@ def test_receipt_verification_rejects_replay_wrong_run_and_missing_inclusion() -
         environment=environment,
         mode="calibration",
         workflow_inputs=_workflow_inputs("calibration"),
-        caller_attested_evaluated_commit=EVALUATED_COMMIT,
     )
     replay = replace(receipt, authorized=False)
 
@@ -367,7 +412,6 @@ def test_receipt_verification_rejects_replay_wrong_run_and_missing_inclusion() -
             environment=environment,
             mode="calibration",
             workflow_inputs=_workflow_inputs("calibration"),
-            caller_attested_evaluated_commit=EVALUATED_COMMIT,
         )
     with pytest.raises(CampaignReservationError, match="reservation"):
         verify_current_run_receipt(
@@ -377,7 +421,6 @@ def test_receipt_verification_rejects_replay_wrong_run_and_missing_inclusion() -
             environment=_environment("calibration", run_id="124"),
             mode="calibration",
             workflow_inputs=_workflow_inputs("calibration"),
-            caller_attested_evaluated_commit=EVALUATED_COMMIT,
         )
 
     missing = _MemoryStore(initial)
@@ -390,7 +433,6 @@ def test_receipt_verification_rejects_replay_wrong_run_and_missing_inclusion() -
             environment=environment,
             mode="calibration",
             workflow_inputs=_workflow_inputs("calibration"),
-            caller_attested_evaluated_commit=EVALUATED_COMMIT,
         )
 
 
@@ -408,7 +450,6 @@ def test_same_run_cannot_switch_from_calibration_to_pilot() -> None:
         environment=_environment("calibration"),
         mode="calibration",
         workflow_inputs=_workflow_inputs("calibration"),
-        caller_attested_evaluated_commit=EVALUATED_COMMIT,
     )
 
     with pytest.raises(ReservationConflict):
@@ -418,5 +459,166 @@ def test_same_run_cannot_switch_from_calibration_to_pilot() -> None:
             environment=_environment("pilot"),
             mode="pilot",
             workflow_inputs=_workflow_inputs("pilot"),
-            caller_attested_evaluated_commit=EVALUATED_COMMIT,
         )
+
+
+def test_request_derives_paid_commit_and_input_lock_from_fixed_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Path] = {}
+
+    monkeypatch.setattr(
+        campaign_reservation,
+        "_workspace_root",
+        lambda value: Path(value),
+        raising=False,
+    )
+
+    def read_head(root: Path) -> str:
+        observed["checkout"] = root
+        return EVALUATED_COMMIT
+
+    def verify_frozen(root: Path, evaluated_commit: str) -> str:
+        observed["frozen"] = root
+        assert evaluated_commit == EVALUATED_COMMIT
+        return INPUT_LOCK_SHA256
+
+    monkeypatch.setattr(
+        campaign_reservation,
+        "_read_checkout_head",
+        read_head,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        campaign_reservation,
+        "_verify_frozen_pilot_input",
+        verify_frozen,
+        raising=False,
+    )
+
+    request = reservation_request_for_current_run(
+        _environment("calibration"),
+        mode="calibration",
+        workflow_inputs=_workflow_inputs("calibration"),
+    )
+
+    assert request.evaluated_commit == EVALUATED_COMMIT
+    assert request.input_lock_sha256 == INPUT_LOCK_SHA256
+    assert observed == {
+        "checkout": Path("/trusted/calibration/evaluated-checkout"),
+        "frozen": Path("/trusted/calibration/frozen-pilot-input"),
+    }
+
+
+def test_checkout_head_reader_ignores_ambient_git_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout, expected = _create_git_checkout(tmp_path)
+    poison = tmp_path / "attacker.git"
+    poison.mkdir()
+    for name, value in {
+        "GIT_DIR": str(poison),
+        "GIT_WORK_TREE": str(tmp_path / "attacker-worktree"),
+        "GIT_OBJECT_DIRECTORY": str(poison / "objects"),
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(poison / "alternates"),
+        "GIT_CONFIG_GLOBAL": str(tmp_path / "attacker-config"),
+        "GIT_EXEC_PATH": str(tmp_path / "attacker-bin"),
+        "LD_PRELOAD": str(tmp_path / "attacker-library"),
+        "PATH": str(tmp_path / "attacker-path"),
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    assert _READ_CHECKOUT_HEAD(checkout) == expected
+    assert os.environ["GIT_DIR"] == str(poison)
+
+
+@pytest.mark.parametrize("state", ("tracked", "staged", "untracked", "ignored"))
+def test_checkout_head_reader_rejects_a_dirty_tree(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    checkout, _ = _create_git_checkout(tmp_path)
+    if state in {"tracked", "staged"}:
+        (checkout / "fixture.txt").write_text("modified\n", encoding="utf-8")
+        if state == "staged":
+            subprocess.run(
+                ("/usr/bin/git", "-C", str(checkout), "add", "fixture.txt"),
+                check=True,
+            )
+    elif state == "untracked":
+        (checkout / "untracked.py").write_text("raise RuntimeError\n", encoding="utf-8")
+    else:
+        (checkout / "ignored.py").write_text("raise RuntimeError\n", encoding="utf-8")
+
+    with pytest.raises(CampaignReservationError, match="not clean"):
+        _READ_CHECKOUT_HEAD(checkout)
+
+
+def test_checkout_head_reader_rejects_a_redirected_git_directory(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "evaluated-checkout"
+    redirected = tmp_path / "redirected.git"
+    checkout.mkdir()
+    redirected.mkdir()
+    (checkout / ".git").symlink_to(redirected, target_is_directory=True)
+
+    with pytest.raises(CampaignReservationError, match="real directory"):
+        _READ_CHECKOUT_HEAD(checkout)
+
+
+def test_frozen_input_must_bind_the_checkout_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "frozen-pilot-input"
+    root.mkdir()
+    monkeypatch.setattr(
+        campaign_reservation,
+        "verify_pilot_inputs",
+        lambda current: (SimpleNamespace(joinlint_commit="c" * 40), None, None),
+    )
+    monkeypatch.setattr(
+        campaign_reservation,
+        "load_document",
+        lambda path, model: SimpleNamespace(model_dump=lambda mode: {}),
+    )
+
+    with pytest.raises(CampaignReservationError, match="checkout HEAD"):
+        _VERIFY_FROZEN_PILOT_INPUT(root, EVALUATED_COMMIT)
+
+
+def _create_git_checkout(tmp_path: Path) -> tuple[Path, str]:
+    checkout = tmp_path / "evaluated-checkout"
+    checkout.mkdir()
+    subprocess.run(("/usr/bin/git", "init", "-q", str(checkout)), check=True)
+    subprocess.run(
+        ("/usr/bin/git", "-C", str(checkout), "config", "user.name", "JoinLint"),
+        check=True,
+    )
+    subprocess.run(
+        (
+            "/usr/bin/git",
+            "-C",
+            str(checkout),
+            "config",
+            "user.email",
+            "joinlint@example.invalid",
+        ),
+        check=True,
+    )
+    (checkout / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+    (checkout / "fixture.txt").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(("/usr/bin/git", "-C", str(checkout), "add", "."), check=True)
+    subprocess.run(
+        ("/usr/bin/git", "-C", str(checkout), "commit", "-qm", "fixture"),
+        check=True,
+    )
+    expected = subprocess.run(
+        ("/usr/bin/git", "-C", str(checkout), "rev-parse", "HEAD"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return checkout, expected

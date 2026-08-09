@@ -102,7 +102,7 @@ after they are re-enabled. This single-flight guard is defense in depth only:
 it does not reserve funds atomically, and GitHub may replace an older pending
 job with a newer pending job.
 `campaign_ledger.py` now supplies the tested reservation primitive for the next
-gate: strict integer micro-CNY accounting, an append-only full-upper-bound
+gate: schema-v2 strict integer micro-CNY accounting, an append-only full-upper-bound
 reservation, and a non-force GitHub ref compare-and-swap. Exact replays are
 recorded as already consumed and never authorize another paid call. Deterministic
 tests cover same-head writers, response loss, replay, and exhausted-budget
@@ -112,7 +112,9 @@ frozen. `campaign_reservation.py` narrows the future workflow-owned consumer to
 GitHub's default run variables on protected `main`, fixes the only admitted
 mode/upper pairs to readiness/CNY 2.10, calibration/CNY 4, and Pilot/CNY 20,
 requires the exact matching policy-driving dispatch flags and budget string,
-and requires the caller-attested evaluated SHA to equal `pilot_commit`.
+reads the actual Git HEAD from a clean fixed checkout path, and
+requires calibration/Pilot reservations to bind the verified frozen-input lock
+digest, including every task's consumed database.
 `reserve_current_run` returns only for a newly authorized reservation that also
 matches the live ledger head; a replay is rejected. Standalone receipt
 verification is a repeatable snapshot check, not a consume-once execution token.
@@ -120,12 +122,12 @@ There is no longer a caller-defined repository/mode/upper reservation command.
 This admission contract is trusted only when a clean workflow-owned job runs it
 before evaluated code; it is not a portable signed identity proof and is not yet
 wired to a workflow. Its `Mapping` arguments do not authenticate their own
-source, and the caller-attested SHA does not independently prove a checkout or
-frozen-input verification. Production wiring must read the runner's default
-environment and event payload directly and obtain the evaluated SHA from the
-clean workflow-owned checkout and frozen-input verifier. The production
-authority and clean-job handoff therefore remain blocked, and every paid entry
-point stays hard-blocked and disabled.
+source or prove ownership of those directories. Production wiring must read the
+runner's default environment and event payload directly, populate the fixed
+checkout and frozen-input directories in a clean workflow-owned job, and run
+admission before evaluated code. The
+production authority and clean-job handoff therefore remain blocked, and every
+paid entry point stays hard-blocked and disabled.
 The paid one-task canary uses a 170-second sandbox envelope: its independently
 measured 60-second readiness window and 90-second evaluation window leave 20
 seconds for lifecycle handoff and evidence finalization. Pilot v3 targets Claude
