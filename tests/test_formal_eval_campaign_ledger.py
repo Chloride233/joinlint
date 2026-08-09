@@ -804,6 +804,34 @@ def test_github_store_rejects_a_non_append_cas_before_any_api_call() -> None:
     assert api.calls == []
 
 
+def test_github_store_rejects_an_invalid_cas_nonce_before_any_api_call() -> None:
+    root = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="0",
+    )
+    api = _StubGitHubApi()
+    store = GitHubGitLedgerStore(
+        api=api,
+        repository=REPOSITORY,
+        branch=LEDGER_BRANCH,
+        expected_repository_id=REPOSITORY_ID,
+        expected_genesis_commit="1" * 40,
+        nonce_factory=lambda: "invalid",
+    )
+
+    with pytest.raises(CampaignLedgerError, match="CAS nonce"):
+        store.compare_and_swap(
+            LedgerSnapshot(
+                commit_sha="1" * 40,
+                tree_sha="2" * 40,
+                ledger=root,
+            ),
+            root.reserve(_request()).ledger,
+        )
+    assert api.calls == []
+
+
 def test_github_store_rechecks_the_verified_snapshot_before_any_write() -> None:
     root = CampaignLedger.create(
         campaign_id=CAMPAIGN_ID,
@@ -935,7 +963,10 @@ def test_github_store_creates_one_parent_commit_and_non_force_ref_update() -> No
     assert update_ref[2] == {"force": False, "sha": "4" * 40}
 
 
-def test_github_store_recovers_only_an_exact_commit_after_unknown_patch_result() -> None:
+@pytest.mark.parametrize("status", (None, 500, 599))
+def test_github_store_recovers_only_an_exact_commit_after_unknown_patch_result(
+    status: int | None,
+) -> None:
     initial = CampaignLedger.create(
         campaign_id=CAMPAIGN_ID,
         budget_cny="10",
@@ -954,7 +985,7 @@ def test_github_store_recovers_only_an_exact_commit_after_unknown_patch_result()
         {"sha": new_blob_sha},
         {"sha": "3" * 40},
         {"sha": "4" * 40},
-        GitHubApiError(status=None),
+        GitHubApiError(status=status),
         *_lineage_read_responses(
             (updated, "4" * 40, "3" * 40, ("1" * 40,)),
             (initial, "1" * 40, "2" * 40, ()),
@@ -969,7 +1000,7 @@ def test_github_store_recovers_only_an_exact_commit_after_unknown_patch_result()
     ) == ("4" * 40)
 
 
-@pytest.mark.parametrize("loser_status", (422, None))
+@pytest.mark.parametrize("loser_status", (422, None, 500))
 def test_duplicate_candidates_use_distinct_commits_and_only_winner_can_own_update(
     loser_status: int | None,
 ) -> None:
@@ -1049,7 +1080,10 @@ def test_duplicate_candidates_use_distinct_commits_and_only_winner_can_own_updat
     assert winner_commit[2]["message"] != loser_commit[2]["message"]
 
 
-def test_github_store_distinguishes_ref_rejection_from_a_sibling_commit() -> None:
+@pytest.mark.parametrize("unchanged_status", (422, 500))
+def test_github_store_distinguishes_ref_rejection_from_a_sibling_commit(
+    unchanged_status: int,
+) -> None:
     initial = CampaignLedger.create(
         campaign_id=CAMPAIGN_ID,
         budget_cny="10",
@@ -1069,7 +1103,7 @@ def test_github_store_distinguishes_ref_rejection_from_a_sibling_commit() -> Non
         {"sha": new_blob_sha},
         {"sha": "3" * 40},
         {"sha": "4" * 40},
-        GitHubApiError(status=422),
+        GitHubApiError(status=unchanged_status),
         *initial_read,
     )
     unchanged_store = _lineage_store(unchanged_api, genesis_sha="1" * 40)
@@ -1217,7 +1251,7 @@ def test_github_store_initializes_a_single_file_root_commit() -> None:
     }
 
 
-@pytest.mark.parametrize("status", (None, 409, 422))
+@pytest.mark.parametrize("status", (None, 409, 422, 500, 599))
 def test_github_store_recovers_an_exact_initialized_root_after_an_uncertain_ref_result(
     status: int | None,
 ) -> None:
@@ -1242,6 +1276,31 @@ def test_github_store_recovers_an_exact_initialized_root_after_an_uncertain_ref_
     )
 
     assert _lineage_store(api, genesis_sha=None).initialize(ledger) == candidate_sha
+
+
+def test_github_store_does_not_read_back_a_definite_ref_authorization_failure() -> None:
+    ledger = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="0.000001",
+        opening_reserved_upper_cny="0",
+    )
+    api = _StubGitHubApi(
+        *_initialize_candidate_responses(
+            ledger,
+            tree_sha="2" * 40,
+            commit_sha="3" * 40,
+        ),
+        GitHubApiError(status=403),
+    )
+
+    with pytest.raises(GitHubApiError) as captured:
+        _lineage_store(api, genesis_sha=None).initialize(ledger)
+
+    assert captured.value.status == 403
+    assert not any(
+        method == "GET" and "/git/ref/heads/" in endpoint
+        for method, endpoint, _ in api.calls
+    )
 
 
 def test_github_store_recovers_an_exact_initialized_root_after_a_malformed_ref_response() -> None:

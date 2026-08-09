@@ -698,7 +698,9 @@ class GitHubGitLedgerStore:
             ):
                 raise GitHubLedgerError("created GitHub ledger ref is invalid")
         except GitHubApiError as error:
-            if error.status not in {None, 409, 422}:
+            if error.status not in {None, 409, 422} and not (
+                error.status is not None and 500 <= error.status <= 599
+            ):
                 raise
         except GitHubLedgerError:
             pass
@@ -823,6 +825,11 @@ class GitHubGitLedgerStore:
         if expected.tree_sha is None:
             raise GitHubLedgerError("GitHub ledger snapshot is missing its tree")
         _require_append_only_transition(expected.ledger, updated)
+        nonce = _require_pattern(
+            self._nonce_factory(),
+            field="CAS nonce",
+            pattern=_NONCE_PATTERN,
+        )
         current = self.read()
         if current != expected:
             raise CasConflict("GitHub ledger ref advanced before reservation")
@@ -836,10 +843,7 @@ class GitHubGitLedgerStore:
         commit_sha = self._create_commit(
             tree_sha=tree_sha,
             parents=[expected.commit_sha],
-            message=(
-                f"reserve {reservation_id} "
-                f"{_require_pattern(self._nonce_factory(), field='CAS nonce', pattern=_NONCE_PATTERN)}"
-            ),
+            message=f"reserve {reservation_id} {nonce}",
         )
         try:
             ref = self._api.request(
@@ -941,7 +945,10 @@ class GitHubGitLedgerStore:
         except (GitHubApiError, GitHubLedgerError) as read_error:
             raise GitHubLedgerError("GitHub ledger ref update could not be verified") from read_error
         if (
-            error.status is None
+            (
+                error.status is None
+                or (error.status is not None and 500 <= error.status <= 599)
+            )
             and current.commit_sha == commit_sha
             and current.ledger == updated
         ):
