@@ -257,13 +257,15 @@ def test_bird_preparation_workflow_is_approval_and_paid_gated() -> None:
     )
     assert "github.run_attempt != 1" in paid_gate["if"]
     checkout = next(
-        step for step in job["steps"] if step.get("uses") == "actions/checkout@v4"
+        step
+        for step in job["steps"]
+        if str(step.get("uses", "")).startswith("actions/checkout@")
     )
     assert checkout["with"]["persist-credentials"] == "false"
     assert "confirm_paid" in workflow["on"]["workflow_dispatch"]["inputs"]
     assert "benchmarks/formal_eval/bird_modal.py" in source
     assert "benchmarks.formal_eval.bird_dataset" in source
-    assert "actions/upload-artifact@v4" not in source
+    assert "actions/upload-artifact@" not in source
     assert "modal volume rm --recursive" in source
     prepare_step = next(
         step

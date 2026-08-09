@@ -160,7 +160,9 @@ def test_modal_readiness_workflow_scopes_secrets_and_budget() -> None:
     assert inputs["campaign_budget_cny"]["required"] == "true"
     assert inputs["campaign_spend_before_cny"]["required"] == "true"
     checkout_index = next(
-        index for index, step in enumerate(job["steps"]) if step.get("uses") == "actions/checkout@v4"
+        index
+        for index, step in enumerate(job["steps"])
+        if str(step.get("uses", "")).startswith("actions/checkout@")
     )
     assert job["steps"][checkout_index]["with"]["ref"] == "${{ github.sha }}"
     assert job["steps"][checkout_index]["with"]["persist-credentials"] == "false"

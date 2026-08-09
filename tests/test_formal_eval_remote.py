@@ -215,13 +215,13 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
         step
         for job in workflow["jobs"].values()
         for step in job["steps"]
-        if step.get("uses") == "actions/checkout@v4"
+        if str(step.get("uses", "")).startswith("actions/checkout@")
     ]
     assert checkouts
     assert all(step.get("with", {}).get("persist-credentials") == "false" for step in checkouts)
     assert "confirm_paid" in workflow["on"]["workflow_dispatch"]["inputs"]
     assert "sealed_artifact_run_id" in workflow["on"]["workflow_dispatch"]["inputs"]
-    assert "actions/download-artifact@v4" in text
+    assert "actions/download-artifact@" in text
     assert "diagnostic-canary" in text
     assert "--phase confirmatory" in text
     assert "DEEPSEEK_BASE_URL: https://api.deepseek.com" in text
@@ -239,7 +239,9 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
     )
     assert report_steps[0]["run"] == "exit 1"
     report_checkout = next(
-        step for step in report_steps if step.get("uses") == "actions/checkout@v4"
+        step
+        for step in report_steps
+        if str(step.get("uses", "")).startswith("actions/checkout@")
     )
     assert report_checkout["with"]["persist-credentials"] == "false"
     report_scan = next(

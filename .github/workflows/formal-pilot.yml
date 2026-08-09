@@ -90,14 +90,14 @@ jobs:
           if budget <= 0 or spent < 0 or upper < 0 or spent + upper > budget:
               sys.exit("full pilot could exceed the approved cumulative campaign budget")
           PY
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.pilot_commit }}
           persist-credentials: false
       - name: Record checked-out pilot commit
         id: pilot_commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -166,7 +166,7 @@ jobs:
       - name: Checkout pinned public artifact verifier
         id: public_artifact_verifier
         if: always()
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: 0389c4bd34597f06676d4c560f5e7683fd2b20c9
           path: .workflow-verifier
@@ -183,7 +183,7 @@ jobs:
           python -m benchmarks.formal_eval.public_artifacts
           --profile pilot
           --root "$GITHUB_WORKSPACE/pilot-artifacts"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && steps.scan_pilot_sanitized.outcome == 'success'
         with:
           name: joinlint-formal-pilot-sanitized

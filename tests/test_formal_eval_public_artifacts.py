@@ -319,7 +319,7 @@ def test_evidence_scans_run_only_from_the_pinned_verifier_checkout(
     )
     assert checkout["id"] == "public_artifact_verifier"
     assert checkout["if"] == "always()"
-    assert checkout["uses"] == "actions/checkout@v4"
+    assert checkout["uses"].startswith("actions/checkout@")
     assert checkout["with"] == {
         "ref": VERIFIER_COMMIT,
         "path": ".workflow-verifier",

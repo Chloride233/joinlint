@@ -288,6 +288,11 @@ The separate checkout pins validator code provenance but shares the job runner;
 it is not an adversarial process sandbox. Paid and report jobs therefore stay
 hard-blocked until the evaluated commit is an approved trust input or content
 validation moves to a clean verifier runner, in addition to their other gates.
+Every remote `uses:` dependency in the repository workflows, including CI and
+the hard-blocked paid/report jobs, is fixed to the full commit SHA corresponding
+to its adjacent official release version. The version comments are
+informational, and the workflow pinning test rejects mutable tag or branch
+references.
 
 ## Formal remote run
 

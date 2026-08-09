@@ -82,6 +82,8 @@
 - Before re-enabling paid or report jobs, approve the evaluated commit as a
   runner trust input or move validation to a clean runner; a separate checkout
   alone is not adversarial process isolation.
+- Keep every remote GitHub Actions `uses:` dependency pinned to a reviewed full
+  commit SHA; release-version comments do not replace the immutable reference.
 - Blind-review the exact run-plan sample of at least 80 runs or 10 percent of
   all runs, whichever is larger. Require arm-removal attestation, per-output
   digests, reviewer digests, and at least 95 percent scorer agreement.
