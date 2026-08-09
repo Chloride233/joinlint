@@ -20,6 +20,9 @@ permissions:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    concurrency:
+      group: joinlint-formal-paid-v1
+      cancel-in-progress: false
     environment: formal-evaluation
     env:
       DATABASE_IDS: ${{ inputs.database_ids }}

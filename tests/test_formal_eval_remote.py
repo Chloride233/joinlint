@@ -311,6 +311,32 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
     )
 
 
+def test_all_paid_jobs_share_one_non_cancelling_concurrency_group() -> None:
+    paid_jobs = (
+        (".github/workflows/formal-evaluation.yml", "formal"),
+        (".github/workflows/formal-pilot-canary.yml", "readiness"),
+        (".github/workflows/formal-pilot-canary.yml", "canary"),
+        (".github/workflows/formal-pilot.yml", "pilot"),
+        (".github/workflows/prepare-bird-subset.yml", "prepare"),
+    )
+
+    for workflow_path, job_name in paid_jobs:
+        workflow = yaml.load(
+            Path(workflow_path).read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        assert workflow["jobs"][job_name]["concurrency"] == {
+            "group": "joinlint-formal-paid-v1",
+            "cancel-in-progress": "false",
+        }
+
+    formal_workflow = yaml.load(
+        Path(".github/workflows/formal-evaluation.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert "concurrency" not in formal_workflow["jobs"]["deterministic"]
+
+
 def test_docker_context_excludes_all_sealed_and_raw_result_boundaries() -> None:
     dockerfile = Path("benchmarks/formal_eval/Dockerfile").read_text(encoding="utf-8")
     ignored = set(Path(".dockerignore").read_text(encoding="utf-8").splitlines())

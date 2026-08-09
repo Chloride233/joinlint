@@ -115,6 +115,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.stage == 'formal'
     needs: deterministic
     runs-on: ubuntu-latest
+    concurrency:
+      group: joinlint-formal-paid-v1
+      cancel-in-progress: false
     environment: formal-evaluation
     env:
       PREREGISTRATION: ${{ inputs.preregistration }}

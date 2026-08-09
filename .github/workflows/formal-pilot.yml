@@ -54,6 +54,9 @@ permissions:
 jobs:
   pilot:
     runs-on: ubuntu-latest
+    concurrency:
+      group: joinlint-formal-paid-v1
+      cancel-in-progress: false
     environment: formal-evaluation
     steps:
       - name: Block paid evaluation pending atomic campaign reservation

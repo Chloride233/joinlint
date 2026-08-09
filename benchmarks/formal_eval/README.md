@@ -96,6 +96,11 @@ provider when its full approved per-run ceiling would exceed the remainder.
 Paid readiness, canary, calibration, and Pilot dispatch are additionally
 fail-closed until that calculation is backed by an authoritative atomic
 campaign reservation rather than a manually supplied prior-spend snapshot.
+All five paid jobs share the repository-scoped `joinlint-formal-paid-v1`
+concurrency group with cancellation disabled, so at most one can run at a time
+after they are re-enabled. This single-flight guard is defense in depth only:
+it does not reserve funds atomically, and GitHub may replace an older pending
+job with a newer pending job.
 The paid one-task canary uses a 170-second sandbox envelope: its independently
 measured 60-second readiness window and 90-second evaluation window leave 20
 seconds for lifecycle handoff and evidence finalization. Pilot v3 targets Claude
