@@ -621,7 +621,6 @@ def _input_lock(root: Path) -> InputLockV2:
 def _require_pilot_locked_inputs(
     lock: InputLockV2,
     root: Path,
-    tasks: list[SealedAgentTask],
 ) -> None:
     require_locked_inputs(
         lock,
@@ -633,21 +632,36 @@ def _require_pilot_locked_inputs(
             root / "agent-tasks.json",
             root / "source-manifest.json",
             root / "databases",
-            *(root / task.database_path for task in tasks),
         ],
     )
 
 
-def verify_pilot_inputs(root: Path) -> tuple[PilotRegistration, FormalManifestV2, RunPlanV2]:
+def _read_locked_bytes(lock: InputLockV2, root: Path, relative_name: str) -> bytes:
+    path = root / relative_name
+    require_locked_inputs(lock, root, [path])
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != lock.files[relative_name]:
+        raise ValueError(f"locked input hash mismatch: {relative_name}")
+    return raw
+
+
+def verify_pilot_input_bundle(
+    root: Path,
+) -> tuple[PilotRegistration, FormalManifestV2, RunPlanV2, InputLockV2]:
     registration = load_document(root / "registration.json", PilotRegistration)
     manifest = load_document(root / "manifest.json", FormalManifestV2)
     run_plan = load_document(root / "run-plan.json", RunPlanV2)
     lock = load_document(root / "input-lock.json", InputLockV2)
     verify_input_lock(lock, root)
+    _require_pilot_locked_inputs(lock, root)
     tasks = TypeAdapter(list[SealedAgentTask]).validate_json(
-        (root / "agent-tasks.json").read_bytes()
+        _read_locked_bytes(lock, root, "agent-tasks.json")
     )
-    _require_pilot_locked_inputs(lock, root, tasks)
+    require_locked_inputs(
+        lock,
+        root,
+        [root / task.database_path for task in tasks],
+    )
     verify_sealed_manifest(manifest, tasks)
     load_pilot_calibration_spec(root, manifest)
     if manifest.dataset_release != registration.dataset_release:
@@ -662,6 +676,11 @@ def verify_pilot_inputs(root: Path) -> tuple[PilotRegistration, FormalManifestV2
     expected_plan = build_pilot_run_plan(manifest, registration, expected_lineage)
     if run_plan != expected_plan:
         raise ValueError("pilot run plan is not reproducible")
+    return registration, manifest, run_plan, lock
+
+
+def verify_pilot_inputs(root: Path) -> tuple[PilotRegistration, FormalManifestV2, RunPlanV2]:
+    registration, manifest, run_plan, _ = verify_pilot_input_bundle(root)
     return registration, manifest, run_plan
 
 

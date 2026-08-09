@@ -14,10 +14,8 @@ from benchmarks.formal_eval.campaign_ledger import (
     ReservationRequest,
     reserve_with_store,
 )
-from benchmarks.formal_eval.contracts import InputLockV2
 from benchmarks.formal_eval.lineage import digest_value
-from benchmarks.formal_eval.manifest import load_document
-from benchmarks.formal_eval.pilot import verify_pilot_inputs
+from benchmarks.formal_eval.pilot import verify_pilot_input_bundle
 
 
 _REPOSITORY = "Chloride233/joinlint"
@@ -325,6 +323,31 @@ def _read_checkout_head(checkout_root: Path) -> str:
         raise CampaignReservationError("evaluated checkout status is unavailable") from error
     if status.returncode != 0 or status.stdout:
         raise CampaignReservationError("evaluated checkout is not clean")
+    try:
+        index = _run_git(
+            checkout_root,
+            git_dir,
+            f"--work-tree={checkout_root}",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "ls-files",
+            "--cached",
+            "-v",
+            "-z",
+            "--full-name",
+            "--",
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise CampaignReservationError("evaluated checkout index is unavailable") from error
+    index_records = index.stdout.split(b"\0")
+    if (
+        index.returncode != 0
+        or index_records[-1] != b""
+        or any(record[:2] != b"H " for record in index_records[:-1])
+    ):
+        raise CampaignReservationError("evaluated checkout is not clean")
     return completed.stdout[:-1].decode("ascii")
 
 
@@ -355,8 +378,7 @@ def _run_git(
 def _verify_frozen_pilot_input(root: Path, evaluated_commit: str) -> str:
     _require_real_directory(root, label="frozen pilot input")
     try:
-        registration, _, _ = verify_pilot_inputs(root)
-        lock = load_document(root / "input-lock.json", InputLockV2)
+        registration, _, _, lock = verify_pilot_input_bundle(root)
     except (OSError, ValueError) as error:
         raise CampaignReservationError("frozen pilot input is invalid") from error
     if registration.joinlint_commit != evaluated_commit:

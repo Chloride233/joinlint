@@ -194,6 +194,22 @@ def test_reservation_rejects_invalid_input_lock_digest(digest: str) -> None:
         _request(input_lock_sha256=digest)
 
 
+@pytest.mark.parametrize(
+    ("mode", "digest"),
+    (
+        ("readiness", INPUT_LOCK_SHA256),
+        ("calibration", None),
+        ("pilot", None),
+    ),
+)
+def test_reservation_mode_requires_the_matching_input_lock_contract(
+    mode: str,
+    digest: str | None,
+) -> None:
+    with pytest.raises(CampaignLedgerError, match="input lock"):
+        _request(mode=mode, input_lock_sha256=digest)
+
+
 def test_same_github_run_cannot_change_mode_to_obtain_another_reservation() -> None:
     ledger = CampaignLedger.create(
         campaign_id=CAMPAIGN_ID,

@@ -17,7 +17,7 @@ from benchmarks.formal_eval.contracts import (
     SealedAgentTask,
 )
 from benchmarks.formal_eval.lineage import digest_value
-from benchmarks.formal_eval.manifest import verify_input_lock
+from benchmarks.formal_eval.manifest import require_locked_inputs, verify_input_lock
 from benchmarks.formal_eval.pilot import (
     PILOT_DATASET_RELEASE,
     PILOT_ALLOCATION,
@@ -1398,7 +1398,8 @@ def test_pilot_input_lock_must_cover_every_consumed_frozen_input(tmp_path: Path)
     complete = pilot._input_lock(root)
 
     task = _sealed_task()
-    pilot._require_pilot_locked_inputs(complete, root, [task])
+    pilot._require_pilot_locked_inputs(complete, root)
+    require_locked_inputs(complete, root, [root / task.database_path])
 
     without_registration = complete.model_copy(
         update={
@@ -1410,7 +1411,7 @@ def test_pilot_input_lock_must_cover_every_consumed_frozen_input(tmp_path: Path)
         }
     )
     with pytest.raises(ValueError, match="registration.json"):
-        pilot._require_pilot_locked_inputs(without_registration, root, [task])
+        pilot._require_pilot_locked_inputs(without_registration, root)
 
     without_database = complete.model_copy(
         update={
@@ -1422,13 +1423,62 @@ def test_pilot_input_lock_must_cover_every_consumed_frozen_input(tmp_path: Path)
         }
     )
     with pytest.raises(ValueError, match="databases/case.sqlite"):
-        pilot._require_pilot_locked_inputs(without_database, root, [task])
+        pilot._require_pilot_locked_inputs(without_database, root)
 
     actual = root / "actual.sqlite"
     actual.write_bytes(b"actual database")
     outside_databases = task.model_copy(update={"database_path": "actual.sqlite"})
     with pytest.raises(ValueError, match="actual.sqlite"):
-        pilot._require_pilot_locked_inputs(complete, root, [outside_databases])
+        require_locked_inputs(complete, root, [root / outside_databases.database_path])
+
+
+def test_pilot_checks_agent_task_lock_before_reading_the_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sealed"
+    database = root / "databases" / "case.sqlite"
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"SQLite fixture")
+    for name in (
+        "registration.json",
+        "manifest.json",
+        "calibration.json",
+        "source-manifest.json",
+    ):
+        (root / name).write_text("{}\n", encoding="utf-8")
+    lock = pilot._input_lock(root)
+    tasks_path = root / "agent-tasks.json"
+    tasks_path.write_text("[]\n", encoding="utf-8")
+    monkeypatch.setattr(
+        pilot,
+        "load_document",
+        lambda path, model: lock if path.name == "input-lock.json" else SimpleNamespace(),
+    )
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path == tasks_path:
+            raise AssertionError("agent tasks were read before their lock membership")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+
+    with pytest.raises(ValueError, match="agent-tasks.json"):
+        pilot.verify_pilot_inputs(root)
+
+
+def test_pilot_parses_only_bytes_that_match_the_frozen_lock(tmp_path: Path) -> None:
+    root = tmp_path / "sealed"
+    root.mkdir()
+    tasks_path = root / "agent-tasks.json"
+    tasks_path.write_bytes(b"[]\n")
+    lock = pilot.InputLockV2(
+        files={"agent-tasks.json": hashlib.sha256(b"[{}]\n").hexdigest()}
+    )
+
+    with pytest.raises(ValueError, match="hash mismatch"):
+        pilot._read_locked_bytes(lock, root, "agent-tasks.json")
 
 
 def test_pilot_task_uses_modal_compose_build_and_resource_limits(

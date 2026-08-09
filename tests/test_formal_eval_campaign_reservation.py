@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from benchmarks.formal_eval import campaign_reservation
+from benchmarks.formal_eval import campaign_reservation, pilot
 from benchmarks.formal_eval.campaign_ledger import (
     CampaignLedger,
     LedgerSnapshot,
@@ -20,6 +20,7 @@ from benchmarks.formal_eval.campaign_reservation import (
     reserve_current_run,
     verify_current_run_receipt,
 )
+from benchmarks.formal_eval.lineage import digest_value
 
 
 CAMPAIGN_ID = "joinlint-formal-v1"
@@ -533,13 +534,36 @@ def test_checkout_head_reader_ignores_ambient_git_configuration(
     assert os.environ["GIT_DIR"] == str(poison)
 
 
-@pytest.mark.parametrize("state", ("tracked", "staged", "untracked", "ignored"))
+@pytest.mark.parametrize(
+    "state",
+    (
+        "tracked",
+        "staged",
+        "untracked",
+        "ignored",
+        "assume-unchanged",
+        "skip-worktree",
+    ),
+)
 def test_checkout_head_reader_rejects_a_dirty_tree(
     tmp_path: Path,
     state: str,
 ) -> None:
     checkout, _ = _create_git_checkout(tmp_path)
-    if state in {"tracked", "staged"}:
+    if state in {"assume-unchanged", "skip-worktree"}:
+        subprocess.run(
+            (
+                "/usr/bin/git",
+                "-C",
+                str(checkout),
+                "update-index",
+                f"--{state}",
+                "fixture.txt",
+            ),
+            check=True,
+        )
+        (checkout / "fixture.txt").write_text("modified\n", encoding="utf-8")
+    elif state in {"tracked", "staged"}:
         (checkout / "fixture.txt").write_text("modified\n", encoding="utf-8")
         if state == "staged":
             subprocess.run(
@@ -576,17 +600,53 @@ def test_frozen_input_must_bind_the_checkout_head(
     root.mkdir()
     monkeypatch.setattr(
         campaign_reservation,
-        "verify_pilot_inputs",
-        lambda current: (SimpleNamespace(joinlint_commit="c" * 40), None, None),
-    )
-    monkeypatch.setattr(
-        campaign_reservation,
-        "load_document",
-        lambda path, model: SimpleNamespace(model_dump=lambda mode: {}),
+        "verify_pilot_input_bundle",
+        lambda current: (
+            SimpleNamespace(joinlint_commit="c" * 40),
+            None,
+            None,
+            pilot.InputLockV2(files={"registration.json": "d" * 64}),
+        ),
     )
 
     with pytest.raises(CampaignReservationError, match="checkout HEAD"):
         _VERIFY_FROZEN_PILOT_INPUT(root, EVALUATED_COMMIT)
+
+
+def test_frozen_input_digest_comes_from_the_same_verified_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "frozen-pilot-input"
+    root.mkdir()
+    lock = pilot.InputLockV2(files={"registration.json": "d" * 64})
+    monkeypatch.setattr(
+        campaign_reservation,
+        "verify_pilot_input_bundle",
+        lambda current: (
+            SimpleNamespace(joinlint_commit=EVALUATED_COMMIT),
+            None,
+            None,
+            lock,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        campaign_reservation,
+        "verify_pilot_inputs",
+        lambda current: (_ for _ in ()).throw(AssertionError("stale verifier")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        campaign_reservation,
+        "load_document",
+        lambda path, model: (_ for _ in ()).throw(AssertionError("second lock read")),
+        raising=False,
+    )
+
+    assert _VERIFY_FROZEN_PILOT_INPUT(root, EVALUATED_COMMIT) == digest_value(
+        lock.model_dump(mode="json")
+    )
 
 
 def _create_git_checkout(tmp_path: Path) -> tuple[Path, str]:
