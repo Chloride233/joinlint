@@ -1647,7 +1647,9 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         if step.get("name") == "Require cumulative campaign budget for full pilot"
     )
     checkout_index = next(
-        index for index, step in enumerate(job["steps"]) if step.get("uses") == "actions/checkout@v4"
+        index
+        for index, step in enumerate(job["steps"])
+        if str(step.get("uses", "")).startswith("actions/checkout@")
     )
     assert job["steps"][checkout_index]["with"]["persist-credentials"] == "false"
     assert step_names.index(campaign_preflight["name"]) < checkout_index
@@ -1715,7 +1717,9 @@ def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:
     )
     assert step_names.index(preflight["name"]) < step_names.index(run_step["name"])
     checkout_index = next(
-        index for index, step in enumerate(job["steps"]) if step.get("uses") == "actions/checkout@v4"
+        index
+        for index, step in enumerate(job["steps"])
+        if str(step.get("uses", "")).startswith("actions/checkout@")
     )
     assert job["steps"][checkout_index]["with"]["persist-credentials"] == "false"
     assert step_names.index(preflight["name"]) < checkout_index
@@ -1757,7 +1761,9 @@ def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() ->
     )
     assert step_names.index(preflight["name"]) < step_names.index(run_step["name"])
     checkout_index = next(
-        index for index, step in enumerate(job["steps"]) if step.get("uses") == "actions/checkout@v4"
+        index
+        for index, step in enumerate(job["steps"])
+        if str(step.get("uses", "")).startswith("actions/checkout@")
     )
     assert step_names.index(preflight["name"]) < checkout_index
     assert "benchmarks.formal_eval" not in preflight["run"]
@@ -1813,7 +1819,7 @@ def test_public_formal_workflows_keep_raw_inspect_logs_runner_ephemeral(
         step
         for job in workflow["jobs"].values()
         for step in job["steps"]
-        if step.get("uses") == "actions/upload-artifact@v4"
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
     ]
     uploaded_paths = "\n".join(
         str((step.get("with") or {}).get("path", "")) for step in uploads
