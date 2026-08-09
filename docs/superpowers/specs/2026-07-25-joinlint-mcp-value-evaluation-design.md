@@ -491,8 +491,21 @@ micro-CNY values and a non-force GitHub ref compare-and-swap. It only appends a
 complete per-run upper bound; it does not settle, release, or expire a failed or
 cancelled reservation. A same-payload replay is non-authorizing. This primitive
 does not become authoritative until the production campaign genesis, opening
-balance, protected ledger ref, and workflow receipt binding are frozen and
-verified, so it does not remove the paid-path block.
+balance, and protected ledger ref are frozen. The separate admission wrapper
+now derives repository/run/workflow identity only from GitHub's default variables
+on protected `main`, admits only the frozen readiness/CNY 2.10,
+calibration/CNY 4, and Pilot/CNY 20 pairs, and verifies an authorized receipt
+against the exact live ledger head. It also requires the exact policy-driving
+dispatch flags and budget string for the selected mode and requires a caller-
+attested evaluated SHA to equal `pilot_commit`. A new reservation is
+live-verified before the main
+entry point returns, while standalone receipt verification remains a repeatable
+snapshot check rather than a consume-once token. Canary, formal evaluation, and BIRD
+preparation remain absent from that policy. This contract still requires a
+clean workflow-owned job before evaluated code and has not been wired. Its
+`Mapping` arguments do not authenticate their source, and it does not yet read
+the actual checkout HEAD or frozen-input verifier itself, so it does not remove
+the paid-path block.
 
 ## 18. Delivery sequence
 

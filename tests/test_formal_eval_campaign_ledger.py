@@ -749,70 +749,7 @@ def test_campaign_ledger_cli_creates_and_verifies_local_genesis(tmp_path) -> Non
         )
 
 
-def test_campaign_ledger_cli_reserves_once_and_replay_exits_nonzero(tmp_path) -> None:
-    initial = CampaignLedger.create(
-        campaign_id=CAMPAIGN_ID,
-        budget_cny="10",
-        opening_reserved_upper_cny="0",
-    )
-    updated = initial.reserve(_request()).ledger
-    new_blob_sha = _git_blob_sha(updated.to_bytes())
-    api = _StubGitHubApi(
-        *_remote_read_responses(initial, head_sha="1" * 40, tree_sha="2" * 40),
-        {"sha": new_blob_sha},
-        {"sha": "3" * 40},
-        {"sha": "4" * 40},
-        {
-            "ref": "refs/heads/joinlint-campaign-ledger",
-            "object": {"type": "commit", "sha": "4" * 40},
-        },
-        *_remote_read_responses(updated, head_sha="4" * 40, tree_sha="3" * 40),
-    )
-    receipt = tmp_path / "receipt.json"
-    arguments = [
-        "reserve-github",
-        "--repository-id",
-        "1311654200",
-        "--repository",
-        "Chloride233/joinlint",
-        "--branch",
-        "joinlint-campaign-ledger",
-        "--campaign-id",
-        CAMPAIGN_ID,
-        "--workflow-path",
-        ".github/workflows/formal-pilot-canary.yml",
-        "--job",
-        "canary",
-        "--mode",
-        "calibration",
-        "--run-id",
-        "123",
-        "--run-attempt",
-        "1",
-        "--workflow-sha",
-        "a" * 40,
-        "--evaluated-commit",
-        "b" * 40,
-        "--upper-cny",
-        "4",
-        "--receipt",
-        str(receipt),
-    ]
-
-    assert campaign_ledger_main(arguments, api=api) == 0
-    assert b'"authorized":true' in receipt.read_bytes()
-    assert b'"ledger_commit_sha":"4444444444444444444444444444444444444444"' in (
-        receipt.read_bytes()
-    )
-
-    replay_api = _StubGitHubApi(
-        *_remote_read_responses(updated, head_sha="4" * 40, tree_sha="3" * 40)
-    )
-    replay_receipt = tmp_path / "replay.json"
-    replay_arguments = [
-        *arguments[:-1],
-        str(replay_receipt),
-    ]
-    assert campaign_ledger_main(replay_arguments, api=replay_api) == 3
-    assert b'"authorized":false' in replay_receipt.read_bytes()
-    assert len(replay_api.calls) == 4
+def test_campaign_ledger_cli_has_no_caller_defined_reservation_command() -> None:
+    with pytest.raises(SystemExit) as error:
+        campaign_ledger_main(["reserve-github"])
+    assert error.value.code == 2

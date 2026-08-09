@@ -959,8 +959,6 @@ def _reserved_before(ledger: CampaignLedger, reservation: Reservation) -> int:
 
 def main(
     argv: list[str] | None = None,
-    *,
-    api: GitHubApi | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="campaign-ledger")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -973,21 +971,6 @@ def main(
 
     verify = commands.add_parser("verify")
     verify.add_argument("--ledger", required=True, type=Path)
-
-    reserve = commands.add_parser("reserve-github")
-    reserve.add_argument("--repository-id", required=True, type=int)
-    reserve.add_argument("--repository", required=True)
-    reserve.add_argument("--branch", required=True)
-    reserve.add_argument("--campaign-id", required=True)
-    reserve.add_argument("--workflow-path", required=True)
-    reserve.add_argument("--job", required=True)
-    reserve.add_argument("--mode", required=True)
-    reserve.add_argument("--run-id", required=True, type=int)
-    reserve.add_argument("--run-attempt", required=True, type=int)
-    reserve.add_argument("--workflow-sha", required=True)
-    reserve.add_argument("--evaluated-commit", required=True)
-    reserve.add_argument("--upper-cny", required=True)
-    reserve.add_argument("--receipt", required=True, type=Path)
 
     arguments = parser.parse_args(argv)
     if arguments.command == "create-genesis":
@@ -1002,32 +985,7 @@ def main(
     if arguments.command == "verify":
         CampaignLedger.from_bytes(arguments.ledger.read_bytes())
         return 0
-
-    request = ReservationRequest.create(
-        repository_id=arguments.repository_id,
-        repository=arguments.repository,
-        workflow_path=arguments.workflow_path,
-        job=arguments.job,
-        mode=arguments.mode,
-        run_id=arguments.run_id,
-        run_attempt=arguments.run_attempt,
-        workflow_sha=arguments.workflow_sha,
-        evaluated_commit=arguments.evaluated_commit,
-        upper_cny=arguments.upper_cny,
-    )
-    store = GitHubGitLedgerStore(
-        api=api if api is not None else GhCliApi(),
-        repository=arguments.repository,
-        branch=arguments.branch,
-    )
-    receipt = reserve_with_store(
-        store,
-        expected_campaign_id=arguments.campaign_id,
-        request=request,
-    )
-    with arguments.receipt.open("xb") as output:
-        output.write(receipt.to_bytes())
-    return 0 if receipt.authorized else 3
+    raise AssertionError("unreachable campaign ledger command")
 
 
 if __name__ == "__main__":
