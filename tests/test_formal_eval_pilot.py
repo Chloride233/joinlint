@@ -166,6 +166,27 @@ def test_current_pilot_registration_requires_explicit_schema_and_timeout() -> No
         )
 
 
+@pytest.mark.parametrize(
+    ("schema_version", "sandbox_timeout_seconds"),
+    [(4, 150), (5, 170)],
+)
+def test_pilot_registration_round_trips_through_json_arrays(
+    schema_version: int,
+    sandbox_timeout_seconds: int,
+) -> None:
+    current = frozen_pilot_registration(COMMIT)
+    payload = current.model_dump(mode="python")
+    payload.update(
+        schema_version=schema_version,
+        modal_sandbox_timeout_seconds=sandbox_timeout_seconds,
+    )
+    registration = type(current).model_validate(payload)
+
+    restored = type(current).model_validate_json(registration.model_dump_json())
+
+    assert restored == registration
+
+
 def test_pilot_canary_command_and_response_overshoot_envelope_are_frozen(
     tmp_path: Path,
 ) -> None:

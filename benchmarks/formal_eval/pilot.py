@@ -90,6 +90,24 @@ class PilotRegistration(StrictModel):
     def default_legacy_sandbox_timeout(cls, value: Any) -> Any:
         if not isinstance(value, dict):
             return value
+        value = {
+            **value,
+            **(
+                {
+                    "models": tuple(
+                        FrozenModel.model_validate_json(json.dumps(model))
+                        for model in value["models"]
+                    )
+                }
+                if isinstance(value.get("models"), list)
+                else {}
+            ),
+            **(
+                {"hosts": tuple(value["hosts"])}
+                if isinstance(value.get("hosts"), list)
+                else {}
+            ),
+        }
         if (
             value.get("schema_version") in (3, 4)
             and "modal_sandbox_timeout_seconds" not in value
