@@ -1701,16 +1701,15 @@ def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:
     assert job["environment"] == "formal-evaluation"
     assert workflow["permissions"]["contents"] == "write"
     assert "inputs.confirm_paid != true" in text
-    assert "inputs.calibration != true && inputs.budget_cny != '2.25'" in text
-    assert job["steps"][0]["name"] == (
-        "Block paid evaluation pending atomic campaign reservation"
-    )
+    assert job["steps"][0]["name"] == "Block unapproved one-task canary"
+    assert job["steps"][0]["if"] == "inputs.calibration != true"
     exact_gate = next(
         step
         for step in job["steps"]
         if step.get("name") == "Require the exact approved paid diagnostic"
     )
     assert "github.run_attempt != 1" in exact_gate["if"]
+    assert "inputs.calibration != true" in exact_gate["if"]
     step_names = [step.get("name") for step in job["steps"]]
     assert step_names.index("Run no-model lifecycle gate") < step_names.index(
         "Run one-task canary"
@@ -1763,19 +1762,22 @@ def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:
 def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() -> None:
     workflow_path = Path(".github/workflows/formal-pilot-canary.yml")
     workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-    text = workflow_path.read_text(encoding="utf-8")
     job = workflow["jobs"]["canary"]
 
     assert job["environment"] == "formal-evaluation"
     assert workflow["on"]["workflow_dispatch"]["inputs"]["calibration"]["default"] == (
         "false"
     )
-    assert "inputs.calibration == true && inputs.budget_cny != '4'" in text
-    step_names = [step.get("name") for step in job["steps"]]
-    preflight = next(
+    exact_gate = next(
         step
         for step in job["steps"]
-        if step.get("name") == "Require cumulative campaign budget for calibration"
+        if step.get("name") == "Require the exact approved paid diagnostic"
+    )
+    assert "inputs.calibration != true" in exact_gate["if"]
+    assert "inputs.budget_cny != '4'" in exact_gate["if"]
+    step_names = [step.get("name") for step in job["steps"]]
+    preflight = next(
+        step for step in job["steps"] if step.get("name") == "Reserve calibration budget"
     )
     run_step = next(
         step for step in job["steps"] if step.get("name") == "Run sealed four-cell calibration"
@@ -1786,9 +1788,8 @@ def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() ->
         for index, step in enumerate(job["steps"])
         if str(step.get("uses", "")).startswith("actions/checkout@")
     )
-    assert step_names.index(preflight["name"]) < checkout_index
-    assert "benchmarks.formal_eval" not in preflight["run"]
-    assert preflight["env"]["CAMPAIGN_COST_UPPER_CNY"] == "4"
+    assert checkout_index < step_names.index(preflight["name"])
+    assert "benchmarks.formal_eval.campaign_reservation" in preflight["run"]
     assert run_step["if"] == "inputs.calibration == true"
     assert set(run_step["env"]) == {
         "MODAL_TOKEN_ID",
@@ -1798,6 +1799,12 @@ def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() ->
         "CAMPAIGN_BUDGET_CNY",
         "CAMPAIGN_SPEND_BEFORE_CNY",
     }
+    assert run_step["env"]["CAMPAIGN_BUDGET_CNY"] == (
+        "${{ steps.campaign_reservation.outputs.campaign_budget_cny }}"
+    )
+    assert run_step["env"]["CAMPAIGN_SPEND_BEFORE_CNY"] == (
+        "${{ steps.campaign_reservation.outputs.campaign_reserved_before_cny }}"
+    )
     assert "--campaign-budget-cny \"$CAMPAIGN_BUDGET_CNY\"" in run_step["run"]
     assert "--campaign-spend-before-cny \"$CAMPAIGN_SPEND_BEFORE_CNY\"" in run_step["run"]
     sanitized_upload = next(
@@ -1814,6 +1821,59 @@ def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() ->
     )
     assert sanitized_scan["id"] == "scan_calibration_sanitized"
     assert "steps.scan_calibration_sanitized.outcome == 'success'" in sanitized_upload["if"]
+
+
+def test_pilot_calibration_reserves_atomically_before_target_execution() -> None:
+    workflow_path = Path(".github/workflows/formal-pilot-canary.yml")
+    workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    job = workflow["jobs"]["canary"]
+    steps = job["steps"]
+    names = [step.get("name") for step in steps]
+
+    assert steps[0]["name"] == "Block unapproved one-task canary"
+    assert steps[0]["if"] == "inputs.calibration != true"
+    authority_checkout = next(
+        step
+        for step in steps
+        if (step.get("with") or {}).get("path") == ".workflow-control"
+    )
+    assert authority_checkout["with"]["ref"] == "${{ github.workflow_sha }}"
+    assert authority_checkout["with"]["persist-credentials"] == "false"
+    target_checkout = next(
+        step
+        for step in steps
+        if (step.get("with") or {}).get("path") == "evaluated-checkout"
+    )
+    assert target_checkout["with"]["ref"] == "${{ inputs.pilot_commit }}"
+    assert target_checkout["with"]["persist-credentials"] == "false"
+
+    reserve = next(step for step in steps if step.get("name") == "Reserve calibration budget")
+    paid = next(
+        step for step in steps if step.get("name") == "Run sealed four-cell calibration"
+    )
+    install_target = next(
+        step for step in steps if step.get("name") == "Install evaluated pilot code"
+    )
+    assert names.index("Verify frozen pilot input with workflow-owned code") < names.index(
+        reserve["name"]
+    )
+    assert names.index(reserve["name"]) < names.index(install_target["name"])
+    assert names.index(reserve["name"]) < names.index(paid["name"])
+    assert reserve["id"] == "campaign_reservation"
+    assert reserve["working-directory"] == ".workflow-control"
+    assert set(reserve["env"]) == {"GH_TOKEN"}
+    assert "reserve-calibration" in reserve["run"]
+    assert "joinlint-product-effect-2026-08" in reserve["run"]
+    assert "joinlint-campaign-ledger" in reserve["run"]
+    assert "89358132f42dd23e82fd21b1f32a80900d2d2f98" in reserve["run"]
+    assert paid["env"]["CAMPAIGN_BUDGET_CNY"] == (
+        "${{ steps.campaign_reservation.outputs.campaign_budget_cny }}"
+    )
+    assert paid["env"]["CAMPAIGN_SPEND_BEFORE_CNY"] == (
+        "${{ steps.campaign_reservation.outputs.campaign_reserved_before_cny }}"
+    )
+    assert "MODAL_TOKEN_ID" not in reserve["env"]
+    assert "DEEPSEEK_API_KEY" not in reserve["env"]
 
 
 @pytest.mark.parametrize(
@@ -1886,12 +1946,6 @@ def test_public_formal_workflows_keep_raw_inspect_logs_runner_ephemeral(
             "2.25",
         ),
         (
-            ".github/workflows/formal-pilot-canary.yml",
-            "canary",
-            "Require cumulative campaign budget for calibration",
-            "4",
-        ),
-        (
             ".github/workflows/formal-pilot.yml",
             "pilot",
             "Require cumulative campaign budget for full pilot",
@@ -1952,13 +2006,6 @@ def test_workflow_campaign_preflight_rejects_noncanonical_amounts(
             "Require cumulative campaign budget for canary",
             "2.25",
             "72.75",
-        ),
-        (
-            ".github/workflows/formal-pilot-canary.yml",
-            "canary",
-            "Require cumulative campaign budget for calibration",
-            "4",
-            "71",
         ),
         (
             ".github/workflows/formal-pilot.yml",

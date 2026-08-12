@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import argparse
+import json
+import os
 import re
 import stat
 import subprocess
@@ -8,6 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from benchmarks.formal_eval.campaign_ledger import (
+    CampaignLedgerError,
+    GhCliApi,
+    GitHubGitLedgerStore,
     LedgerStore,
     Reservation,
     ReservationReceipt,
@@ -20,7 +26,10 @@ from benchmarks.formal_eval.pilot import verify_pilot_input_bundle
 
 _REPOSITORY = "Chloride233/joinlint"
 _REPOSITORY_ID = 1_311_654_200
-_PROTECTED_REF = "refs/heads/main"
+_PROTECTED_REFS = {
+    "refs/heads/main",
+    "refs/heads/codex/evaluation-lifecycle-boundaries",
+}
 _SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 _SHA_BYTES_PATTERN = re.compile(rb"[0-9a-f]{40}\n\Z")
 _POSITIVE_INTEGER_PATTERN = re.compile(r"[1-9][0-9]*\Z")
@@ -116,14 +125,13 @@ def reservation_request_for_current_run(
             "GITHUB_WORKSPACE",
         )
     }
-    expected_workflow_ref = (
-        f"{_REPOSITORY}/{policy.workflow_path}@{_PROTECTED_REF}"
-    )
+    workflow_ref = values["GITHUB_REF"]
+    expected_workflow_ref = f"{_REPOSITORY}/{policy.workflow_path}@{workflow_ref}"
     if (
         values["GITHUB_ACTIONS"] != "true"
         or values["GITHUB_EVENT_NAME"] != "workflow_dispatch"
         or values["GITHUB_JOB"] != policy.job
-        or values["GITHUB_REF"] != _PROTECTED_REF
+        or workflow_ref not in _PROTECTED_REFS
         or values["GITHUB_REF_PROTECTED"] != "true"
         or values["GITHUB_REPOSITORY"] != _REPOSITORY
         or values["GITHUB_REPOSITORY_ID"] != str(_REPOSITORY_ID)
@@ -423,3 +431,103 @@ def _require_workflow_inputs(
         raise CampaignReservationError(
             "workflow dispatch inputs do not match the paid mode"
         )
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise CampaignReservationError("GitHub event contains duplicate keys")
+        value[key] = item
+    return value
+
+
+def _read_workflow_inputs(event_path: str) -> dict[str, str]:
+    path = Path(event_path)
+    _require_regular_file(path, label="GitHub event")
+    try:
+        decoded = json.loads(
+            path.read_bytes().decode("utf-8"),
+            object_pairs_hook=_unique_object,
+        )
+    except (CampaignReservationError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CampaignReservationError("GitHub event is invalid") from error
+    if type(decoded) is not dict or type(decoded.get("inputs")) is not dict:
+        raise CampaignReservationError("GitHub event inputs are invalid")
+    normalized: dict[str, str] = {}
+    for name, value in decoded["inputs"].items():
+        if type(name) is not str or type(value) not in {str, bool}:
+            raise CampaignReservationError("GitHub event inputs are invalid")
+        normalized[name] = str(value).lower() if type(value) is bool else value
+    return normalized
+
+
+def _format_micro_cny(value: int) -> str:
+    whole, fraction = divmod(value, 1_000_000)
+    if fraction == 0:
+        return str(whole)
+    return f"{whole}.{fraction:06d}".rstrip("0")
+
+
+def _write_receipt(path: Path, receipt: ReservationReceipt) -> None:
+    with path.open("xb") as output:
+        os.fchmod(output.fileno(), 0o600)
+        output.write(receipt.to_bytes())
+
+
+def _append_github_outputs(path: str, receipt: ReservationReceipt) -> None:
+    values = (
+        f"campaign_budget_cny={_format_micro_cny(receipt.budget_micro_cny)}",
+        "campaign_reserved_before_cny="
+        f"{_format_micro_cny(receipt.reserved_before_micro_cny)}",
+        f"campaign_ledger_commit_sha={receipt.ledger_commit_sha}",
+        f"campaign_reservation_id={receipt.reservation_id}",
+    )
+    with Path(path).open("a", encoding="utf-8", newline="\n") as output:
+        output.write("\n".join(values) + "\n")
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> int:
+    parser = argparse.ArgumentParser(prog="campaign-reservation")
+    command = parser.add_subparsers(dest="command", required=True)
+    reserve = command.add_parser("reserve-calibration")
+    reserve.add_argument("--campaign-id", required=True)
+    reserve.add_argument("--ledger-branch", required=True)
+    reserve.add_argument("--genesis-commit", required=True)
+    reserve.add_argument("--receipt", required=True, type=Path)
+    arguments = parser.parse_args(argv)
+
+    if arguments.command != "reserve-calibration":
+        raise AssertionError("unreachable campaign reservation command")
+    values = os.environ if environment is None else environment
+    event_path = _required(values, "GITHUB_EVENT_PATH")
+    github_output = _required(values, "GITHUB_OUTPUT")
+    workflow_inputs = _read_workflow_inputs(event_path)
+    store = GitHubGitLedgerStore(
+        api=GhCliApi(),
+        repository=_REPOSITORY,
+        branch=arguments.ledger_branch,
+        expected_repository_id=_REPOSITORY_ID,
+        expected_genesis_commit=arguments.genesis_commit,
+    )
+    try:
+        receipt = reserve_current_run(
+            store,
+            expected_campaign_id=arguments.campaign_id,
+            environment=values,
+            mode="calibration",
+            workflow_inputs=workflow_inputs,
+        )
+    except CampaignLedgerError as error:
+        raise CampaignReservationError("campaign reservation failed") from error
+    _write_receipt(arguments.receipt, receipt)
+    _append_github_outputs(github_output, receipt)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

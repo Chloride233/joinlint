@@ -200,14 +200,16 @@ jobs:
       cancel-in-progress: false
     environment: formal-evaluation
     steps:
-      - name: Block paid evaluation pending atomic campaign reservation
+      - name: Block unapproved one-task canary
+        if: inputs.calibration != true
         run: exit 1
       - name: Require the exact approved paid diagnostic
         if: >-
           github.run_attempt != 1 ||
           inputs.confirm_paid != true ||
-          (inputs.calibration == true && inputs.budget_cny != '4') ||
-          (inputs.calibration != true && inputs.budget_cny != '2.25')
+          inputs.calibration != true ||
+          inputs.readiness_only == true ||
+          inputs.budget_cny != '4'
         run: exit 1
       - name: Require cumulative campaign budget for canary
         if: inputs.calibration != true
@@ -234,66 +236,67 @@ jobs:
           if budget <= 0 or spent < 0 or upper < 0 or spent + upper > budget:
               sys.exit("canary could exceed the approved cumulative campaign budget")
           PY
-      - name: Require cumulative campaign budget for calibration
-        if: inputs.calibration == true
-        env:
-          CAMPAIGN_BUDGET_CNY: ${{ inputs.campaign_budget_cny }}
-          CAMPAIGN_SPEND_BEFORE_CNY: ${{ inputs.campaign_spend_before_cny }}
-          CAMPAIGN_COST_UPPER_CNY: "4"
-        run: |
-          python3 - <<'PY'
-          import os
-          import re
-          import sys
-          from decimal import Decimal
-
-          values = [
-              os.environ["CAMPAIGN_BUDGET_CNY"],
-              os.environ["CAMPAIGN_SPEND_BEFORE_CNY"],
-              os.environ["CAMPAIGN_COST_UPPER_CNY"],
-          ]
-          canonical = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?\Z")
-          if not all(canonical.fullmatch(value) for value in values):
-              sys.exit("campaign amounts must be canonical decimal strings")
-          budget, spent, upper = map(Decimal, values)
-          if budget <= 0 or spent < 0 or upper < 0 or spent + upper > budget:
-              sys.exit("calibration could exceed the approved cumulative campaign budget")
-          PY
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.pilot_commit }}
+          ref: ${{ github.workflow_sha }}
+          path: .workflow-control
           persist-credentials: false
-      - name: Record checked-out pilot commit
-        id: pilot_commit
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install -e '.[dev,eval,remote]'
-      - name: Run no-model lifecycle gate
-        run: python -m pytest -q tests/test_formal_eval_lifecycle*.py
+          cache-dependency-path: .workflow-control/pyproject.toml
+      - name: Install workflow-owned admission code
+        run: python -m pip install -e './.workflow-control[dev,eval,remote]'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.pilot_commit }}
+          path: evaluated-checkout
+          persist-credentials: false
+      - name: Record checked-out pilot commit
+        id: pilot_commit
+        working-directory: evaluated-checkout
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Restore private frozen pilot inputs
         env:
           GH_TOKEN: ${{ github.token }}
           PILOT_RELEASE_TAG: ${{ inputs.pilot_release_tag }}
           PILOT_RELEASE_ASSET: ${{ inputs.pilot_release_asset }}
         run: |
-          mkdir -p pilot-release benchmarks/formal_eval/sealed/pilot-v1
+          mkdir -p pilot-release frozen-pilot-input
           gh release download "$PILOT_RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "$PILOT_RELEASE_ASSET" \
             --dir pilot-release
           tar -xzf "pilot-release/$PILOT_RELEASE_ASSET" \
-            -C benchmarks/formal_eval/sealed/pilot-v1 \
+            -C frozen-pilot-input \
             --no-same-owner --no-same-permissions
-      - name: Verify frozen pilot input
+      - name: Verify frozen pilot input with workflow-owned code
+        working-directory: .workflow-control
         run: >-
           python -m benchmarks.formal_eval.pilot verify
-          --root benchmarks/formal_eval/sealed/pilot-v1
+          --root "$GITHUB_WORKSPACE/frozen-pilot-input"
           --current-commit "${{ steps.pilot_commit.outputs.sha }}"
+      - name: Reserve calibration budget
+        id: campaign_reservation
+        working-directory: .workflow-control
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m benchmarks.formal_eval.campaign_reservation
+          reserve-calibration
+          --campaign-id joinlint-product-effect-2026-08
+          --ledger-branch joinlint-campaign-ledger
+          --genesis-commit 89358132f42dd23e82fd21b1f32a80900d2d2f98
+          --receipt "$GITHUB_WORKSPACE/campaign-reservation.json"
+      - name: Install evaluated pilot code
+        run: python -m pip install -e './evaluated-checkout[dev,eval,remote]'
+      - name: Run no-model lifecycle gate
+        working-directory: evaluated-checkout
+        run: python -m pytest -q tests/test_formal_eval_lifecycle*.py
       - name: Run one-task canary
         if: inputs.calibration != true
+        working-directory: evaluated-checkout
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -304,27 +307,28 @@ jobs:
         run: >-
           python -m benchmarks.formal_eval.pilot_canary
           run
-          --root benchmarks/formal_eval/sealed/pilot-v1
-          --log-dir pilot-canary-logs
-          --output pilot-canary-artifacts
+          --root "$GITHUB_WORKSPACE/frozen-pilot-input"
+          --log-dir "$GITHUB_WORKSPACE/pilot-canary-logs"
+          --output "$GITHUB_WORKSPACE/pilot-canary-artifacts"
           --workflow-run-id "${{ github.run_id }}"
           --campaign-budget-cny "$CAMPAIGN_BUDGET_CNY"
           --campaign-spend-before-cny "$CAMPAIGN_SPEND_BEFORE_CNY"
       - name: Run sealed four-cell calibration
         if: inputs.calibration == true
+        working-directory: evaluated-checkout
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_BASE_URL: https://api.deepseek.com
-          CAMPAIGN_BUDGET_CNY: ${{ inputs.campaign_budget_cny }}
-          CAMPAIGN_SPEND_BEFORE_CNY: ${{ inputs.campaign_spend_before_cny }}
+          CAMPAIGN_BUDGET_CNY: ${{ steps.campaign_reservation.outputs.campaign_budget_cny }}
+          CAMPAIGN_SPEND_BEFORE_CNY: ${{ steps.campaign_reservation.outputs.campaign_reserved_before_cny }}
         run: >-
           python -m benchmarks.formal_eval.pilot_calibration
           run
-          --root benchmarks/formal_eval/sealed/pilot-v1
-          --log-dir pilot-calibration-logs
-          --output pilot-calibration-artifacts
+          --root "$GITHUB_WORKSPACE/frozen-pilot-input"
+          --log-dir "$GITHUB_WORKSPACE/pilot-calibration-logs"
+          --output "$GITHUB_WORKSPACE/pilot-calibration-artifacts"
           --workflow-run-id "${{ github.run_id }}"
           --campaign-budget-cny "$CAMPAIGN_BUDGET_CNY"
           --campaign-spend-before-cny "$CAMPAIGN_SPEND_BEFORE_CNY"

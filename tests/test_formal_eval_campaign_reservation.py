@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -95,6 +96,170 @@ def _workflow_inputs(mode: str) -> dict[str, str]:
     return {"budget_cny": "2.25", "confirm_paid": "true"}
 
 
+def test_reservation_cli_reads_the_actions_event_and_writes_a_fresh_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = tmp_path / "event.json"
+    event.write_text(
+        json.dumps({"inputs": _workflow_inputs("calibration")}),
+        encoding="utf-8",
+    )
+    receipt_path = tmp_path / "reservation.json"
+    github_output = tmp_path / "github-output"
+    environment = {
+        **_environment("calibration"),
+        "GITHUB_EVENT_PATH": str(event),
+        "GITHUB_OUTPUT": str(github_output),
+    }
+    ledger = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="50",
+        opening_reserved_upper_cny="26.663153",
+    )
+    store = _MemoryStore(ledger)
+    captured: dict[str, object] = {}
+
+    def fake_store(**kwargs: object) -> _MemoryStore:
+        captured.update(kwargs)
+        return store
+
+    monkeypatch.setattr(campaign_reservation, "GitHubGitLedgerStore", fake_store)
+    monkeypatch.setattr(campaign_reservation, "GhCliApi", lambda: object())
+
+    assert campaign_reservation.main(
+        [
+            "reserve-calibration",
+            "--campaign-id",
+            CAMPAIGN_ID,
+            "--ledger-branch",
+            "joinlint-campaign-ledger",
+            "--genesis-commit",
+            "c" * 40,
+            "--receipt",
+            str(receipt_path),
+        ],
+        environment=environment,
+    ) == 0
+
+    assert set(captured) == {
+        "api",
+        "repository",
+        "branch",
+        "expected_repository_id",
+        "expected_genesis_commit",
+    }
+    assert captured["repository"] == REPOSITORY
+    assert captured["branch"] == "joinlint-campaign-ledger"
+    assert captured["expected_repository_id"] == REPOSITORY_ID
+    assert captured["expected_genesis_commit"] == "c" * 40
+    receipt = campaign_reservation.ReservationReceipt.from_bytes(
+        receipt_path.read_bytes()
+    )
+    assert receipt.authorized is True
+    assert receipt.reserved_before_micro_cny == 26_663_153
+    assert receipt.reserved_after_micro_cny == 30_663_153
+    assert receipt_path.stat().st_mode & 0o777 == 0o600
+    assert github_output.read_text(encoding="utf-8").splitlines() == [
+        "campaign_budget_cny=50",
+        "campaign_reserved_before_cny=26.663153",
+        f"campaign_ledger_commit_sha={receipt.ledger_commit_sha}",
+        f"campaign_reservation_id={receipt.reservation_id}",
+    ]
+
+
+def test_reservation_cli_rejects_replay_and_does_not_overwrite_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = tmp_path / "event.json"
+    event.write_text(
+        json.dumps({"inputs": _workflow_inputs("calibration")}),
+        encoding="utf-8",
+    )
+    receipt_path = tmp_path / "reservation.json"
+    environment = {
+        **_environment("calibration"),
+        "GITHUB_EVENT_PATH": str(event),
+        "GITHUB_OUTPUT": str(tmp_path / "github-output"),
+    }
+    store = _MemoryStore(
+        CampaignLedger.create(
+            campaign_id=CAMPAIGN_ID,
+            budget_cny="50",
+            opening_reserved_upper_cny="26.663153",
+        )
+    )
+    monkeypatch.setattr(
+        campaign_reservation,
+        "GitHubGitLedgerStore",
+        lambda **kwargs: store,
+    )
+    monkeypatch.setattr(campaign_reservation, "GhCliApi", lambda: object())
+    arguments = [
+        "reserve-calibration",
+        "--campaign-id",
+        CAMPAIGN_ID,
+        "--ledger-branch",
+        "joinlint-campaign-ledger",
+        "--genesis-commit",
+        "c" * 40,
+        "--receipt",
+        str(receipt_path),
+    ]
+    assert campaign_reservation.main(arguments, environment=environment) == 0
+    original = receipt_path.read_bytes()
+
+    with pytest.raises(CampaignReservationError, match="does not authorize"):
+        campaign_reservation.main(arguments, environment=environment)
+
+    assert receipt_path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        b"{}",
+        b'{"inputs":[]}',
+        b'{"inputs":{"calibration":true,"calibration":false}}',
+        b'{"inputs":{"calibration":null}}',
+    ),
+)
+def test_reservation_cli_rejects_invalid_event_before_opening_the_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw: bytes,
+) -> None:
+    event = tmp_path / "event.json"
+    event.write_bytes(raw)
+    environment = {
+        **_environment("calibration"),
+        "GITHUB_EVENT_PATH": str(event),
+        "GITHUB_OUTPUT": str(tmp_path / "github-output"),
+    }
+    monkeypatch.setattr(
+        campaign_reservation,
+        "GitHubGitLedgerStore",
+        lambda **kwargs: pytest.fail("store must not be opened"),
+    )
+
+    with pytest.raises(CampaignReservationError, match="event"):
+        campaign_reservation.main(
+            [
+                "reserve-calibration",
+                "--campaign-id",
+                CAMPAIGN_ID,
+                "--ledger-branch",
+                "joinlint-campaign-ledger",
+                "--genesis-commit",
+                "c" * 40,
+                "--receipt",
+                str(tmp_path / "reservation.json"),
+            ],
+            environment=environment,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _stub_workspace_evidence(
     monkeypatch: pytest.MonkeyPatch,
@@ -143,6 +308,23 @@ def test_current_run_request_uses_trusted_identity_and_fixed_upper(mode: str) ->
         None if mode == "readiness" else INPUT_LOCK_SHA256
     )
     assert request.upper_micro_cny == upper
+
+
+def test_current_run_request_accepts_the_protected_evaluation_branch() -> None:
+    environment = _environment("calibration")
+    protected_ref = "refs/heads/codex/evaluation-lifecycle-boundaries"
+    environment["GITHUB_REF"] = protected_ref
+    environment["GITHUB_WORKFLOW_REF"] = (
+        f"{REPOSITORY}/.github/workflows/formal-pilot-canary.yml@{protected_ref}"
+    )
+
+    request = reservation_request_for_current_run(
+        environment,
+        mode="calibration",
+        workflow_inputs=_workflow_inputs("calibration"),
+    )
+
+    assert request.workflow_sha == WORKFLOW_SHA
 
 
 @pytest.mark.parametrize(
