@@ -579,6 +579,7 @@ def build_calibration_commands(
     _, manifest, _ = verify_pilot_inputs(root)
     specification = load_pilot_calibration_spec(root, manifest)
     task_ids = ",".join(specification.task_ids)
+    task_spec = f"{Path(__file__).with_name('inspect_task.py').resolve()}@formal_pilot_eval"
     commands: list[list[str]] = []
     for original in build_pilot_commands(
         inspect=inspect,
@@ -590,6 +591,7 @@ def build_calibration_commands(
         if "condition=treatment" not in original:
             continue
         command = list(original)
+        command[2] = task_spec
         partition_index = next(
             index for index, value in enumerate(command) if value.startswith("task_partition=")
         )

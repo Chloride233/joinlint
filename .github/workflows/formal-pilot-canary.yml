@@ -323,8 +323,9 @@ jobs:
           DEEPSEEK_BASE_URL: https://api.deepseek.com
           CAMPAIGN_BUDGET_CNY: ${{ steps.campaign_reservation.outputs.campaign_budget_cny }}
           CAMPAIGN_SPEND_BEFORE_CNY: ${{ steps.campaign_reservation.outputs.campaign_reserved_before_cny }}
+          PYTHONPATH: ${{ github.workspace }}/.workflow-control
         run: >-
-          python -m benchmarks.formal_eval.pilot_calibration
+          python -P "$GITHUB_WORKSPACE/.workflow-control/benchmarks/formal_eval/pilot_calibration.py"
           run
           --root "$GITHUB_WORKSPACE/frozen-pilot-input"
           --log-dir "$GITHUB_WORKSPACE/pilot-calibration-logs"

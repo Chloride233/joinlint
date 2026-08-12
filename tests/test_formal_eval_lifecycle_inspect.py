@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +44,17 @@ from benchmarks.formal_eval.validation_failure_marker import (
     VALIDATION_FAILURE_MARKER_CLEAR,
     VALIDATION_FAILURE_MARKER_FAILED,
 )
+
+
+def test_inspect_loader_can_import_the_formal_task_module() -> None:
+    from inspect_ai._util.module import load_module
+
+    module = load_module(
+        Path("benchmarks/formal_eval/inspect_task.py"),
+        lambda source: "@task" in source,
+    )
+
+    assert module is not None
 
 
 NOW = datetime(2026, 7, 27, tzinfo=timezone.utc)

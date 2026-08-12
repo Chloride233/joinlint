@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, NamedTuple
 
 from anyio import Event, create_task_group, fail_after, move_on_after, sleep
 from inspect_ai import Task, task
@@ -150,8 +149,7 @@ class HostContextDriftError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True)
-class SubmissionResult:
+class SubmissionResult(NamedTuple):
     submission: Submission
     guard_contract_version: int | None
     guard_decision: SubmissionGuardDecision

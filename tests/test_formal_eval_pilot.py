@@ -378,6 +378,11 @@ def test_pilot_calibration_uses_exact_formal_resource_contract(
     assert envelope.modal_compute_upper_cny == pytest.approx(0.359584)
     assert envelope.total_upper_cny == pytest.approx(3.799584)
     assert len(commands) == 4
+    assert all(
+        command[2]
+        == f"{Path(calibration.__file__).with_name('inspect_task.py').resolve()}@formal_pilot_eval"
+        for command in commands
+    )
     assert all("condition=treatment" in command for command in commands)
     for command in commands:
         host = next(
@@ -1798,6 +1803,7 @@ def test_pilot_calibration_workflow_has_four_cell_and_campaign_budget_gates() ->
         "DEEPSEEK_BASE_URL",
         "CAMPAIGN_BUDGET_CNY",
         "CAMPAIGN_SPEND_BEFORE_CNY",
+        "PYTHONPATH",
     }
     assert run_step["env"]["CAMPAIGN_BUDGET_CNY"] == (
         "${{ steps.campaign_reservation.outputs.campaign_budget_cny }}"
@@ -1872,6 +1878,11 @@ def test_pilot_calibration_reserves_atomically_before_target_execution() -> None
     assert paid["env"]["CAMPAIGN_SPEND_BEFORE_CNY"] == (
         "${{ steps.campaign_reservation.outputs.campaign_reserved_before_cny }}"
     )
+    assert paid["env"]["PYTHONPATH"] == "${{ github.workspace }}/.workflow-control"
+    assert (
+        'python -P "$GITHUB_WORKSPACE/.workflow-control/benchmarks/formal_eval/'
+        'pilot_calibration.py"'
+    ) in paid["run"]
     assert "MODAL_TOKEN_ID" not in reserve["env"]
     assert "DEEPSEEK_API_KEY" not in reserve["env"]
 
