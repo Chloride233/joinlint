@@ -25,6 +25,47 @@ COMMIT = "a" * 40
 LINEAGE_ID = "b" * 64
 
 
+def test_calibration_infrastructure_diagnostics_expose_only_stable_reasons() -> None:
+    from benchmarks.formal_eval.lifecycle import (
+        LIFECYCLE_STORE_KEY,
+        LifecycleFailureReason,
+        fail_evaluation,
+        infrastructure_prepared,
+        new_lifecycle,
+        readiness_passed,
+        start_evaluation,
+    )
+
+    lifecycle = new_lifecycle("claude_code", "2.1.212")
+    lifecycle = infrastructure_prepared(
+        lifecycle,
+        duration_seconds=1,
+        host_binary_sha256="a" * 64,
+    )
+    lifecycle = readiness_passed(lifecycle, duration_seconds=1)
+    lifecycle = start_evaluation(lifecycle)
+    lifecycle = fail_evaluation(
+        lifecycle,
+        reason=LifecycleFailureReason.VALIDATION_FAILURE_MARKER_UNAVAILABLE,
+        detail="private path must not be exported",
+        duration_seconds=1,
+    )
+    sample = SimpleNamespace(
+        metadata={"host": "claude_code", "task_id": "task-a"},
+        model_usage={"openai-api/deepseek/deepseek-v4-pro": SimpleNamespace()},
+        store={LIFECYCLE_STORE_KEY: lifecycle.model_dump(mode="json")},
+    )
+
+    assert pilot_calibration._infrastructure_failure_rows([sample]) == (
+        {
+            "failure_reason": "VALIDATION_FAILURE_MARKER_UNAVAILABLE",
+            "host": "claude_code",
+            "model_id": "openai-api/deepseek/deepseek-v4-pro",
+            "task_id": "task-a",
+        },
+    )
+
+
 def _calibration_payload(schema_version: int) -> dict[str, object]:
     resource_contract: dict[str, object] = {
         "token_limit_by_host": CALIBRATION_TOKEN_LIMITS,

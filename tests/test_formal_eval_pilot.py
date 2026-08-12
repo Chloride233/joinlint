@@ -1887,6 +1887,23 @@ def test_pilot_calibration_reserves_atomically_before_target_execution() -> None
     assert "DEEPSEEK_API_KEY" not in reserve["env"]
 
 
+def test_pilot_calibration_workflow_reports_only_sanitized_infrastructure_reasons() -> None:
+    workflow = yaml.load(
+        Path(".github/workflows/formal-pilot-canary.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    step = next(
+        step
+        for step in workflow["jobs"]["canary"]["steps"]
+        if step.get("name") == "Report sanitized calibration infrastructure failures"
+    )
+
+    assert step["if"] == "failure() && inputs.calibration == true"
+    assert set(step["env"]) == {"PYTHONPATH"}
+    assert "diagnose-infrastructure" in step["run"]
+    assert "pilot-calibration-logs" in step["run"]
+
+
 @pytest.mark.parametrize(
     ("workflow_path", "raw_log_directories"),
     [

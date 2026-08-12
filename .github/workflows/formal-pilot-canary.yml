@@ -333,6 +333,15 @@ jobs:
           --workflow-run-id "${{ github.run_id }}"
           --campaign-budget-cny "$CAMPAIGN_BUDGET_CNY"
           --campaign-spend-before-cny "$CAMPAIGN_SPEND_BEFORE_CNY"
+      - name: Report sanitized calibration infrastructure failures
+        if: failure() && inputs.calibration == true
+        working-directory: evaluated-checkout
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-control
+        run: >-
+          python -P "$GITHUB_WORKSPACE/.workflow-control/benchmarks/formal_eval/pilot_calibration.py"
+          diagnose-infrastructure
+          --log-dir "$GITHUB_WORKSPACE/pilot-calibration-logs"
       - name: Checkout pinned public artifact verifier
         id: public_artifact_verifier
         if: always()

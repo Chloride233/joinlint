@@ -817,6 +817,55 @@ def _observed_sample_count(log_dir: Path) -> int:
     )
 
 
+def _infrastructure_failure_rows(samples: list[Any]) -> tuple[dict[str, str], ...]:
+    rows: list[dict[str, str]] = []
+    for sample in samples:
+        lifecycle_value = (getattr(sample, "store", None) or {}).get(
+            LIFECYCLE_STORE_KEY
+        )
+        try:
+            lifecycle = parse_lifecycle(lifecycle_value)
+        except (TypeError, ValueError):
+            continue
+        if lifecycle.infrastructure_status != "failed":
+            continue
+        metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
+        model_ids = tuple(sorted((sample.model_usage or {}).keys()))
+        rows.append(
+            {
+                "failure_reason": (
+                    lifecycle.failure_reason.value
+                    if lifecycle.failure_reason is not None
+                    else "unknown"
+                ),
+                "host": str(metadata.get("host", "")),
+                "model_id": model_ids[0] if len(model_ids) == 1 else "",
+                "task_id": str(metadata.get("task_id", "")),
+            }
+        )
+    return tuple(
+        sorted(
+            rows,
+            key=lambda row: (
+                row["model_id"].encode("utf-8"),
+                row["host"].encode("utf-8"),
+                row["task_id"].encode("utf-8"),
+            ),
+        )
+    )
+
+
+def infrastructure_failure_rows(log_dir: Path) -> tuple[dict[str, str], ...]:
+    from inspect_ai.log import list_eval_logs, read_eval_log
+
+    samples = [
+        sample
+        for info in list_eval_logs(str(log_dir), recursive=True)
+        for sample in (read_eval_log(info.name, header_only=False).samples or [])
+    ]
+    return _infrastructure_failure_rows(samples)
+
+
 def verify_calibration_logs(
     log_dir: Path,
     *,
@@ -1299,6 +1348,8 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--expected-run-id", type=int, required=True)
     verify.add_argument("--current-commit", required=True)
     verify.add_argument("--repository", required=True)
+    diagnose = commands.add_parser("diagnose-infrastructure")
+    diagnose.add_argument("--log-dir", type=Path, required=True)
     arguments = parser.parse_args(argv)
     if arguments.command == "run":
         report = run_calibration(
@@ -1311,6 +1362,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(report.model_dump_json())
         return 0 if report.status == "passed" else 2
+    if arguments.command == "diagnose-infrastructure":
+        print(json.dumps(infrastructure_failure_rows(arguments.log_dir), sort_keys=True))
+        return 0
     verify_calibration_attestation(
         arguments.root,
         arguments.attestation,
