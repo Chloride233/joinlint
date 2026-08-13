@@ -59,7 +59,7 @@ PILOT_ASSIGNMENT_DESIGN = "balanced_diagonal_crossover_v1"
 
 
 class PilotRegistration(StrictModel):
-    schema_version: Literal[3, 4, 5]
+    schema_version: Literal[3, 4, 5, 6]
     evaluation_id: str
     dataset_release: str
     seed: int = Field(ge=0)
@@ -68,14 +68,14 @@ class PilotRegistration(StrictModel):
     hosts: tuple[Literal["codex"], Literal["claude_code"]] = ("codex", "claude_code")
     host_versions: dict[Host, str]
     joinlint_commit: str
-    budget_cny: Literal[20.0] = 20.0
+    budget_cny: Literal[20.0, 22.0] = 20.0
     assignment_design: Literal["balanced_diagonal_crossover_v1"] = (
         "balanced_diagonal_crossover_v1"
     )
-    token_limit_per_run: Literal[35_000] = 35_000
+    token_limit_per_run: Literal[35_000, 45_000] = 35_000
     token_accounting_ceiling_per_run: int | None = None
     token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
-    message_limit_per_run: Literal[20] = 20
+    message_limit_per_run: Literal[20, 30] = 20
     time_limit_seconds: Literal[90] = 90
     modal_sandbox_timeout_seconds: Literal[150, 170]
     modal_image_builder_version: Literal["2025.06 Stable"] = "2025.06 Stable"
@@ -114,7 +114,7 @@ class PilotRegistration(StrictModel):
         ):
             return {**value, "modal_sandbox_timeout_seconds": 150}
         if (
-            value.get("schema_version") == 5
+            value.get("schema_version") in (5, 6)
             and "modal_sandbox_timeout_seconds" not in value
         ):
             raise ValueError(
@@ -124,12 +124,26 @@ class PilotRegistration(StrictModel):
 
     @model_validator(mode="after")
     def require_frozen_matrix_and_budget(self) -> PilotRegistration:
-        if self.schema_version >= 4 and self.token_accounting_ceiling_per_run != 45_000:
-            raise ValueError("pilot token accounting ceiling must be 45,000")
+        if self.schema_version == 6 and (
+            self.evaluation_id != "joinlint-semantic-safety-pilot-v1"
+            or self.dataset_release != "semantic-join-safety-pilot-v1"
+            or self.token_limit_per_run != 45_000
+            or self.token_accounting_ceiling_per_run != 50_000
+            or self.message_limit_per_run != 30
+            or self.budget_cny != 22.0
+        ):
+            raise ValueError("safety Pilot resource limits do not match schema version 6")
+        if self.schema_version in (4, 5) and (
+            self.token_limit_per_run != 35_000
+            or self.token_accounting_ceiling_per_run != 45_000
+            or self.message_limit_per_run != 20
+            or self.budget_cny != 20.0
+        ):
+            raise ValueError("Pilot resource limits do not match its schema version")
         if self.schema_version == 3 and self.token_accounting_ceiling_per_run is not None:
             raise ValueError("legacy pilot registration cannot define an accounting ceiling")
         if (
-            self.schema_version == 5
+            self.schema_version >= 5
             and self.modal_sandbox_timeout_seconds != 170
         ) or (
             self.schema_version < 5
@@ -238,6 +252,22 @@ def frozen_pilot_registration(commit: str) -> PilotRegistration:
         assignment_design=PILOT_ASSIGNMENT_DESIGN,
         token_accounting_ceiling_per_run=45_000,
         modal_sandbox_timeout_seconds=170,
+    )
+
+
+def frozen_safety_pilot_registration(commit: str) -> PilotRegistration:
+    values = frozen_pilot_registration(commit).model_dump(mode="json")
+    return PilotRegistration.model_validate(
+        {
+            **values,
+            "schema_version": 6,
+            "evaluation_id": "joinlint-semantic-safety-pilot-v1",
+            "dataset_release": "semantic-join-safety-pilot-v1",
+            "token_limit_per_run": 45_000,
+            "token_accounting_ceiling_per_run": 50_000,
+            "message_limit_per_run": 30,
+            "budget_cny": 22.0,
+        }
     )
 
 
@@ -495,6 +525,85 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
         raise
 
 
+def build_safety_pilot_inputs(output: Path, *, commit: str) -> dict[str, Any]:
+    from benchmarks.formal_eval.semantic_failure import build_semantic_failure_v1
+
+    if output.exists() or output.is_symlink():
+        raise ValueError("safety Pilot output already exists")
+    parent = output.parent.resolve(strict=True)
+    source = parent / f".semantic-safety-source-{uuid.uuid4().hex}"
+    staging = parent / f".{output.name}.staging-{uuid.uuid4().hex}"
+    try:
+        source_report = build_semantic_failure_v1(parent, source)
+        source_tasks = TypeAdapter(list[SealedAgentTask]).validate_json(
+            (source / "agent-tasks.json").read_bytes()
+        )
+        source_manifest = load_document(source / "manifest.json", FormalManifestV2)
+        tasks = tuple(
+            task.model_copy(update={"database_path": f"databases/{task.database_id}.sqlite"})
+            for task in source_tasks
+        )
+        manifest = source_manifest.model_copy(
+            update={
+                "dataset_release": "semantic-join-safety-pilot-v1",
+                "tasks": tuple(
+                    task.model_copy(update={"split": "confirmatory"})
+                    for task in source_manifest.tasks
+                ),
+            }
+        )
+        verify_sealed_manifest(manifest, tasks)
+        registration = frozen_safety_pilot_registration(commit)
+        calibration = build_pilot_calibration_spec(manifest)
+
+        staging.mkdir()
+        shutil.copytree(source / "databases", staging / "databases")
+        _write_canonical(
+            staging / "agent-tasks.json",
+            [task.model_dump(mode="json", by_alias=True) for task in tasks],
+        )
+        _write_canonical(staging / "manifest.json", manifest.model_dump(mode="json"))
+        _write_canonical(staging / "calibration.json", calibration.model_dump(mode="json"))
+        _write_canonical(staging / "registration.json", registration.model_dump(mode="json"))
+        _write_canonical(
+            staging / "source-manifest.json",
+            {
+                **source_report,
+                "status": "frozen_independent_safety_pilot",
+                "dataset_release": manifest.dataset_release,
+                "claim_boundary": "synthetic_join_safety_stress_only",
+            },
+        )
+        lock = _input_lock(staging)
+        _write_canonical(staging / "input-lock.json", lock.model_dump(mode="json"))
+        lineage_id = digest_value(
+            {
+                "registration": registration.model_dump(mode="json"),
+                "manifest": manifest.model_dump(mode="json"),
+                "input_lock": lock.model_dump(mode="json"),
+            }
+        )
+        run_plan = build_pilot_run_plan(manifest, registration, lineage_id)
+        _write_canonical(staging / "run-plan.json", run_plan.model_dump(mode="json"))
+        report = {
+            "schema_version": 1,
+            "status": "frozen_independent_safety_pilot",
+            "claim_boundary": "synthetic_join_safety_stress_only",
+            "lineage_id": lineage_id,
+            "task_count": len(tasks),
+            "run_count": len(run_plan.runs),
+            "input_lock_sha256": digest_value(lock.model_dump(mode="json")),
+        }
+        _write_canonical(staging / "pilot-report.json", report)
+        os.replace(staging, output)
+        return report
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    finally:
+        shutil.rmtree(source, ignore_errors=True)
+
+
 def build_pilot_run_plan(
     manifest: FormalManifestV2,
     registration: PilotRegistration,
@@ -511,7 +620,7 @@ def build_pilot_run_plan(
                             sample_id=sample_id_for(
                                 task_id=task.task_id,
                                 database_id=task.database_id,
-                                corpus="natural",
+                                corpus=task.corpus,
                                 condition=condition,
                                 model_id=model.returned_id,
                                 host=host,
@@ -519,7 +628,7 @@ def build_pilot_run_plan(
                             ),
                             task_id=task.task_id,
                             database_id=task.database_id,
-                            corpus="natural",
+                            corpus=task.corpus,
                             condition=condition,
                             model_id=model.returned_id,
                             host=host,
@@ -713,6 +822,9 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--train-subset", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
     build.add_argument("--commit", required=True)
+    build_safety = commands.add_parser("build-safety")
+    build_safety.add_argument("--output", type=Path, required=True)
+    build_safety.add_argument("--commit", required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("--root", type=Path, required=True)
     verify.add_argument("--current-commit")
@@ -723,6 +835,10 @@ def main(argv: list[str] | None = None) -> int:
             arguments.output,
             commit=arguments.commit,
         )
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    if arguments.command == "build-safety":
+        report = build_safety_pilot_inputs(arguments.output, commit=arguments.commit)
         print(json.dumps(report, sort_keys=True))
         return 0
     registration, _, _ = verify_pilot_inputs(arguments.root)

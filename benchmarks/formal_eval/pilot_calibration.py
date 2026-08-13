@@ -90,7 +90,7 @@ class CalibrationResourceContract(StrictModel):
     token_limit_by_host: dict[Host, int]
     token_accounting_ceiling_by_host: dict[Host, int] | None = None
     token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
-    message_limit: Literal[20] = 20
+    message_limit: Literal[20, 30] = 20
     evaluation_timeout_seconds: Literal[90] = 90
     sandbox_timeout_seconds: Literal[150, 170] = 150
     cpu_cores: Literal[0.5] = 0.5
@@ -98,12 +98,21 @@ class CalibrationResourceContract(StrictModel):
 
     @model_validator(mode="after")
     def require_frozen_host_limits(self) -> CalibrationResourceContract:
-        if self.token_limit_by_host != CALIBRATION_TOKEN_LIMITS:
+        old_limits = CALIBRATION_TOKEN_LIMITS
+        safety_limits = {host: 45_000 for host in old_limits}
+        old_ceilings = CALIBRATION_TOKEN_ACCOUNTING_CEILINGS
+        safety_ceilings = {host: 50_000 for host in old_ceilings}
+        if self.token_limit_by_host not in (old_limits, safety_limits):
             raise ValueError("calibration token limits do not match the frozen host contract")
+        if (self.token_limit_by_host, self.message_limit) not in (
+            (old_limits, 20),
+            (safety_limits, 30),
+        ):
+            raise ValueError("calibration message limit does not match the frozen contract")
         if (
             self.token_accounting_ceiling_by_host is not None
-            and self.token_accounting_ceiling_by_host
-            != CALIBRATION_TOKEN_ACCOUNTING_CEILINGS
+            and (self.token_limit_by_host, self.token_accounting_ceiling_by_host)
+            not in ((old_limits, old_ceilings), (safety_limits, safety_ceilings))
         ):
             raise ValueError("calibration accounting ceilings do not match the frozen contract")
         return self
@@ -393,8 +402,7 @@ class PilotCalibrationReport(StrictModel):
                 raise ValueError("pilot calibration actual model cost is inconsistent")
         if (
             self.schema_version >= 4
-            and self.resource_contract.token_accounting_ceiling_by_host
-            != CALIBRATION_TOKEN_ACCOUNTING_CEILINGS
+            and self.resource_contract.token_accounting_ceiling_by_host is None
         ):
             raise ValueError("schema v4+ requires the frozen accounting ceilings")
         readiness = (
@@ -411,9 +419,9 @@ class PilotCalibrationReport(StrictModel):
                 scoring=self.scoring,
                 within_budget=within_budget,
                 accounting_ceiling_by_host=(
-                    CALIBRATION_TOKEN_LIMITS
+                    self.resource_contract.token_limit_by_host
                     if self.schema_version == 3
-                    else CALIBRATION_TOKEN_ACCOUNTING_CEILINGS
+                    else self.resource_contract.token_accounting_ceiling_by_host
                 ),
                 submission_guard_available=(
                     submission_guard_pipeline_available(self.harness)
@@ -549,7 +557,7 @@ def calibration_budget_envelope(
         )
         model_upper += sum(
             2
-            * CALIBRATION_TOKEN_ACCOUNTING_CEILINGS[host]
+            * _calibration_accounting_ceilings(registration)[host]
             * weighted_rate
             / 1_000_000
             for host in registration.hosts
@@ -600,7 +608,7 @@ def build_calibration_commands(
             value.removeprefix("host=") for value in command if value.startswith("host=")
         )
         token_index = command.index(f"token_limit={registration.token_limit_per_run}")
-        command[token_index] = f"token_limit={CALIBRATION_TOKEN_LIMITS[host]}"
+        command[token_index] = f"token_limit={_calibration_token_limits(registration)[host]}"
         commands.append(command)
     if len(commands) != 4:
         raise ValueError("pilot calibration does not cover all four model/host cells")
@@ -690,6 +698,7 @@ def run_calibration(
             resource=resource,
             scoring=scoring,
             submission_guard_available=submission_guard_pipeline_available(harness),
+            accounting_ceiling_by_host=_calibration_accounting_ceilings(registration),
             within_budget=(
                 total_upper <= CALIBRATION_BUDGET_CNY
                 and campaign_total <= campaign_budget_cny
@@ -700,8 +709,8 @@ def run_calibration(
             readiness_status=readiness_status,
             calibration_task_ids=specification.task_ids,
             resource_contract=CalibrationResourceContract(
-                token_limit_by_host=CALIBRATION_TOKEN_LIMITS,
-                token_accounting_ceiling_by_host=CALIBRATION_TOKEN_ACCOUNTING_CEILINGS,
+                token_limit_by_host=_calibration_token_limits(registration),
+                token_accounting_ceiling_by_host=_calibration_accounting_ceilings(registration),
                 token_limit_type=registration.token_limit_type,
                 message_limit=registration.message_limit_per_run,
                 evaluation_timeout_seconds=registration.time_limit_seconds,
@@ -972,7 +981,7 @@ def attest_calibration_samples(
             if usage is not None and model is not None
             else None
         )
-        configured_limit = CALIBRATION_TOKEN_LIMITS.get(host, 1)  # type: ignore[arg-type]
+        configured_limit = _calibration_token_limits(registration).get(host, 1)  # type: ignore[arg-type]
         observed_weighted = (
             breakdown.inspect_weighted_tokens if breakdown is not None else None
         )
@@ -1310,7 +1319,11 @@ def _resource_host_summaries(
             ResourceHostSummary(
                 host=host,
                 cell_count=len(selected),
-                configured_token_limit=CALIBRATION_TOKEN_LIMITS[host],
+                configured_token_limit=(
+                    next(iter({cell.configured_token_limit for cell in selected}))
+                    if selected
+                    else CALIBRATION_TOKEN_LIMITS[host]
+                ),
                 peak_observed_weighted_tokens=peak,
                 minimum_headroom_tokens=minimum_headroom,
                 observed_cache_read_floor_tokens=min(cache_read) if cache_read else None,
@@ -1324,6 +1337,19 @@ def _resource_host_summaries(
             )
         )
     return tuple(summaries)
+
+
+def _calibration_token_limits(registration: PilotRegistration) -> dict[Host, int]:
+    return {host: registration.token_limit_per_run for host in registration.hosts}
+
+
+def _calibration_accounting_ceilings(
+    registration: PilotRegistration,
+) -> dict[Host, int]:
+    ceiling = registration.token_accounting_ceiling_per_run
+    if ceiling is None:
+        raise ValueError("pilot calibration requires a token accounting ceiling")
+    return {host: ceiling for host in registration.hosts}
 
 
 def _cell_key(

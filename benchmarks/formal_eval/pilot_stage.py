@@ -17,6 +17,7 @@ from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.pilot import (
     MODAL_CPU_USD_PER_CORE_SECOND,
     MODAL_MEMORY_USD_PER_GIB_SECOND,
+    PILOT_DATASET_RELEASE,
     PilotBudgetCheckpoint,
     PilotBudgetEnvelope,
     PilotBudgetReport,
@@ -35,14 +36,18 @@ from joinlint.contracts import canonical_json
 
 
 STAGE_ID = "flash_full_dataset_v1"
+SAFETY_STAGE_ID = "semantic_join_safety_v1"
 STAGE_APPROVED_BUDGET_CNY = 7.4
+SAFETY_STAGE_APPROVED_BUDGET_CNY = 8.0
 STAGE_ALPHA = 0.05
 
 
 class PilotStagePreregistration(StrictModel):
     schema_version: Literal[1] = 1
-    stage_id: Literal["flash_full_dataset_v1"] = STAGE_ID
-    claim_scope: Literal["exploratory_bird_pilot"] = "exploratory_bird_pilot"
+    stage_id: Literal["flash_full_dataset_v1", "semantic_join_safety_v1"] = STAGE_ID
+    claim_scope: Literal["exploratory_bird_pilot", "synthetic_join_safety_stress"] = (
+        "exploratory_bird_pilot"
+    )
     joinlint_commit: str
     input_lock_sha256: str
     full_run_plan_sha256: str
@@ -67,7 +72,7 @@ class PilotStagePreregistration(StrictModel):
         "exact_two_sided_mcnemar"
     )
     alpha: Literal[0.05] = STAGE_ALPHA
-    approved_budget_cny: Literal[7.4] = STAGE_APPROVED_BUDGET_CNY
+    approved_budget_cny: Literal[7.4, 8.0] = STAGE_APPROVED_BUDGET_CNY
     workflow_run_id: int = Field(gt=0)
     campaign_reservation_id: str
     campaign_ledger_commit_sha: str
@@ -101,7 +106,7 @@ class PilotStagePreregistration(StrictModel):
 
 class PilotStageEffect(StrictModel):
     schema_version: Literal[1] = 1
-    stage_id: Literal["flash_full_dataset_v1"] = STAGE_ID
+    stage_id: Literal["flash_full_dataset_v1", "semantic_join_safety_v1"] = STAGE_ID
     preregistration_sha256: str
     primary_outcome: Literal["join_correct_task_completion"] = (
         "join_correct_task_completion"
@@ -169,8 +174,9 @@ def flash_stage_run_plan(
 ) -> RunPlanV2:
     flash = _flash_model(registration)
     runs = tuple(run for run in full_run_plan.runs if run.model_id == flash.returned_id)
+    stage_id, _ = _stage_identity(registration)
     plan = RunPlanV2(
-        evaluation_id=f"{full_run_plan.evaluation_id}-{STAGE_ID}",
+        evaluation_id=f"{full_run_plan.evaluation_id}-{stage_id}",
         lineage_id=full_run_plan.lineage_id,
         runs=runs,
         blind_review_sample_ids=(),
@@ -217,7 +223,9 @@ def flash_stage_budget_envelope(registration: PilotRegistration) -> PilotBudgetE
         modal_image_build_reserve_cny=registration.modal_image_build_reserve_cny,
         total_upper_cny=total,
     )
-    if envelope.run_count != 40 or envelope.total_upper_cny > STAGE_APPROVED_BUDGET_CNY:
+    if envelope.run_count != 40 or envelope.total_upper_cny > _stage_approved_budget(
+        registration
+    ):
         raise ValueError("Flash Pilot stage exceeds its approved budget")
     return envelope
 
@@ -261,7 +269,11 @@ def pilot_stage_preregistration(
     campaign_reservation_id: str,
     campaign_ledger_commit_sha: str,
 ) -> PilotStagePreregistration:
+    stage_id, claim_scope = _stage_identity(registration)
     return PilotStagePreregistration(
+        stage_id=stage_id,
+        claim_scope=claim_scope,
+        approved_budget_cny=_stage_approved_budget(registration),
         joinlint_commit=registration.joinlint_commit,
         input_lock_sha256=input_lock_sha256,
         full_run_plan_sha256=digest_value(full_run_plan.model_dump(mode="json")),
@@ -322,6 +334,7 @@ def stage_effect_report(
     treatment_rows = [treatment for _, treatment in pairs]
     improvement = (treatment_successes - control_successes) / len(pairs)
     return PilotStageEffect(
+        stage_id=preregistration.stage_id,
         preregistration_sha256=digest_value(preregistration.model_dump(mode="json")),
         control_successes=control_successes,
         treatment_successes=treatment_successes,
@@ -343,6 +356,29 @@ def stage_effect_report(
     )
 
 
+def _stage_identity(
+    registration: PilotRegistration,
+) -> tuple[
+    Literal["flash_full_dataset_v1", "semantic_join_safety_v1"],
+    Literal["exploratory_bird_pilot", "synthetic_join_safety_stress"],
+]:
+    if (
+        registration.schema_version == 6
+        and registration.dataset_release == "semantic-join-safety-pilot-v1"
+    ):
+        return SAFETY_STAGE_ID, "synthetic_join_safety_stress"
+    if registration.schema_version == 5 and registration.dataset_release == PILOT_DATASET_RELEASE:
+        return STAGE_ID, "exploratory_bird_pilot"
+    raise ValueError("Pilot registration is not approved for a bounded stage")
+
+
+def _stage_approved_budget(registration: PilotRegistration) -> float:
+    stage_id, _ = _stage_identity(registration)
+    if stage_id == SAFETY_STAGE_ID:
+        return SAFETY_STAGE_APPROVED_BUDGET_CNY
+    return STAGE_APPROVED_BUDGET_CNY
+
+
 def run_flash_stage(
     root: Path,
     log_dir: Path,
@@ -361,10 +397,11 @@ def run_flash_stage(
     registration, _, full_run_plan, lock = verify_pilot_input_bundle(root)
     stage_run_plan = flash_stage_run_plan(registration, full_run_plan)
     envelope = flash_stage_budget_envelope(registration)
+    approved_budget = _stage_approved_budget(registration)
     campaign_before = pilot_campaign_budget(
         campaign_budget_cny=campaign_budget_cny,
         campaign_spend_before_cny=campaign_spend_before_cny,
-        pilot_cost_upper_cny=STAGE_APPROVED_BUDGET_CNY,
+        pilot_cost_upper_cny=approved_budget,
     )
     if not campaign_before.passed:
         raise ValueError("Flash Pilot stage could exceed the campaign budget")
@@ -397,6 +434,7 @@ def run_flash_stage(
         _write_stage_checkpoint(
             output,
             envelope=envelope,
+            approved_budget_cny=approved_budget,
             completed_batches=batch_index,
             total_batches=len(commands),
             actual_model_cost_cny=observed,
@@ -411,6 +449,7 @@ def run_flash_stage(
             _write_stage_checkpoint(
                 output,
                 envelope=envelope,
+                approved_budget_cny=approved_budget,
                 completed_batches=batch_index + 1,
                 total_batches=len(commands),
                 actual_model_cost_cny=observed_model_cost_cny(log_dir, registration),
@@ -429,6 +468,7 @@ def run_flash_stage(
     _write_stage_checkpoint(
         output,
         envelope=envelope,
+        approved_budget_cny=approved_budget,
         completed_batches=len(commands),
         total_batches=len(commands),
         actual_model_cost_cny=observed,
@@ -450,14 +490,14 @@ def run_flash_stage(
         + envelope.modal_image_build_reserve_cny
     )
     budget = PilotBudgetReport(
-        approved_budget_cny=STAGE_APPROVED_BUDGET_CNY,
+        approved_budget_cny=approved_budget,
         actual_model_cost_cny=actual_model_cost,
         modal_compute_upper_cny=envelope.modal_compute_upper_cny,
         modal_image_build_reserve_cny=envelope.modal_image_build_reserve_cny,
         total_cost_upper_cny=total_upper,
         run_count=len(bundle.rows),
         expected_run_count=len(stage_run_plan.runs),
-        passed=total_upper <= STAGE_APPROVED_BUDGET_CNY,
+        passed=total_upper <= approved_budget,
     )
     _write_json(output / "budget.json", budget)
     campaign = pilot_campaign_budget(
@@ -501,6 +541,7 @@ def _write_stage_checkpoint(
     output: Path,
     *,
     envelope: PilotBudgetEnvelope,
+    approved_budget_cny: float,
     completed_batches: int,
     total_batches: int,
     actual_model_cost_cny: float,
@@ -514,7 +555,7 @@ def _write_stage_checkpoint(
         + envelope.modal_image_build_reserve_cny
     )
     checkpoint = PilotBudgetCheckpoint(
-        approved_budget_cny=STAGE_APPROVED_BUDGET_CNY,
+        approved_budget_cny=approved_budget_cny,
         completed_batches=completed_batches,
         total_batches=total_batches,
         actual_model_cost_cny=actual_model_cost_cny,
@@ -522,7 +563,7 @@ def _write_stage_checkpoint(
         modal_compute_upper_cny=envelope.modal_compute_upper_cny,
         modal_image_build_reserve_cny=envelope.modal_image_build_reserve_cny,
         projected_total_upper_cny=projected,
-        safe_to_continue=projected <= STAGE_APPROVED_BUDGET_CNY,
+        safe_to_continue=projected <= approved_budget_cny,
     )
     _write_json(output / "budget-checkpoint.json", checkpoint)
     if not checkpoint.safe_to_continue:

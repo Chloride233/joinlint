@@ -20,6 +20,7 @@ on:
         type: choice
         options:
           - flash_full_dataset_v1
+          - semantic_join_safety_v1
           - full
       campaign_budget_cny:
         description: Approved cumulative investigation budget in CNY
@@ -67,14 +68,16 @@ jobs:
     environment: formal-evaluation
     steps:
       - name: Block unapproved full Pilot
-        if: inputs.stage != 'flash_full_dataset_v1'
+        if: inputs.stage == 'full'
         run: exit 1
       - name: Require the exact approved paid Pilot stage
         if: >-
           github.run_attempt != 1 ||
           inputs.confirm_paid != true ||
-          inputs.stage != 'flash_full_dataset_v1' ||
-          inputs.budget_cny != '7.4'
+          (inputs.stage != 'flash_full_dataset_v1' &&
+          inputs.stage != 'semantic_join_safety_v1') ||
+          (inputs.stage == 'flash_full_dataset_v1' && inputs.budget_cny != '7.4') ||
+          (inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8')
         run: exit 1
       - name: Checkout pinned public artifact verifier
         id: public_artifact_verifier
@@ -152,10 +155,11 @@ jobs:
         working-directory: .workflow-control
         env:
           GH_TOKEN: ${{ github.token }}
+          PILOT_RESERVATION_MODE: ${{ inputs.stage == 'semantic_join_safety_v1' && 'pilot_stage_safety' || 'pilot_stage' }}
         run: >-
           python -m benchmarks.formal_eval.campaign_reservation
           reserve
-          --mode pilot_stage
+          --mode "$PILOT_RESERVATION_MODE"
           --campaign-id joinlint-product-effect-2026-08
           --ledger-branch joinlint-campaign-ledger
           --genesis-commit 89358132f42dd23e82fd21b1f32a80900d2d2f98

@@ -500,7 +500,8 @@ product-effect campaign fixes its ledger branch, empty genesis, CNY 50 ceiling,
 and conservative opening reserved upper balance. The separate admission wrapper
 now derives repository/run/workflow identity only from GitHub's default variables
 on an explicitly protected ref, admits only the frozen readiness/CNY 2.10,
-calibration/CNY 4, Pilot/CNY 20, and Flash stage/CNY 7.40 pairs, and verifies an
+calibration/CNY 4, Pilot/CNY 20, BIRD Flash stage/CNY 7.40, and synthetic
+semantic-safety Flash stage/CNY 8.00 pairs, and verifies an
 authorized receipt
 against the exact live ledger head. It also requires the exact policy-driving
 dispatch flags and budget string for the selected mode, reads the actual HEAD

@@ -9,8 +9,14 @@ import pytest
 
 from benchmarks.formal_eval.contracts import AgentResultRow, FormalManifestV2, FormalTask
 from benchmarks.formal_eval.lineage import digest_value
-from benchmarks.formal_eval.pilot import build_pilot_run_plan, frozen_pilot_registration
+from benchmarks.formal_eval.pilot import (
+    build_pilot_run_plan,
+    frozen_pilot_registration,
+    frozen_safety_pilot_registration,
+)
 from benchmarks.formal_eval.pilot_stage import (
+    SAFETY_STAGE_APPROVED_BUDGET_CNY,
+    SAFETY_STAGE_ID,
     STAGE_APPROVED_BUDGET_CNY,
     build_flash_stage_commands,
     exact_two_sided_mcnemar_p_value,
@@ -65,6 +71,41 @@ def test_flash_stage_freezes_all_tasks_twenty_pairs_and_bounded_cost() -> None:
     assert preregistration.workflow_run_id == 123
     assert preregistration.campaign_reservation_id == RESERVATION_ID
     assert preregistration.campaign_ledger_commit_sha == LEDGER_COMMIT
+
+
+def test_safety_stage_has_separate_identity_claim_and_budget() -> None:
+    registration = frozen_safety_pilot_registration(COMMIT)
+    manifest = _manifest().model_copy(
+        update={
+            "dataset_release": registration.dataset_release,
+            "tasks": tuple(
+                task.model_copy(update={"corpus": "semantic_join_failure"})
+                for task in _manifest().tasks
+            ),
+        }
+    )
+    full_plan = build_pilot_run_plan(manifest, registration, LINEAGE_ID)
+
+    stage_plan = flash_stage_run_plan(registration, full_plan)
+    envelope = flash_stage_budget_envelope(registration)
+    preregistration = pilot_stage_preregistration(
+        registration,
+        full_plan,
+        stage_plan,
+        input_lock_sha256=INPUT_LOCK_SHA256,
+        workflow_run_id=123,
+        campaign_reservation_id=RESERVATION_ID,
+        campaign_ledger_commit_sha=LEDGER_COMMIT,
+    )
+
+    assert preregistration.stage_id == SAFETY_STAGE_ID
+    assert preregistration.claim_scope == "synthetic_join_safety_stress"
+    assert preregistration.approved_budget_cny == SAFETY_STAGE_APPROVED_BUDGET_CNY
+    assert stage_plan.evaluation_id.endswith(SAFETY_STAGE_ID)
+    assert {run.corpus for run in stage_plan.runs} == {"semantic_join_failure"}
+    assert envelope.model_cost_upper_cny == pytest.approx(4.0)
+    assert envelope.total_upper_cny == pytest.approx(7.79792)
+    assert envelope.total_upper_cny < SAFETY_STAGE_APPROVED_BUDGET_CNY == 8.0
 
 
 def test_flash_stage_commands_cover_both_hosts_and_conditions(tmp_path: Path) -> None:

@@ -79,6 +79,11 @@ _POLICIES = {
         job="pilot",
         upper_micro_cny=7_400_000,
     ),
+    "pilot_stage_safety": _ReservationPolicy(
+        workflow_path=".github/workflows/formal-pilot.yml",
+        job="pilot",
+        upper_micro_cny=8_000_000,
+    ),
 }
 
 _EXPECTED_WORKFLOW_INPUTS = {
@@ -103,6 +108,11 @@ _EXPECTED_WORKFLOW_INPUTS = {
         "budget_cny": "7.4",
         "confirm_paid": "true",
         "stage": "flash_full_dataset_v1",
+    },
+    "pilot_stage_safety": {
+        "budget_cny": "8",
+        "confirm_paid": "true",
+        "stage": "semantic_join_safety_v1",
     },
 }
 
@@ -502,7 +512,11 @@ def main(
     parser = argparse.ArgumentParser(prog="campaign-reservation")
     command = parser.add_subparsers(dest="command", required=True)
     reserve = command.add_parser("reserve")
-    reserve.add_argument("--mode", choices=("calibration", "pilot_stage"), required=True)
+    reserve.add_argument(
+        "--mode",
+        choices=("calibration", "pilot_stage", "pilot_stage_safety"),
+        required=True,
+    )
     reserve.add_argument("--campaign-id", required=True)
     reserve.add_argument("--ledger-branch", required=True)
     reserve.add_argument("--genesis-commit", required=True)

@@ -26,10 +26,13 @@ from benchmarks.formal_eval.pilot import (
     budget_envelope,
     build_pilot_calibration_spec,
     build_pilot_run_plan,
+    build_safety_pilot_inputs,
     frozen_pilot_registration,
+    frozen_safety_pilot_registration,
     model_batch_upper_costs,
     pilot_budget_checkpoint,
     pilot_budget_report,
+    verify_pilot_input_bundle,
 )
 from benchmarks.formal_eval.pilot_calibration import (
     CALIBRATION_BUDGET_CNY,
@@ -113,6 +116,23 @@ def test_pilot_budget_envelope_is_below_the_approved_hard_limit() -> None:
     assert model_batch_upper_costs(registration) == pytest.approx(
         (2.7, 2.7, 2.7, 2.7, 0.9, 0.9, 0.9, 0.9)
     )
+
+
+def test_safety_pilot_has_a_separate_bounded_resource_contract() -> None:
+    registration = frozen_safety_pilot_registration(COMMIT)
+
+    envelope = budget_envelope(registration)
+
+    assert registration.schema_version == 6
+    assert registration.dataset_release == "semantic-join-safety-pilot-v1"
+    assert registration.token_limit_per_run == 45_000
+    assert registration.token_accounting_ceiling_per_run == 50_000
+    assert registration.message_limit_per_run == 30
+    assert envelope.run_count == 80
+    assert envelope.model_cost_upper_cny == pytest.approx(16.0)
+    assert envelope.modal_compute_upper_cny == pytest.approx(3.59584)
+    assert envelope.total_upper_cny == pytest.approx(21.59584)
+    assert envelope.total_upper_cny < registration.budget_cny == 22.0
 
 
 def test_pilot_registration_keeps_the_previous_sandbox_contract_parseable() -> None:
@@ -395,6 +415,58 @@ def test_pilot_calibration_uses_exact_formal_resource_contract(
     assert all(not any(value.startswith("task_partition=") for value in command) for command in commands)
     expected_task_ids = f"task_ids={','.join(specification.task_ids)}"
     assert all(expected_task_ids in command for command in commands)
+
+
+def test_safety_pilot_calibration_uses_the_safety_resource_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import benchmarks.formal_eval.pilot_calibration as calibration
+
+    registration = frozen_safety_pilot_registration(COMMIT)
+    base_manifest = _manifest(20)
+    manifest = base_manifest.model_copy(
+        update={
+            "dataset_release": registration.dataset_release,
+            "tasks": tuple(
+                task.model_copy(update={"corpus": "semantic_join_failure"})
+                for task in base_manifest.tasks
+            ),
+        }
+    )
+    specification = build_pilot_calibration_spec(manifest)
+    monkeypatch.setattr(
+        calibration,
+        "verify_pilot_inputs",
+        lambda root: (registration, manifest, SimpleNamespace(lineage_id=LINEAGE_ID)),
+    )
+    monkeypatch.setattr(
+        calibration,
+        "load_pilot_calibration_spec",
+        lambda root, current_manifest: specification,
+    )
+
+    commands = build_calibration_commands(
+        inspect="/usr/bin/inspect",
+        registration=registration,
+        root=tmp_path / "sealed",
+        log_dir=tmp_path / "logs",
+        lineage_id=LINEAGE_ID,
+    )
+    envelope = calibration_budget_envelope(registration)
+    contract = CalibrationResourceContract(
+        token_limit_by_host={host: 45_000 for host in registration.hosts},
+        token_accounting_ceiling_by_host={host: 50_000 for host in registration.hosts},
+        message_limit=30,
+        sandbox_timeout_seconds=170,
+    )
+
+    assert envelope.model_cost_upper_cny == pytest.approx(1.6)
+    assert envelope.total_upper_cny == pytest.approx(3.959584)
+    assert envelope.total_upper_cny < CALIBRATION_BUDGET_CNY
+    assert contract.message_limit == 30
+    assert all("token_limit=45000" in command for command in commands)
+    assert all("message_limit=30" in command for command in commands)
 
 
 def test_pilot_calibration_separates_resource_readiness_from_product_outcome() -> None:
@@ -1282,6 +1354,45 @@ def test_pilot_run_plan_is_twenty_tasks_and_80_balanced_crossover_runs() -> None
     assert not any(run.confirmatory for run in plan.runs)
 
 
+def test_pilot_run_plan_preserves_the_semantic_safety_corpus() -> None:
+    manifest = _manifest(20).model_copy(
+        update={
+            "dataset_release": "semantic-join-safety-pilot-v1",
+            "tasks": tuple(
+                task.model_copy(update={"corpus": "semantic_join_failure"})
+                for task in _manifest(20).tasks
+            ),
+        }
+    )
+    registration = frozen_safety_pilot_registration(COMMIT)
+
+    plan = build_pilot_run_plan(manifest, registration, LINEAGE_ID)
+
+    assert {run.corpus for run in plan.runs} == {"semantic_join_failure"}
+    assert len({run.sample_id for run in plan.runs}) == 80
+
+
+def test_safety_pilot_builder_freezes_twenty_independent_semantic_tasks(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "safety-pilot"
+
+    report = build_safety_pilot_inputs(output, commit=COMMIT)
+    registration, manifest, run_plan, lock = verify_pilot_input_bundle(output)
+
+    assert report["claim_boundary"] == "synthetic_join_safety_stress_only"
+    assert report["task_count"] == 20
+    assert report["run_count"] == 80
+    assert registration == frozen_safety_pilot_registration(COMMIT)
+    assert len(manifest.tasks) == 20
+    assert len({task.database_id for task in manifest.tasks}) == 4
+    assert {task.corpus for task in manifest.tasks} == {"semantic_join_failure"}
+    assert {task.split for task in manifest.tasks} == {"confirmatory"}
+    assert {task.join_depth for task in manifest.tasks} == {1, 2, 3}
+    assert len(run_plan.runs) == 80
+    assert report["input_lock_sha256"] == digest_value(lock.model_dump(mode="json"))
+
+
 def test_pilot_input_lock_detects_tampering(tmp_path: Path) -> None:
     locked = tmp_path / "manifest.json"
     locked.write_text("frozen", encoding="utf-8")
@@ -1612,7 +1723,9 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert job["runs-on"] == "ubuntu-latest"
     assert workflow["permissions"]["contents"] == "write"
     assert "inputs.stage != 'flash_full_dataset_v1'" in text
-    assert "inputs.budget_cny != '7.4'" in text
+    assert "inputs.stage != 'semantic_join_safety_v1'" in text
+    assert "inputs.stage == 'flash_full_dataset_v1' && inputs.budget_cny != '7.4'" in text
+    assert "inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8'" in text
     assert workflow["on"]["workflow_dispatch"]["inputs"]["pilot_commit"]["default"] == (
         "cd0fa65fad74e84d53729ce30d3d61ed04dcc974"
     )
@@ -1695,8 +1808,11 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         run_step["name"]
     )
     assert reservation["working-directory"] == ".workflow-control"
-    assert set(reservation["env"]) == {"GH_TOKEN"}
-    assert "--mode pilot_stage" in reservation["run"]
+    assert set(reservation["env"]) == {"GH_TOKEN", "PILOT_RESERVATION_MODE"}
+    assert "'pilot_stage_safety' || 'pilot_stage'" in reservation["env"][
+        "PILOT_RESERVATION_MODE"
+    ]
+    assert '--mode "$PILOT_RESERVATION_MODE"' in reservation["run"]
     assert "joinlint-campaign-ledger" in reservation["run"]
     sanitized_scan = next(
         step

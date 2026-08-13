@@ -127,7 +127,8 @@ still needs a reviewed admission policy and protected non-force ledger ref.
 `campaign_reservation.py` narrows the workflow-owned consumer to GitHub's
 default run variables on an explicitly protected ref, fixes the admitted
 mode/upper pairs to readiness/CNY 2.10, calibration/CNY 4, full Pilot/CNY 20,
-and the Flash full-dataset stage/CNY 7.40,
+the BIRD Flash full-dataset stage/CNY 7.40, and the synthetic semantic-safety
+Flash stage/CNY 8.00,
 requires the exact matching policy-driving dispatch flags and budget string,
 reads the actual Git HEAD from a clean fixed checkout path, and
 requires calibration/Pilot reservations to bind the verified frozen-input lock
@@ -243,6 +244,27 @@ ledger commit, evaluated commit, and frozen input lock. Its CNY 7.39792 resource
 upper is reserved as CNY 7.40. A positive significant result supports only an
 exploratory claim for this frozen BIRD Pilot, Flash model, and host allocation;
 it is not a confirmatory population estimate.
+
+The completed run over the frozen BIRD Pilot produced 17/20 control successes
+and 16/20 treatment successes (absolute change -0.05; treatment-only wins 2,
+control-only wins 3; exact two-sided McNemar p=1.0). It therefore does not show
+a positive product effect on that sample. The three treatment-only regressions
+were model-limit outcomes rather than accepted wrong Join paths. Because this
+20-task sample has only three control failures, even a perfect treatment could
+produce at most three treatment-only wins (two-sided p=0.25); repeating the
+same sample cannot establish significance.
+
+The separate `semantic_join_safety_v1` stage is a preregistered synthetic safety
+stress test, not a replacement natural-error-rate claim. It freezes 20
+independent tasks across four generated SQLite databases, each with a proven
+dangerous same-type or wrong-hierarchy join whose result differs from the gold
+query. Control receives the visible schema without relationship declarations;
+treatment receives the same input plus JoinLint's relationship proof. The
+stage keeps the same paired McNemar outcome and alpha, uses the Flash model,
+raises the per-run stop/accounting/message limits to 45,000/50,000/30 to avoid
+the BIRD run's model-limit censoring, and reserves a CNY 8.00 upper bound for a
+CNY 7.79792 resource envelope. Any result supports only the frozen synthetic
+Join-safety stress claim.
 
 `formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.
 It runs 80 samples under the frozen `balanced_diagonal_crossover_v1` design.
