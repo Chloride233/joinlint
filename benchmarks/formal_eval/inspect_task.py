@@ -734,6 +734,7 @@ def _samples(
                 metadata={
                     "task_id": actual.task_id,
                     "database_id": actual.database_id,
+                    "corpus": manifest_task.corpus,
                     "database_path": str(database_source),
                     "gold_sql": actual.gold_sql,
                     "schema": actual.schema_map,

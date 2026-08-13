@@ -92,6 +92,7 @@ def test_exported_row_drops_sealed_inputs_and_transcripts() -> None:
         metadata={
             "task_id": "task-1",
             "database_id": "database-1",
+            "corpus": "semantic_join_failure",
             "condition": "treatment",
             "host": "codex",
             "oracle_has_safe_path": True,
@@ -151,6 +152,7 @@ def test_exported_row_drops_sealed_inputs_and_transcripts() -> None:
     serialized = json.dumps(payload)
 
     assert payload["join_correct_task_completion"] is True
+    assert payload["corpus"] == "semantic_join_failure"
     assert payload["input_tokens"] == 150
     assert payload["input_cache_read_tokens"] == 20
     assert payload["input_cache_write_tokens"] == 10

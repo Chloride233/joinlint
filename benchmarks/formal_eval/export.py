@@ -125,6 +125,7 @@ def _row(
 ) -> AgentResultRow:
     metadata = sample.metadata
     condition = str(metadata["condition"])
+    corpus = str(metadata.get("corpus", "natural"))
     host = str(metadata["host"])
     model_id = log.eval.model
     repetition = max(0, sample.epoch - 1)
@@ -177,7 +178,7 @@ def _row(
         sample_id=sample_id_for(
             task_id=str(metadata["task_id"]),
             database_id=str(metadata["database_id"]),
-            corpus="natural" if condition in {"control", "treatment"} else "semantic_join_failure",
+            corpus=corpus,
             condition=condition,
             model_id=model_id,
             host=host,
@@ -185,7 +186,7 @@ def _row(
         ),
         task_id=str(metadata["task_id"]),
         database_id=str(metadata["database_id"]),
-        corpus="natural" if condition in {"control", "treatment"} else "semantic_join_failure",
+        corpus=corpus,
         condition=condition,  # type: ignore[arg-type]
         model_id=model_id,
         host=host,  # type: ignore[arg-type]
