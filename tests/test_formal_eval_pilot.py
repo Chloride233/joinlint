@@ -1813,7 +1813,9 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         "PILOT_RESERVATION_MODE"
     ]
     assert '--mode "$PILOT_RESERVATION_MODE"' in reservation["run"]
-    assert "joinlint-campaign-ledger" in reservation["run"]
+    assert "joinlint-safety-effect-2026-08" in reservation["run"]
+    assert "joinlint-campaign-ledger-safety-v1" in reservation["run"]
+    assert "96d689731148b8eb69812b4d0a82dcac75bf2fd1" in reservation["run"]
     sanitized_scan = next(
         step
         for step in job["steps"]
