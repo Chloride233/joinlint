@@ -184,6 +184,7 @@ jobs:
           CAMPAIGN_SPEND_BEFORE_CNY: ${{ steps.campaign_reservation.outputs.campaign_reserved_before_cny }}
           CAMPAIGN_RESERVATION_ID: ${{ steps.campaign_reservation.outputs.campaign_reservation_id }}
           CAMPAIGN_LEDGER_COMMIT_SHA: ${{ steps.campaign_reservation.outputs.campaign_ledger_commit_sha }}
+          PILOT_STAGE_CONFIRMATION_ARG: ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && '--confirmation' || '' }}
           PYTHONPATH: ${{ github.workspace }}/.workflow-control
         run: >-
           python -P "$GITHUB_WORKSPACE/.workflow-control/benchmarks/formal_eval/pilot_stage.py"
@@ -195,7 +196,7 @@ jobs:
           --workflow-run-id "${{ github.run_id }}"
           --campaign-reservation-id "$CAMPAIGN_RESERVATION_ID"
           --campaign-ledger-commit-sha "$CAMPAIGN_LEDGER_COMMIT_SHA"
-          ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && '--confirmation' || '' }}
+          $PILOT_STAGE_CONFIRMATION_ARG
       - name: Scan sanitized Pilot stage artifacts
         id: scan_pilot_stage_sanitized
         if: always() && steps.public_artifact_verifier.outcome == 'success'

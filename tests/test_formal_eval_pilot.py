@@ -1726,6 +1726,8 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert "inputs.stage != 'semantic_join_safety_v1'" in text
     assert "inputs.stage == 'flash_full_dataset_v1' && inputs.budget_cny != '7.4'" in text
     assert "inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8'" in text
+    assert "inputs.stage == 'semantic_join_safety_confirmation_v1'" in text
+    assert "inputs.budget_cny != '5.53'" in text
     assert workflow["on"]["workflow_dispatch"]["inputs"]["pilot_commit"]["default"] == (
         "cd0fa65fad74e84d53729ce30d3d61ed04dcc974"
     )
@@ -1770,8 +1772,9 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         "CAMPAIGN_BUDGET_CNY",
         "CAMPAIGN_SPEND_BEFORE_CNY",
         "CAMPAIGN_RESERVATION_ID",
-        "CAMPAIGN_LEDGER_COMMIT_SHA",
-        "PYTHONPATH",
+            "CAMPAIGN_LEDGER_COMMIT_SHA",
+            "PILOT_STAGE_CONFIRMATION_ARG",
+            "PYTHONPATH",
     }
     assert "--campaign-budget-cny \"$CAMPAIGN_BUDGET_CNY\"" in run_step["run"]
     assert "--campaign-spend-before-cny \"$CAMPAIGN_SPEND_BEFORE_CNY\"" in run_step["run"]
