@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from benchmarks.formal_eval.contracts import AgentResultRow, StrictModel
+from benchmarks.formal_eval.contracts import AgentResultBundle, AgentResultRow, StrictModel
 from benchmarks.formal_eval.dispatch import inspect_subprocess_environment
 from benchmarks.formal_eval.export import export_agent_rows
 from benchmarks.formal_eval.lineage import digest_value
@@ -404,8 +404,27 @@ def run_flash_stage(
         )
         batch_log_dir = Path(command[command.index("--log-dir") + 1])
         batch_log_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run(command, check=True, env=inspect_subprocess_environment())
-        require_batch_health(batch_log_dir, expected_sample_count=10)
+        try:
+            subprocess.run(command, check=True, env=inspect_subprocess_environment())
+            require_batch_health(batch_log_dir, expected_sample_count=10)
+        except (subprocess.CalledProcessError, RuntimeError):
+            _write_stage_checkpoint(
+                output,
+                envelope=envelope,
+                completed_batches=batch_index + 1,
+                total_batches=len(commands),
+                actual_model_cost_cny=observed_model_cost_cny(log_dir, registration),
+                batch_upper_cny=batch_upper,
+            )
+            _export_stage_rows(
+                registration=registration,
+                log_dir=log_dir,
+                output=output,
+                lineage_id=full_run_plan.lineage_id,
+                stage_run_plan=stage_run_plan,
+                allow_incomplete_run_plan=True,
+            )
+            raise
     observed = observed_model_cost_cny(log_dir, registration)
     _write_stage_checkpoint(
         output,
@@ -416,17 +435,14 @@ def run_flash_stage(
         batch_upper_cny=batch_upper,
     )
 
-    flash = _flash_model(registration)
-    bundle = export_agent_rows(
-        log_dir,
-        output / "agent-results-bundle.json",
-        expected_model_ids={flash.returned_id},
-        model_pricing={flash.returned_id: flash.pricing_cny},
+    bundle = _export_stage_rows(
+        registration=registration,
+        log_dir=log_dir,
+        output=output,
         lineage_id=full_run_plan.lineage_id,
-        run_plan=stage_run_plan,
-        summary_output=output / "cleaning.json",
+        stage_run_plan=stage_run_plan,
+        allow_incomplete_run_plan=False,
     )
-    _write_json(output / "pilot-agent-results.json", bundle.rows)
     actual_model_cost = sum(row.calculated_cost_cny for row in bundle.rows)
     total_upper = (
         actual_model_cost
@@ -455,6 +471,30 @@ def run_flash_stage(
     if not budget.passed or not campaign.passed:
         raise RuntimeError("Flash Pilot stage exceeded its approved budget")
     return effect
+
+
+def _export_stage_rows(
+    *,
+    registration: PilotRegistration,
+    log_dir: Path,
+    output: Path,
+    lineage_id: str,
+    stage_run_plan: RunPlanV2,
+    allow_incomplete_run_plan: bool,
+) -> AgentResultBundle:
+    flash = _flash_model(registration)
+    bundle = export_agent_rows(
+        log_dir,
+        output / "agent-results-bundle.json",
+        expected_model_ids={flash.returned_id},
+        model_pricing={flash.returned_id: flash.pricing_cny},
+        lineage_id=lineage_id,
+        run_plan=stage_run_plan,
+        summary_output=output / "cleaning.json",
+        allow_incomplete_run_plan=allow_incomplete_run_plan,
+    )
+    _write_json(output / "pilot-agent-results.json", bundle.rows)
+    return bundle
 
 
 def _write_stage_checkpoint(

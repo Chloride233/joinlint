@@ -34,6 +34,7 @@ def export_agent_rows(
     run_plan: RunPlanV2,
     phase: Literal["all", "confirmatory", "diagnostic"] = "all",
     summary_output: Path | None = None,
+    allow_incomplete_run_plan: bool = False,
 ) -> AgentResultBundle:
     from inspect_ai.log import list_eval_logs, read_eval_log
 
@@ -68,7 +69,11 @@ def export_agent_rows(
         or (phase == "confirmatory" and run.confirmatory)
         or (phase == "diagnostic" and not run.confirmatory)
     }
-    if set(sample_ids) != expected_ids:
+    actual_ids = set(sample_ids)
+    if (
+        actual_ids != expected_ids
+        and not (allow_incomplete_run_plan and actual_ids < expected_ids)
+    ):
         raise ValueError("formal logs do not match the frozen run plan")
     run_plan_sha256 = digest_value(run_plan.model_dump(mode="json"))
     bundle = AgentResultBundle(

@@ -270,11 +270,7 @@ def _verify_current_run_receipt(
     ]
     if matches != [len(snapshot.ledger.reservations) - 1]:
         raise CampaignReservationError("receipt reservation is not present at the live head")
-    index = matches[0]
-    reserved_before = snapshot.ledger.opening_reserved_upper_micro_cny + sum(
-        reservation.upper_micro_cny
-        for reservation in snapshot.ledger.reservations[:index]
-    )
+    reserved_before = snapshot.ledger.reserved_before(receipt.reservation)
     if (
         receipt.upper_micro_cny != expected.upper_micro_cny
         or receipt.reserved_before_micro_cny != reserved_before

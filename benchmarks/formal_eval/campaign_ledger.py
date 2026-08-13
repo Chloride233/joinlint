@@ -45,6 +45,10 @@ class ReservationConflict(CampaignLedgerError):
     pass
 
 
+class SettlementConflict(CampaignLedgerError):
+    pass
+
+
 class CasConflict(RuntimeError):
     pass
 
@@ -282,17 +286,102 @@ class ReserveResult:
 
 
 @dataclass(frozen=True)
+class SettlementRequest:
+    reservation_id: str
+    accounted_upper_micro_cny: int
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        _require_pattern(
+            self.reservation_id,
+            field="settlement reservation_id",
+            pattern=_SHA256_PATTERN,
+        )
+        _require_exact_int(
+            self.accounted_upper_micro_cny,
+            field="accounted_upper_micro_cny",
+        )
+        _require_pattern(
+            self.evidence_sha256,
+            field="settlement evidence_sha256",
+            pattern=_SHA256_PATTERN,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "accounted_upper_micro_cny": self.accounted_upper_micro_cny,
+            "evidence_sha256": self.evidence_sha256,
+            "reservation_id": self.reservation_id,
+        }
+
+    @property
+    def settlement_id(self) -> str:
+        return hashlib.sha256(_canonical_json(self.to_dict())).hexdigest()
+
+    def to_settlement(self) -> Settlement:
+        return Settlement(settlement_id=self.settlement_id, **self.to_dict())
+
+
+@dataclass(frozen=True)
+class Settlement:
+    settlement_id: str
+    reservation_id: str
+    accounted_upper_micro_cny: int
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        request = self.request
+        _require_pattern(
+            self.settlement_id,
+            field="settlement_id",
+            pattern=_SHA256_PATTERN,
+        )
+        if self.settlement_id != request.settlement_id:
+            raise CampaignLedgerError("settlement identity is inconsistent")
+
+    @property
+    def request(self) -> SettlementRequest:
+        return SettlementRequest(
+            reservation_id=self.reservation_id,
+            accounted_upper_micro_cny=self.accounted_upper_micro_cny,
+            evidence_sha256=self.evidence_sha256,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {"settlement_id": self.settlement_id, **self.request.to_dict()}
+
+    @classmethod
+    def from_dict(cls, value: object) -> Settlement:
+        if type(value) is not dict or set(value) != {
+            "accounted_upper_micro_cny",
+            "evidence_sha256",
+            "reservation_id",
+            "settlement_id",
+        }:
+            raise CampaignLedgerError("settlement fields are invalid")
+        return cls(**value)
+
+
+@dataclass(frozen=True)
+class SettlementResult:
+    ledger: CampaignLedger
+    settlement: Settlement
+    created: bool
+
+
+@dataclass(frozen=True)
 class CampaignLedger:
     campaign_id: str
     budget_micro_cny: int
     opening_reserved_upper_micro_cny: int
     reservations: tuple[Reservation, ...] = ()
+    settlements: tuple[Settlement, ...] = ()
     schema_version: int = 2
     currency: str = "CNY"
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version != 2:
-            raise CampaignLedgerError("campaign ledger schema_version must equal 2")
+        if type(self.schema_version) is not int or self.schema_version not in {2, 3}:
+            raise CampaignLedgerError("campaign ledger schema_version must equal 2 or 3")
         if self.currency != "CNY":
             raise CampaignLedgerError("campaign ledger currency must be CNY")
         _require_pattern(
@@ -309,10 +398,34 @@ class CampaignLedger:
             isinstance(reservation, Reservation) for reservation in self.reservations
         ):
             raise CampaignLedgerError("reservations must be a tuple of valid records")
+        if type(self.settlements) is not tuple or not all(
+            isinstance(settlement, Settlement) for settlement in self.settlements
+        ):
+            raise CampaignLedgerError("settlements must be a tuple of valid records")
+        if self.schema_version == 2 and self.settlements:
+            raise CampaignLedgerError("schema version 2 cannot contain settlements")
         keys = [reservation.key for reservation in self.reservations]
         identities = [reservation.reservation_id for reservation in self.reservations]
         if len(keys) != len(set(keys)) or len(identities) != len(set(identities)):
             raise CampaignLedgerError("campaign ledger contains duplicate reservations")
+        settlement_reservations = [
+            settlement.reservation_id for settlement in self.settlements
+        ]
+        settlement_ids = [settlement.settlement_id for settlement in self.settlements]
+        if (
+            len(settlement_reservations) != len(set(settlement_reservations))
+            or len(settlement_ids) != len(set(settlement_ids))
+        ):
+            raise CampaignLedgerError("campaign ledger contains duplicate settlements")
+        reservations_by_id = {
+            reservation.reservation_id: reservation for reservation in self.reservations
+        }
+        for settlement in self.settlements:
+            reservation = reservations_by_id.get(settlement.reservation_id)
+            if reservation is None:
+                raise CampaignLedgerError("settlement references an unknown reservation")
+            if settlement.accounted_upper_micro_cny > reservation.upper_micro_cny:
+                raise CampaignLedgerError("settlement exceeds its reservation upper bound")
         if self.reserved_upper_micro_cny > self.budget_micro_cny:
             raise CampaignBudgetExceeded("campaign reserved upper bound exceeds its budget")
 
@@ -334,13 +447,29 @@ class CampaignLedger:
 
     @property
     def reserved_upper_micro_cny(self) -> int:
+        settled = {
+            settlement.reservation_id: settlement.accounted_upper_micro_cny
+            for settlement in self.settlements
+        }
         return self.opening_reserved_upper_micro_cny + sum(
-            reservation.upper_micro_cny for reservation in self.reservations
+            settled.get(reservation.reservation_id, reservation.upper_micro_cny)
+            for reservation in self.reservations
         )
 
     @property
     def remaining_micro_cny(self) -> int:
         return self.budget_micro_cny - self.reserved_upper_micro_cny
+
+    def reserved_before(self, reservation: Reservation) -> int:
+        index = self.reservations.index(reservation)
+        settled = {
+            settlement.reservation_id: settlement.accounted_upper_micro_cny
+            for settlement in self.settlements
+        }
+        return self.opening_reserved_upper_micro_cny + sum(
+            settled.get(item.reservation_id, item.upper_micro_cny)
+            for item in self.reservations[:index]
+        )
 
     def reserve(self, request: ReservationRequest) -> ReserveResult:
         candidate = request.to_reservation()
@@ -363,8 +492,41 @@ class CampaignLedger:
         updated = replace(self, reservations=(*self.reservations, candidate))
         return ReserveResult(ledger=updated, reservation=candidate, created=True)
 
+    def settle(self, request: SettlementRequest) -> SettlementResult:
+        candidate = request.to_settlement()
+        reservation = next(
+            (
+                item
+                for item in self.reservations
+                if item.reservation_id == request.reservation_id
+            ),
+            None,
+        )
+        if reservation is None:
+            raise SettlementConflict("settlement references an unknown reservation")
+        if request.accounted_upper_micro_cny > reservation.upper_micro_cny:
+            raise SettlementConflict("settlement exceeds its reservation upper bound")
+        for settlement in self.settlements:
+            if settlement.reservation_id != request.reservation_id:
+                continue
+            if settlement == candidate:
+                return SettlementResult(
+                    ledger=self,
+                    settlement=settlement,
+                    created=False,
+                )
+            raise SettlementConflict(
+                "reservation is already settled with different evidence"
+            )
+        updated = replace(
+            self,
+            schema_version=3,
+            settlements=(*self.settlements, candidate),
+        )
+        return SettlementResult(ledger=updated, settlement=candidate, created=True)
+
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "budget_micro_cny": self.budget_micro_cny,
             "campaign_id": self.campaign_id,
             "currency": self.currency,
@@ -376,6 +538,11 @@ class CampaignLedger:
             ],
             "schema_version": self.schema_version,
         }
+        if self.schema_version == 3:
+            payload["settlements"] = [
+                settlement.to_dict() for settlement in self.settlements
+            ]
+        return payload
 
     def to_bytes(self) -> bytes:
         return _canonical_json(self.to_dict()) + b"\n"
@@ -394,18 +561,27 @@ class CampaignLedger:
             )
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise CampaignLedgerError("campaign ledger JSON is invalid") from error
-        if type(decoded) is not dict or set(decoded) != {
+        if type(decoded) is not dict:
+            raise CampaignLedgerError("campaign ledger fields are invalid")
+        schema_version = decoded.get("schema_version")
+        expected_fields = {
             "budget_micro_cny",
             "campaign_id",
             "currency",
             "opening_reserved_upper_micro_cny",
             "reservations",
             "schema_version",
-        }:
+        }
+        if schema_version == 3:
+            expected_fields.add("settlements")
+        if set(decoded) != expected_fields:
             raise CampaignLedgerError("campaign ledger fields are invalid")
         reservations = decoded["reservations"]
         if type(reservations) is not list:
             raise CampaignLedgerError("campaign ledger reservations must be a list")
+        settlements = decoded.get("settlements", [])
+        if type(settlements) is not list:
+            raise CampaignLedgerError("campaign ledger settlements must be a list")
         ledger = cls(
             schema_version=decoded["schema_version"],
             campaign_id=decoded["campaign_id"],
@@ -416,6 +592,9 @@ class CampaignLedger:
             ],
             reservations=tuple(
                 Reservation.from_dict(reservation) for reservation in reservations
+            ),
+            settlements=tuple(
+                Settlement.from_dict(settlement) for settlement in settlements
             ),
         )
         if raw != ledger.to_bytes():
@@ -563,6 +742,16 @@ class ReservationReceipt:
         return receipt
 
 
+@dataclass(frozen=True)
+class SettlementReceipt:
+    created: bool
+    campaign_id: str
+    settlement: Settlement
+    ledger_commit_sha: str
+    reserved_before_micro_cny: int
+    reserved_after_micro_cny: int
+
+
 class LedgerStore(Protocol):
     def read(self) -> LedgerSnapshot: ...
 
@@ -669,8 +858,10 @@ class GitHubGitLedgerStore:
     def initialize(self, ledger: CampaignLedger) -> str:
         if self._expected_genesis_commit is not None:
             raise GitHubLedgerError("GitHub ledger genesis is already pinned")
-        if ledger.reservations:
-            raise GitHubLedgerError("GitHub ledger genesis must have no reservations")
+        if ledger.reservations or ledger.settlements:
+            raise GitHubLedgerError(
+                "GitHub ledger genesis must have no reservations or settlements"
+            )
         self._verify_repository_identity()
         blob_sha = self._create_blob(ledger.to_bytes())
         tree_sha = self._create_tree(blob_sha=blob_sha, base_tree=None)
@@ -732,12 +923,13 @@ class GitHubGitLedgerStore:
         commit_sha = _github_sha(ref_object.get("sha"), field="ref commit")
         head, parents = self._read_commit(commit_sha)
         current = head
-        for depth in range(len(head.ledger.reservations) + 1):
+        event_count = len(head.ledger.reservations) + len(head.ledger.settlements)
+        for depth in range(event_count + 1):
             if current.commit_sha == self._expected_genesis_commit:
-                if current.ledger.reservations or parents:
+                if current.ledger.reservations or current.ledger.settlements or parents:
                     raise GitHubLedgerError("GitHub ledger genesis is invalid")
                 return head
-            if depth == len(head.ledger.reservations):
+            if depth == event_count:
                 break
             if len(parents) != 1:
                 raise GitHubLedgerError(
@@ -834,7 +1026,14 @@ class GitHubGitLedgerStore:
         current = self.read()
         if current != expected:
             raise CasConflict("GitHub ledger ref advanced before reservation")
-        reservation_id = updated.reservations[-1].reservation_id
+        reservation_appended = len(updated.reservations) > len(
+            expected.ledger.reservations
+        )
+        event_id = (
+            updated.reservations[-1].reservation_id
+            if reservation_appended
+            else updated.settlements[-1].settlement_id
+        )
         raw = updated.to_bytes()
         blob_sha = self._create_blob(raw)
         tree_sha = self._create_tree(
@@ -844,7 +1043,11 @@ class GitHubGitLedgerStore:
         commit_sha = self._create_commit(
             tree_sha=tree_sha,
             parents=[expected.commit_sha],
-            message=f"reserve {reservation_id} {nonce}",
+            message=(
+                f"reserve {event_id} {nonce}"
+                if reservation_appended
+                else f"settle {event_id} {nonce}"
+            ),
         )
         try:
             ref = self._api.request(
@@ -981,28 +1184,46 @@ def _require_append_only_transition(
     updated: CampaignLedger,
 ) -> None:
     if (
-        previous.schema_version != updated.schema_version
-        or previous.campaign_id != updated.campaign_id
+        previous.campaign_id != updated.campaign_id
         or previous.currency != updated.currency
         or previous.budget_micro_cny != updated.budget_micro_cny
         or previous.opening_reserved_upper_micro_cny
         != updated.opening_reserved_upper_micro_cny
-        or len(updated.reservations) != len(previous.reservations) + 1
-        or updated.reservations[:-1] != previous.reservations
+        or updated.reservations[: len(previous.reservations)]
+        != previous.reservations
+        or updated.settlements[: len(previous.settlements)] != previous.settlements
     ):
-        raise GitHubLedgerError("GitHub ledger transition must append one reservation")
+        raise GitHubLedgerError(
+            "GitHub ledger transition must preserve append-only campaign history"
+        )
+    reservation_delta = len(updated.reservations) - len(previous.reservations)
+    settlement_delta = len(updated.settlements) - len(previous.settlements)
+    if reservation_delta + settlement_delta != 1 or min(
+        reservation_delta, settlement_delta
+    ) < 0:
+        raise GitHubLedgerError("GitHub ledger transition must append one event")
+    if updated.schema_version != previous.schema_version and not (
+        previous.schema_version == 2
+        and updated.schema_version == 3
+        and settlement_delta == 1
+    ):
+        raise GitHubLedgerError("GitHub ledger schema transition is invalid")
 
 
 def _ledger_is_prefix(expected: CampaignLedger, current: CampaignLedger) -> bool:
     return (
-        expected.schema_version == current.schema_version
-        and expected.campaign_id == current.campaign_id
+        expected.campaign_id == current.campaign_id
         and expected.currency == current.currency
         and expected.budget_micro_cny == current.budget_micro_cny
         and expected.opening_reserved_upper_micro_cny
         == current.opening_reserved_upper_micro_cny
         and current.reservations[: len(expected.reservations)]
         == expected.reservations
+        and current.settlements[: len(expected.settlements)] == expected.settlements
+        and (
+            expected.schema_version == current.schema_version
+            or (expected.schema_version == 2 and current.schema_version == 3)
+        )
     )
 
 
@@ -1057,11 +1278,49 @@ def reserve_with_store(
     raise AssertionError("unreachable campaign ledger CAS state")
 
 
+def settle_with_store(
+    store: LedgerStore,
+    *,
+    expected_campaign_id: str,
+    request: SettlementRequest,
+    max_attempts: int = 5,
+) -> SettlementReceipt:
+    if type(max_attempts) is not int or not 1 <= max_attempts <= 10:
+        raise CampaignLedgerError("max_attempts must be between 1 and 10")
+    for attempt in range(max_attempts):
+        snapshot = store.read()
+        if snapshot.ledger.campaign_id != expected_campaign_id:
+            raise CampaignLedgerError("campaign identity does not match")
+        before = snapshot.ledger.reserved_upper_micro_cny
+        result = snapshot.ledger.settle(request)
+        if not result.created:
+            return SettlementReceipt(
+                created=False,
+                campaign_id=snapshot.ledger.campaign_id,
+                settlement=result.settlement,
+                ledger_commit_sha=snapshot.commit_sha,
+                reserved_before_micro_cny=before,
+                reserved_after_micro_cny=before,
+            )
+        try:
+            commit_sha = store.compare_and_swap(snapshot, result.ledger)
+        except CasConflict as error:
+            if attempt + 1 == max_attempts:
+                raise CasConflict("campaign ledger CAS retry limit was exhausted") from error
+            continue
+        return SettlementReceipt(
+            created=True,
+            campaign_id=snapshot.ledger.campaign_id,
+            settlement=result.settlement,
+            ledger_commit_sha=commit_sha,
+            reserved_before_micro_cny=before,
+            reserved_after_micro_cny=result.ledger.reserved_upper_micro_cny,
+        )
+    raise AssertionError("unreachable campaign ledger CAS state")
+
+
 def _reserved_before(ledger: CampaignLedger, reservation: Reservation) -> int:
-    index = ledger.reservations.index(reservation)
-    return ledger.opening_reserved_upper_micro_cny + sum(
-        item.upper_micro_cny for item in ledger.reservations[:index]
-    )
+    return ledger.reserved_before(reservation)
 
 
 def main(

@@ -19,9 +19,12 @@ from benchmarks.formal_eval.campaign_ledger import (
     ReservationReceipt,
     ReservationConflict,
     ReservationRequest,
+    SettlementConflict,
+    SettlementRequest,
     parse_cny_micro,
     main as campaign_ledger_main,
     reserve_with_store,
+    settle_with_store,
 )
 
 
@@ -178,6 +181,71 @@ def test_same_reservation_key_with_different_payload_fails_closed() -> None:
         ledger.reserve(_request(input_lock_sha256="e" * 64))
 
 
+def test_settlement_replaces_a_reservation_with_an_evidence_bound_upper() -> None:
+    reserved = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="10",
+        opening_reserved_upper_cny="1",
+    ).reserve(_request()).ledger
+    request = SettlementRequest(
+        reservation_id=reserved.reservations[0].reservation_id,
+        accounted_upper_micro_cny=2_500_000,
+        evidence_sha256="e" * 64,
+    )
+
+    result = reserved.settle(request)
+
+    assert result.created is True
+    assert result.ledger.schema_version == 3
+    assert result.ledger.reserved_upper_micro_cny == 3_500_000
+    assert result.ledger.remaining_micro_cny == 6_500_000
+    assert CampaignLedger.from_bytes(result.ledger.to_bytes()) == result.ledger
+    replay = result.ledger.settle(request)
+    assert replay.created is False
+    assert replay.ledger is result.ledger
+
+
+def test_settlement_cannot_exceed_change_or_invent_a_reservation() -> None:
+    reserved = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="10",
+        opening_reserved_upper_cny="0",
+    ).reserve(_request()).ledger
+    reservation_id = reserved.reservations[0].reservation_id
+
+    with pytest.raises(SettlementConflict, match="exceeds"):
+        reserved.settle(
+            SettlementRequest(
+                reservation_id=reservation_id,
+                accounted_upper_micro_cny=4_000_001,
+                evidence_sha256="e" * 64,
+            )
+        )
+    settled = reserved.settle(
+        SettlementRequest(
+            reservation_id=reservation_id,
+            accounted_upper_micro_cny=2_500_000,
+            evidence_sha256="e" * 64,
+        )
+    ).ledger
+    with pytest.raises(SettlementConflict, match="different evidence"):
+        settled.settle(
+            SettlementRequest(
+                reservation_id=reservation_id,
+                accounted_upper_micro_cny=2_400_000,
+                evidence_sha256="f" * 64,
+            )
+        )
+    with pytest.raises(SettlementConflict, match="unknown"):
+        reserved.settle(
+            SettlementRequest(
+                reservation_id="f" * 64,
+                accounted_upper_micro_cny=0,
+                evidence_sha256="e" * 64,
+            )
+        )
+
+
 def test_reservation_identity_round_trips_without_a_frozen_input_for_readiness() -> None:
     request = _request(
         mode="readiness",
@@ -284,6 +352,38 @@ def test_cas_reservation_reloads_after_a_sibling_commit() -> None:
     assert receipt.reserved_before_micro_cny == 2_100_000
     assert receipt.reserved_after_micro_cny == 6_100_000
     assert store.cas_calls == 2
+
+
+def test_cas_settlement_releases_only_the_evidence_bound_difference() -> None:
+    reserved = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="10",
+        opening_reserved_upper_cny="1",
+    ).reserve(_request()).ledger
+    store = _FakeStore(reserved)
+    request = SettlementRequest(
+        reservation_id=reserved.reservations[0].reservation_id,
+        accounted_upper_micro_cny=2_500_000,
+        evidence_sha256="e" * 64,
+    )
+
+    receipt = settle_with_store(
+        store,
+        expected_campaign_id=CAMPAIGN_ID,
+        request=request,
+    )
+
+    assert receipt.created is True
+    assert receipt.reserved_before_micro_cny == 5_000_000
+    assert receipt.reserved_after_micro_cny == 3_500_000
+    assert store.snapshot.ledger.settlements == (request.to_settlement(),)
+    replay = settle_with_store(
+        store,
+        expected_campaign_id=CAMPAIGN_ID,
+        request=request,
+    )
+    assert replay.created is False
+    assert replay.reserved_before_micro_cny == replay.reserved_after_micro_cny
 
 
 def test_cas_conflict_rechecks_the_budget_before_retrying() -> None:

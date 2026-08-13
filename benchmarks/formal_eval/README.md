@@ -102,16 +102,22 @@ concurrency group with cancellation disabled, so at most one can run at a time
 after they are re-enabled. This single-flight guard is defense in depth only:
 it does not reserve funds atomically, and GitHub may replace an older pending
 job with a newer pending job.
-`campaign_ledger.py` now supplies the tested reservation primitive for the next
-gate: schema-v2 strict integer micro-CNY accounting, an append-only full-upper-bound
-reservation, and a non-force GitHub ref compare-and-swap. Exact replays are
+`campaign_ledger.py` now supplies the tested accounting primitive for the next
+gate: strict integer micro-CNY accounting, append-only full-upper-bound
+reservations, evidence-bound conservative settlements, and a non-force GitHub
+ref compare-and-swap. Schema v2 reservation-only ledgers remain readable; the
+first settlement upgrades the append-only event stream to schema v3. A
+settlement may only reduce one existing reservation to a still-conservative
+accounted upper bound and permanently binds the supporting artifact digest.
+Exact reservation replays are
 recorded as already consumed and never authorize another paid call. Deterministic
 tests cover same-head writers, response loss, replay, and exhausted-budget
 conflicts. Existing-branch reads require the expected GitHub repository ID and
 an externally pinned empty genesis commit, then verify at most one Git commit
-per recorded reservation plus the genesis. Histories outside that genesis,
-merges, skipped or replaced reservations, and changed budget or opening-balance
-fields fail closed; CAS rechecks that lineage before creating any Git object.
+per recorded reservation or settlement plus the genesis. Histories outside
+that genesis, merges, skipped or replaced events, and changed budget or
+opening-balance fields fail closed; CAS rechecks that lineage before creating
+any Git object.
 Genesis ancestry alone cannot distinguish the current head from a force-reset
 to one of its formerly valid prefixes, so a protected non-force/non-delete ref
 or an independent monotonic checkpoint remains mandatory. The product-effect

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,7 @@ from benchmarks.formal_eval.pilot_stage import (
     flash_stage_budget_envelope,
     flash_stage_run_plan,
     pilot_stage_preregistration,
+    run_flash_stage,
     stage_effect_report,
 )
 
@@ -140,6 +143,78 @@ def test_stage_effect_requires_positive_exact_significance() -> None:
     assert effect.exact_p_value == 0.015625
     assert effect.significant_improvement is True
     assert effect.treatment_mcp_grounded == 20
+
+
+def test_stage_infrastructure_failure_exports_partial_sanitized_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = frozen_pilot_registration(COMMIT)
+    full_plan = build_pilot_run_plan(_manifest(), registration, LINEAGE_ID)
+    exported: list[bool] = []
+    observed_costs = iter((0.0, 0.125))
+    monkeypatch.setattr(
+        "benchmarks.formal_eval.pilot_stage.verify_pilot_input_bundle",
+        lambda root: (
+            registration,
+            _manifest(),
+            full_plan,
+            SimpleNamespace(model_dump=lambda mode: {"schema_version": 2}),
+        ),
+    )
+    monkeypatch.setattr(
+        "benchmarks.formal_eval.pilot_stage.shutil.which",
+        lambda name: "/usr/bin/inspect",
+    )
+    monkeypatch.setattr(
+        "benchmarks.formal_eval.pilot_stage.build_flash_stage_commands",
+        lambda **kwargs: tuple(
+            [
+                "inspect",
+                "eval",
+                "task",
+                "--log-dir",
+                str(tmp_path / f"batch-{index}"),
+            ]
+            for index in range(4)
+        ),
+    )
+    monkeypatch.setattr(
+        "benchmarks.formal_eval.pilot_stage.subprocess.run",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "benchmarks.formal_eval.pilot_stage.require_batch_health",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("pilot batch contains an infrastructure failure")
+        ),
+    )
+    monkeypatch.setattr(
+        "benchmarks.formal_eval.pilot_stage.observed_model_cost_cny",
+        lambda *args, **kwargs: next(observed_costs),
+    )
+    monkeypatch.setattr(
+        "benchmarks.formal_eval.pilot_stage._export_stage_rows",
+        lambda **kwargs: exported.append(kwargs["allow_incomplete_run_plan"]),
+    )
+    output = tmp_path / "output"
+
+    with pytest.raises(RuntimeError, match="infrastructure failure"):
+        run_flash_stage(
+            tmp_path / "frozen",
+            tmp_path / "logs",
+            output,
+            campaign_budget_cny=50,
+            campaign_spend_before_cny=0,
+            workflow_run_id=123,
+            campaign_reservation_id=RESERVATION_ID,
+            campaign_ledger_commit_sha=LEDGER_COMMIT,
+        )
+
+    assert exported == [True]
+    checkpoint = json.loads((output / "budget-checkpoint.json").read_bytes())
+    assert checkpoint["completed_batches"] == 1
+    assert checkpoint["actual_model_cost_cny"] == 0.125
 
 
 def _manifest() -> FormalManifestV2:
