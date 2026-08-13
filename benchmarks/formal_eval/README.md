@@ -121,14 +121,15 @@ any Git object.
 Genesis ancestry alone cannot distinguish the current head from a force-reset
 to one of its formerly valid prefixes, so a protected non-force/non-delete ref
 or an independent monotonic checkpoint remains mandatory. The product-effect
-campaign fixes its public ledger branch, empty genesis, CNY 50 ceiling, and
-conservative opening reserved upper balance; every newly enabled paid mode
-still needs a reviewed admission policy and protected non-force ledger ref.
+campaign fixes its public `joinlint-campaign-ledger-safety-v1` branch, empty
+genesis `96d689731148b8eb69812b4d0a82dcac75bf2fd1`, CNY 60 ceiling, and CNY
+46.717684 conservative opening reserved upper balance. Every newly enabled paid
+mode still needs a reviewed admission policy and protected non-force ledger ref.
 `campaign_reservation.py` narrows the workflow-owned consumer to GitHub's
 default run variables on an explicitly protected ref, fixes the admitted
 mode/upper pairs to readiness/CNY 2.10, calibration/CNY 4, full Pilot/CNY 20,
-the BIRD Flash full-dataset stage/CNY 7.40, and the synthetic semantic-safety
-Flash stage/CNY 8.00,
+the BIRD Flash full-dataset stage/CNY 7.40, the synthetic semantic-safety Flash
+stage/CNY 8.00, and the posthoc synthetic hard-case confirmation/CNY 5.53,
 requires the exact matching policy-driving dispatch flags and budget string,
 reads the actual Git HEAD from a clean fixed checkout path, and
 requires calibration/Pilot reservations to bind the verified frozen-input lock
@@ -265,6 +266,22 @@ raises the per-run stop/accounting/message limits to 45,000/50,000/30 to avoid
 the BIRD run's model-limit censoring, and reserves a CNY 8.00 upper bound for a
 CNY 7.79792 resource envelope. Any result supports only the frozen synthetic
 Join-safety stress claim.
+
+The completed 20-pair synthetic safety run produced 17/20 control successes
+and 14/20 treatment successes (treatment-only wins 0, control-only wins 3;
+exact two-sided McNemar p=0.25). It did not show a positive product effect.
+The separately preregistered posthoc hard-case confirmation then ran three
+Codex repetitions of four frozen tasks. It produced 3/12 control successes and
+1/12 treatment success (treatment-only wins 1, control-only wins 3; absolute
+change -0.1667; exact two-sided McNemar p=0.625). Eight of the eleven treatment
+failures were `ENTITY_SET_INCOMPLETE`; all 12 treatment samples called the plan
+tool, used a usable plan, followed the protocol, and validated their final SQL.
+This is evidence that the current agent-facing workflow does not reliably map
+the full user request to the complete physical entity set. JoinLint proves the
+requested join path, but cannot prove that the agent requested every necessary
+entity. Neither run supports a positive product-effect claim. The immutable
+run IDs, artifact digests, costs, and scope are recorded in
+[`docs/semantic-safety-effect-results.md`](../../docs/semantic-safety-effect-results.md).
 
 `formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.
 It runs 80 samples under the frozen `balanced_diagonal_crossover_v1` design.
