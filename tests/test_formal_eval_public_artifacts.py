@@ -19,7 +19,7 @@ from benchmarks.formal_eval.public_artifacts import (
 from joinlint.contracts import canonical_json
 
 
-VERIFIER_COMMIT = "0389c4bd34597f06676d4c560f5e7683fd2b20c9"
+VERIFIER_COMMIT = "573896c33bc18f559ee16d7f676c0e41c2e49021"
 
 
 def _canary_report(**updates: object) -> PilotCanaryReport:

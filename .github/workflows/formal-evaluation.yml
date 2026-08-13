@@ -263,7 +263,7 @@ jobs:
         if: always()
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 0389c4bd34597f06676d4c560f5e7683fd2b20c9
+          ref: 573896c33bc18f559ee16d7f676c0e41c2e49021
           path: .workflow-verifier
           persist-credentials: false
       - name: Scan sanitized formal evidence
