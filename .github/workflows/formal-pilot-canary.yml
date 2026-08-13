@@ -284,7 +284,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >-
           python -m benchmarks.formal_eval.campaign_reservation
-          reserve-calibration
+          reserve
+          --mode calibration
           --campaign-id joinlint-product-effect-2026-08
           --ledger-branch joinlint-campaign-ledger
           --genesis-commit 89358132f42dd23e82fd21b1f32a80900d2d2f98

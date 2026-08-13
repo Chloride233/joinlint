@@ -18,7 +18,7 @@ from benchmarks.formal_eval.contracts import (
 )
 from benchmarks.formal_eval.export import ExportSummary
 from benchmarks.formal_eval.gates import CanaryReport, diagnostic_canary_gate
-from benchmarks.formal_eval.lineage import EvaluationLineage
+from benchmarks.formal_eval.lineage import EvaluationLineage, digest_value
 from benchmarks.formal_eval.manifest import ManifestReadiness
 from benchmarks.formal_eval.modal_readiness import ModalReadinessReport
 from benchmarks.formal_eval.pilot import PilotBudgetCheckpoint, PilotBudgetReport
@@ -30,6 +30,11 @@ from benchmarks.formal_eval.pilot_canary import PilotCanaryReport
 from benchmarks.formal_eval.pilot_dispatch import (
     PilotCampaignBudget,
     pilot_campaign_budget,
+)
+from benchmarks.formal_eval.pilot_stage import (
+    PilotStageEffect,
+    PilotStagePreregistration,
+    stage_effect_report,
 )
 from benchmarks.formal_eval.power import PowerPlan, PowerReadiness
 from benchmarks.formal_eval.report import FormalEvaluationReport, render_markdown
@@ -92,6 +97,17 @@ PUBLIC_ARTIFACT_FILES: dict[str, tuple[str, ...]] = {
         "budget.json",
         "campaign-budget.json",
     ),
+    "pilot-stage": (
+        "stage.json",
+        "stage-run-plan.json",
+        "budget-checkpoint.json",
+        "agent-results-bundle.json",
+        "cleaning.json",
+        "pilot-agent-results.json",
+        "budget.json",
+        "campaign-budget.json",
+        "effect.json",
+    ),
 }
 
 _JSON_ARTIFACT_SPECS = {
@@ -135,9 +151,12 @@ _JSON_ARTIFACT_SPECS = {
     ),
     "budget.json": JsonArtifactSpec(TypeAdapter(PilotBudgetReport), True),
     "campaign-budget.json": JsonArtifactSpec(TypeAdapter(PilotCampaignBudget), True),
+    "stage.json": JsonArtifactSpec(TypeAdapter(PilotStagePreregistration), True),
+    "stage-run-plan.json": JsonArtifactSpec(TypeAdapter(RunPlanV2), True),
+    "effect.json": JsonArtifactSpec(TypeAdapter(PilotStageEffect), True),
 }
 
-_PREFIX_PROFILES = frozenset({"formal-evaluation", "pilot"})
+_PREFIX_PROFILES = frozenset({"formal-evaluation", "pilot", "pilot-stage"})
 _TERMINAL_INVENTORIES = {
     "formal-report": (frozenset(PUBLIC_ARTIFACT_FILES["formal-report"]),),
     "modal-readiness": (frozenset(PUBLIC_ARTIFACT_FILES["modal-readiness"]),),
@@ -343,6 +362,8 @@ def _validate_cross_file_invariants(
         )
     elif profile == "pilot":
         _validate_pilot_artifacts(values)
+    elif profile == "pilot-stage":
+        _validate_pilot_stage_artifacts(values)
 
 
 def _validate_formal_artifacts(values: dict[str, Any], paths: dict[str, Path]) -> None:
@@ -467,6 +488,26 @@ def _validate_pilot_artifacts(values: dict[str, Any]) -> None:
         )
         if campaign != expected_campaign:
             raise ValueError("public Pilot campaign budget is inconsistent")
+
+
+def _validate_pilot_stage_artifacts(values: dict[str, Any]) -> None:
+    _validate_pilot_artifacts(values)
+    stage = values.get("stage.json")
+    run_plan = values.get("stage-run-plan.json")
+    bundle = values.get("agent-results-bundle.json")
+    effect = values.get("effect.json")
+    if stage is not None and run_plan is not None:
+        if stage.stage_run_plan_sha256 != digest_value(run_plan.model_dump(mode="json")):
+            raise ValueError("public Pilot stage run plan is inconsistent")
+    if run_plan is not None and bundle is not None:
+        if bundle.run_plan_sha256 != digest_value(run_plan.model_dump(mode="json")):
+            raise ValueError("public Pilot stage results do not match their run plan")
+    if stage is not None and effect is not None:
+        if effect.preregistration_sha256 != digest_value(stage.model_dump(mode="json")):
+            raise ValueError("public Pilot stage effect is not preregistered")
+    if stage is not None and bundle is not None and effect is not None:
+        if effect != stage_effect_report(bundle.rows, stage):
+            raise ValueError("public Pilot stage effect does not match its result rows")
 
 
 def main(argv: list[str] | None = None) -> int:

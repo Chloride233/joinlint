@@ -1107,6 +1107,7 @@ def verify_calibration_attestation_values(
     *,
     expected_run_id: int,
     current_commit: str,
+    expected_workflow_commit: str,
     input_lock_sha256: str,
     dependency_versions: dict[str, str],
     run_metadata: dict[str, Any],
@@ -1128,8 +1129,10 @@ def verify_calibration_attestation_values(
         raise ValueError("calibration workflow did not complete successfully")
     if (run_metadata.get("head_repository") or {}).get("full_name") != repository:
         raise ValueError("calibration attestation repository mismatch")
-    if report.joinlint_commit != current_commit or run_metadata.get("head_sha") != current_commit:
-        raise ValueError("calibration attestation commit mismatch")
+    if report.joinlint_commit != current_commit:
+        raise ValueError("calibration attestation evaluated commit mismatch")
+    if run_metadata.get("head_sha") != expected_workflow_commit:
+        raise ValueError("calibration attestation workflow commit mismatch")
     if report.input_lock_sha256 != input_lock_sha256:
         raise ValueError("calibration attestation input lock mismatch")
     if report.dependency_versions != dependency_versions:
@@ -1166,6 +1169,7 @@ def verify_calibration_attestation(
     *,
     expected_run_id: int,
     current_commit: str,
+    expected_workflow_commit: str,
     repository: str,
 ) -> None:
     registration, manifest, _ = verify_pilot_inputs(root)
@@ -1228,6 +1232,7 @@ def verify_calibration_attestation(
         report,
         expected_run_id=expected_run_id,
         current_commit=current_commit,
+        expected_workflow_commit=expected_workflow_commit,
         input_lock_sha256=_input_lock_sha256(root),
         dependency_versions=dependency_versions(),
         run_metadata=run_metadata,
@@ -1347,6 +1352,7 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--run-metadata", type=Path, required=True)
     verify.add_argument("--expected-run-id", type=int, required=True)
     verify.add_argument("--current-commit", required=True)
+    verify.add_argument("--expected-workflow-commit", required=True)
     verify.add_argument("--repository", required=True)
     diagnose = commands.add_parser("diagnose-infrastructure")
     diagnose.add_argument("--log-dir", type=Path, required=True)
@@ -1371,6 +1377,7 @@ def main(argv: list[str] | None = None) -> int:
         arguments.run_metadata,
         expected_run_id=arguments.expected_run_id,
         current_commit=arguments.current_commit,
+        expected_workflow_commit=arguments.expected_workflow_commit,
         repository=arguments.repository,
     )
     print(json.dumps({"status": "ready", "calibration_run_id": arguments.expected_run_id}))

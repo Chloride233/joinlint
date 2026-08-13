@@ -49,6 +49,11 @@ POLICIES = {
         "pilot",
         20_000_000,
     ),
+    "pilot_stage": (
+        ".github/workflows/formal-pilot.yml",
+        "pilot",
+        7_400_000,
+    ),
 }
 
 
@@ -92,6 +97,14 @@ def _workflow_inputs(mode: str) -> dict[str, str]:
             "budget_cny": "20",
             "confirm_paid": "true",
             "pilot_commit": EVALUATED_COMMIT,
+            "stage": "full",
+        }
+    if mode == "pilot_stage":
+        return {
+            "budget_cny": "7.4",
+            "confirm_paid": "true",
+            "pilot_commit": EVALUATED_COMMIT,
+            "stage": "flash_full_dataset_v1",
         }
     return {"budget_cny": "2.25", "confirm_paid": "true"}
 
@@ -129,7 +142,9 @@ def test_reservation_cli_reads_the_actions_event_and_writes_a_fresh_receipt(
 
     assert campaign_reservation.main(
         [
-            "reserve-calibration",
+            "reserve",
+            "--mode",
+            "calibration",
             "--campaign-id",
             CAMPAIGN_ID,
             "--ledger-branch",
@@ -197,7 +212,9 @@ def test_reservation_cli_rejects_replay_and_does_not_overwrite_receipt(
     )
     monkeypatch.setattr(campaign_reservation, "GhCliApi", lambda: object())
     arguments = [
-        "reserve-calibration",
+        "reserve",
+        "--mode",
+        "calibration",
         "--campaign-id",
         CAMPAIGN_ID,
         "--ledger-branch",
@@ -246,7 +263,9 @@ def test_reservation_cli_rejects_invalid_event_before_opening_the_store(
     with pytest.raises(CampaignReservationError, match="event"):
         campaign_reservation.main(
             [
-                "reserve-calibration",
+                "reserve",
+                "--mode",
+                "calibration",
                 "--campaign-id",
                 CAMPAIGN_ID,
                 "--ledger-branch",

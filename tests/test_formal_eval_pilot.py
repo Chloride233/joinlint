@@ -1152,6 +1152,7 @@ def test_pilot_canary_attestation_binds_run_commit_input_and_dependencies() -> N
 
 
 def test_pilot_calibration_attestation_rejects_rerun_attempts() -> None:
+    workflow_commit = "e" * 40
     report = SimpleNamespace(
         status="passed",
         readiness_status="passed",
@@ -1167,7 +1168,7 @@ def test_pilot_calibration_attestation_rejects_rerun_attempts() -> None:
         "path": ".github/workflows/formal-pilot-canary.yml",
         "event": "workflow_dispatch",
         "conclusion": "success",
-        "head_sha": COMMIT,
+        "head_sha": workflow_commit,
         "head_repository": {"full_name": "Chloride233/joinlint"},
     }
 
@@ -1175,6 +1176,7 @@ def test_pilot_calibration_attestation_rejects_rerun_attempts() -> None:
         report,
         expected_run_id=123,
         current_commit=COMMIT,
+        expected_workflow_commit=workflow_commit,
         input_lock_sha256="c" * 64,
         dependency_versions={},
         run_metadata=run_metadata,
@@ -1188,6 +1190,7 @@ def test_pilot_calibration_attestation_rejects_rerun_attempts() -> None:
                 report,
                 expected_run_id=123,
                 current_commit=COMMIT,
+                expected_workflow_commit=workflow_commit,
                 input_lock_sha256="c" * 64,
                 dependency_versions={},
                 run_metadata=invalid_metadata,
@@ -1608,21 +1611,20 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert job["environment"] == "formal-evaluation"
     assert job["runs-on"] == "ubuntu-latest"
     assert workflow["permissions"]["contents"] == "write"
-    assert "inputs.confirm_paid != true || inputs.budget_cny != '20'" in text
+    assert "inputs.stage != 'flash_full_dataset_v1'" in text
+    assert "inputs.budget_cny != '7.4'" in text
     assert workflow["on"]["workflow_dispatch"]["inputs"]["pilot_commit"]["default"] == (
-        "05da3fb4b2fa8536caef7a28cd9994b8b84a98c9"
+        "cd0fa65fad74e84d53729ce30d3d61ed04dcc974"
     )
     assert workflow["on"]["workflow_dispatch"]["inputs"]["calibration_run_id"]["required"] == (
         "true"
     )
     assert workflow["permissions"]["actions"] == "read"
-    assert job["steps"][0]["name"] == (
-        "Block paid evaluation pending atomic campaign reservation"
-    )
+    assert job["steps"][0]["name"] == "Block unapproved full Pilot"
     exact_gate = next(
         step
         for step in job["steps"]
-        if step.get("name") == "Require the exact approved paid pilot"
+        if step.get("name") == "Require the exact approved paid Pilot stage"
     )
     assert "github.run_attempt != 1" in exact_gate["if"]
     assert "ref: ${{ inputs.pilot_commit }}" in text
@@ -1643,7 +1645,9 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         "PILOT_RELEASE_ASSET",
     }
     run_step = next(
-        step for step in job["steps"] if step.get("name") == "Run the approved 20-task pilot"
+        step
+        for step in job["steps"]
+        if step.get("name") == "Run preregistered Flash full-dataset Pilot stage"
     )
     assert set(run_step["env"]) == {
         "MODAL_TOKEN_ID",
@@ -1652,9 +1656,18 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         "DEEPSEEK_BASE_URL",
         "CAMPAIGN_BUDGET_CNY",
         "CAMPAIGN_SPEND_BEFORE_CNY",
+        "CAMPAIGN_RESERVATION_ID",
+        "CAMPAIGN_LEDGER_COMMIT_SHA",
+        "PYTHONPATH",
     }
     assert "--campaign-budget-cny \"$CAMPAIGN_BUDGET_CNY\"" in run_step["run"]
     assert "--campaign-spend-before-cny \"$CAMPAIGN_SPEND_BEFORE_CNY\"" in run_step["run"]
+    assert "--workflow-run-id \"${{ github.run_id }}\"" in run_step["run"]
+    assert "--campaign-reservation-id \"$CAMPAIGN_RESERVATION_ID\"" in run_step["run"]
+    assert (
+        "--campaign-ledger-commit-sha \"$CAMPAIGN_LEDGER_COMMIT_SHA\""
+        in run_step["run"]
+    )
     assert "OPENAI_API_KEY" not in text
     calibration_restore = next(
         step
@@ -1664,13 +1677,10 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert set(calibration_restore["env"]) == {"GH_TOKEN", "CALIBRATION_RUN_ID"}
     assert "gh run download" in calibration_restore["run"]
     step_names = [step.get("name") for step in job["steps"]]
-    assert step_names.index("Run no-model lifecycle gate") < step_names.index(
-        "Restore private frozen pilot inputs"
-    )
-    campaign_preflight = next(
+    reservation = next(
         step
         for step in job["steps"]
-        if step.get("name") == "Require cumulative campaign budget for full pilot"
+        if step.get("name") == "Reserve Pilot stage budget"
     )
     checkout_index = next(
         index
@@ -1678,22 +1688,33 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         if str(step.get("uses", "")).startswith("actions/checkout@")
     )
     assert job["steps"][checkout_index]["with"]["persist-credentials"] == "false"
-    assert step_names.index(campaign_preflight["name"]) < checkout_index
-    assert "benchmarks.formal_eval" not in campaign_preflight["run"]
-    assert campaign_preflight["env"]["CAMPAIGN_COST_UPPER_CNY"] == "20"
     assert step_names.index("Verify calibration attestation binding") < step_names.index(
-        "Run the approved 20-task pilot"
+        reservation["name"]
     )
+    assert step_names.index(reservation["name"]) < step_names.index(
+        run_step["name"]
+    )
+    assert reservation["working-directory"] == ".workflow-control"
+    assert set(reservation["env"]) == {"GH_TOKEN"}
+    assert "--mode pilot_stage" in reservation["run"]
+    assert "joinlint-campaign-ledger" in reservation["run"]
     sanitized_scan = next(
-        step for step in job["steps"] if step.get("name") == "Scan sanitized pilot artifacts"
+        step
+        for step in job["steps"]
+        if step.get("name") == "Scan sanitized Pilot stage artifacts"
     )
     sanitized_upload = next(
         step
         for step in job["steps"]
-        if (step.get("with") or {}).get("name") == "joinlint-formal-pilot-sanitized"
+        if (step.get("with") or {}).get("name")
+        == "joinlint-formal-pilot-stage-sanitized"
     )
-    assert sanitized_scan["id"] == "scan_pilot_sanitized"
-    assert "steps.scan_pilot_sanitized.outcome == 'success'" in sanitized_upload["if"]
+    assert sanitized_scan["id"] == "scan_pilot_stage_sanitized"
+    assert "--profile pilot-stage" in sanitized_scan["run"]
+    assert (
+        "steps.scan_pilot_stage_sanitized.outcome == 'success'"
+        in sanitized_upload["if"]
+    )
     assert sanitized_upload["with"]["if-no-files-found"] == "error"
 
 
@@ -1868,7 +1889,8 @@ def test_pilot_calibration_reserves_atomically_before_target_execution() -> None
     assert reserve["id"] == "campaign_reservation"
     assert reserve["working-directory"] == ".workflow-control"
     assert set(reserve["env"]) == {"GH_TOKEN"}
-    assert "reserve-calibration" in reserve["run"]
+    assert "reserve" in reserve["run"]
+    assert "--mode calibration" in reserve["run"]
     assert "joinlint-product-effect-2026-08" in reserve["run"]
     assert "joinlint-campaign-ledger" in reserve["run"]
     assert "89358132f42dd23e82fd21b1f32a80900d2d2f98" in reserve["run"]
@@ -1915,7 +1937,7 @@ def test_pilot_calibration_workflow_reports_only_sanitized_infrastructure_reason
                 "pilot-calibration-logs",
             ),
         ),
-        (".github/workflows/formal-pilot.yml", ("pilot-logs",)),
+        (".github/workflows/formal-pilot.yml", ("pilot-logs", "pilot-stage-logs")),
         (".github/workflows/formal-evaluation.yml", ("formal-logs",)),
     ],
 )
@@ -1973,12 +1995,6 @@ def test_public_formal_workflows_keep_raw_inspect_logs_runner_ephemeral(
             "Require cumulative campaign budget for canary",
             "2.25",
         ),
-        (
-            ".github/workflows/formal-pilot.yml",
-            "pilot",
-            "Require cumulative campaign budget for full pilot",
-            "20",
-        ),
     ),
 )
 @pytest.mark.parametrize(
@@ -2034,13 +2050,6 @@ def test_workflow_campaign_preflight_rejects_noncanonical_amounts(
             "Require cumulative campaign budget for canary",
             "2.25",
             "72.75",
-        ),
-        (
-            ".github/workflows/formal-pilot.yml",
-            "pilot",
-            "Require cumulative campaign budget for full pilot",
-            "20",
-            "55",
         ),
     ),
 )

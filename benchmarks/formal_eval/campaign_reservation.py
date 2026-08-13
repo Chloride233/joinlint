@@ -74,6 +74,11 @@ _POLICIES = {
         job="pilot",
         upper_micro_cny=20_000_000,
     ),
+    "pilot_stage": _ReservationPolicy(
+        workflow_path=".github/workflows/formal-pilot.yml",
+        job="pilot",
+        upper_micro_cny=7_400_000,
+    ),
 }
 
 _EXPECTED_WORKFLOW_INPUTS = {
@@ -92,6 +97,12 @@ _EXPECTED_WORKFLOW_INPUTS = {
     "pilot": {
         "budget_cny": "20",
         "confirm_paid": "true",
+        "stage": "full",
+    },
+    "pilot_stage": {
+        "budget_cny": "7.4",
+        "confirm_paid": "true",
+        "stage": "flash_full_dataset_v1",
     },
 }
 
@@ -494,14 +505,15 @@ def main(
 ) -> int:
     parser = argparse.ArgumentParser(prog="campaign-reservation")
     command = parser.add_subparsers(dest="command", required=True)
-    reserve = command.add_parser("reserve-calibration")
+    reserve = command.add_parser("reserve")
+    reserve.add_argument("--mode", choices=("calibration", "pilot_stage"), required=True)
     reserve.add_argument("--campaign-id", required=True)
     reserve.add_argument("--ledger-branch", required=True)
     reserve.add_argument("--genesis-commit", required=True)
     reserve.add_argument("--receipt", required=True, type=Path)
     arguments = parser.parse_args(argv)
 
-    if arguments.command != "reserve-calibration":
+    if arguments.command != "reserve":
         raise AssertionError("unreachable campaign reservation command")
     values = os.environ if environment is None else environment
     event_path = _required(values, "GITHUB_EVENT_PATH")
@@ -519,7 +531,7 @@ def main(
             store,
             expected_campaign_id=arguments.campaign_id,
             environment=values,
-            mode="calibration",
+            mode=arguments.mode,
             workflow_inputs=workflow_inputs,
         )
     except CampaignLedgerError as error:

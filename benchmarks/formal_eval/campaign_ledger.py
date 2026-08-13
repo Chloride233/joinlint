@@ -137,7 +137,8 @@ class ReservationRequest:
                 pattern=_SHA256_PATTERN,
             )
         if (self.mode == "readiness" and self.input_lock_sha256 is not None) or (
-            self.mode in {"calibration", "pilot"} and self.input_lock_sha256 is None
+            self.mode in {"calibration", "pilot", "pilot_stage"}
+            and self.input_lock_sha256 is None
         ):
             raise CampaignLedgerError("input lock does not match reservation mode")
         _require_exact_int(self.upper_micro_cny, field="upper_micro_cny", minimum=1)

@@ -203,6 +203,9 @@ def test_public_artifacts_reject_duplicate_keys_before_model_validation(
         ("pilot-agent-results.json", True),
         ("budget.json", True),
         ("campaign-budget.json", True),
+        ("stage.json", True),
+        ("stage-run-plan.json", True),
+        ("effect.json", True),
     ),
 )
 def test_every_public_json_path_requires_its_strict_schema(
@@ -287,9 +290,9 @@ def test_calibration_public_artifact_terminal_states_are_mutually_exclusive(
         (
             ".github/workflows/formal-pilot.yml",
             "pilot",
-            "Scan sanitized pilot artifacts",
-            "pilot",
-            "pilot-artifacts",
+            "Scan sanitized Pilot stage artifacts",
+            "pilot-stage",
+            "pilot-stage-artifacts",
         ),
         (
             ".github/workflows/formal-evaluation-report.yml",
@@ -320,19 +323,29 @@ def test_evidence_scans_run_only_from_the_pinned_verifier_checkout(
     assert checkout["id"] == "public_artifact_verifier"
     assert checkout["if"] == "always()"
     assert checkout["uses"].startswith("actions/checkout@")
+    verifier_ref = (
+        "${{ github.workflow_sha }}"
+        if workflow_path == ".github/workflows/formal-pilot.yml"
+        else VERIFIER_COMMIT
+    )
+    verifier_path = (
+        ".workflow-control"
+        if workflow_path == ".github/workflows/formal-pilot.yml"
+        else ".workflow-verifier"
+    )
     assert checkout["with"] == {
-        "ref": VERIFIER_COMMIT,
-        "path": ".workflow-verifier",
+        "ref": verifier_ref,
+        "path": verifier_path,
         "persist-credentials": "false",
     }
 
     scan = next(step for step in steps if step.get("name") == scan_name)
     assert "steps.public_artifact_verifier.outcome == 'success'" in scan["if"]
-    assert scan["working-directory"] == ".workflow-verifier"
+    assert scan["working-directory"] == verifier_path
     assert scan["env"] == {
         "PYTHONPATH": (
-            "${{ github.workspace }}/.workflow-verifier/src:"
-            "${{ github.workspace }}/.workflow-verifier"
+            f"${{{{ github.workspace }}}}/{verifier_path}/src:"
+            f"${{{{ github.workspace }}}}/{verifier_path}"
         )
     }
     assert scan["run"] == (

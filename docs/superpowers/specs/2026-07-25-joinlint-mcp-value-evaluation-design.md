@@ -484,8 +484,8 @@ Before the paid pilot, the repository runs targeted tests, the full existing
 test suite, Ruff, `git diff --check`, and the pinned strict public-artifact
 validator over formal evidentiary and paid sanitized outputs. The synthetic
 smoke artifact remains non-evidentiary and uses its smaller smoke-only scan.
-The paid path remains fail-closed until an authoritative atomic campaign
-reservation replaces the manually supplied prior-spend snapshot.
+Paid calibration and the preregistered Flash full-dataset Pilot stage require an
+authoritative atomic campaign reservation; other paid paths remain fail-closed.
 The repository now contains a tested reserved-upper primitive using exact
 micro-CNY values and a non-force GitHub ref compare-and-swap. It only appends a
 complete per-run upper bound; it does not settle, release, or expire a failed or
@@ -495,12 +495,13 @@ genesis commit, walk no more than the reservation count plus that genesis, and
 reject histories outside that genesis, merges, non-append transitions, or
 mutable budget fields. CAS repeats that full check before its first Git object
 write. A force-reset to a formerly valid prefix is indistinguishable without a
-protected non-force/non-delete ref or an external monotonic checkpoint. This
-primitive does not become authoritative until the actual production campaign
-genesis, opening balance, and protected ledger ref are frozen. The separate admission wrapper
+protected non-force/non-delete ref or an external monotonic checkpoint. The
+product-effect campaign fixes its ledger branch, empty genesis, CNY 50 ceiling,
+and conservative opening reserved upper balance. The separate admission wrapper
 now derives repository/run/workflow identity only from GitHub's default variables
-on protected `main`, admits only the frozen readiness/CNY 2.10,
-calibration/CNY 4, and Pilot/CNY 20 pairs, and verifies an authorized receipt
+on an explicitly protected ref, admits only the frozen readiness/CNY 2.10,
+calibration/CNY 4, Pilot/CNY 20, and Flash stage/CNY 7.40 pairs, and verifies an
+authorized receipt
 against the exact live ledger head. It also requires the exact policy-driving
 dispatch flags and budget string for the selected mode, reads the actual HEAD
 from a clean fixed checkout path, and binds calibration/Pilot
@@ -510,11 +511,9 @@ live-verified before the main
 entry point returns, while standalone receipt verification remains a repeatable
 snapshot check rather than a consume-once token. Canary, formal evaluation, and BIRD
 preparation remain absent from that policy. This contract still requires a
-clean workflow-owned job before evaluated code and has not been wired. Its
-`Mapping` arguments do not authenticate their source or prove directory
-ownership, and the production job has not yet populated the fixed
-checkout/frozen-input boundary or frozen the ledger trust root, so it does not
-remove the paid-path block.
+clean workflow-owned job before evaluated code. Its `Mapping` arguments do not
+authenticate their source or prove directory ownership; only a reviewed
+workflow-owned admission job may remove a specific paid-path block.
 
 ## 18. Delivery sequence
 

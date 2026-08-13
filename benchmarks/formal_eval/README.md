@@ -93,9 +93,10 @@ upper bound plus the existing CNY 2.00 image-build reserve.
 Readiness, the one-task canary, and calibration all require the cumulative
 campaign ceiling and prior spend; each fails locally before Modal or the model
 provider when its full approved per-run ceiling would exceed the remainder.
-Paid readiness, canary, calibration, and Pilot dispatch are additionally
-fail-closed until that calculation is backed by an authoritative atomic
-campaign reservation rather than a manually supplied prior-spend snapshot.
+Paid calibration and the preregistered Flash Pilot stage use an atomic campaign
+reservation rather than a manually supplied prior-spend snapshot. Other paid
+modes remain fail-closed until they have the same admission boundary and a
+frozen resource envelope.
 All five paid jobs share the repository-scoped `joinlint-formal-paid-v1`
 concurrency group with cancellation disabled, so at most one can run at a time
 after they are re-enabled. This single-flight guard is defense in depth only:
@@ -113,12 +114,14 @@ merges, skipped or replaced reservations, and changed budget or opening-balance
 fields fail closed; CAS rechecks that lineage before creating any Git object.
 Genesis ancestry alone cannot distinguish the current head from a force-reset
 to one of its formerly valid prefixes, so a protected non-force/non-delete ref
-or an independent monotonic checkpoint remains mandatory. This primitive is
-not yet a production accounting authority: the actual campaign genesis,
-opening reserved balance, and branch rules remain to be frozen.
-`campaign_reservation.py` narrows the future workflow-owned consumer to
-GitHub's default run variables on protected `main`, fixes the only admitted
-mode/upper pairs to readiness/CNY 2.10, calibration/CNY 4, and Pilot/CNY 20,
+or an independent monotonic checkpoint remains mandatory. The product-effect
+campaign fixes its public ledger branch, empty genesis, CNY 50 ceiling, and
+conservative opening reserved upper balance; every newly enabled paid mode
+still needs a reviewed admission policy and protected non-force ledger ref.
+`campaign_reservation.py` narrows the workflow-owned consumer to GitHub's
+default run variables on an explicitly protected ref, fixes the admitted
+mode/upper pairs to readiness/CNY 2.10, calibration/CNY 4, full Pilot/CNY 20,
+and the Flash full-dataset stage/CNY 7.40,
 requires the exact matching policy-driving dispatch flags and budget string,
 reads the actual Git HEAD from a clean fixed checkout path, and
 requires calibration/Pilot reservations to bind the verified frozen-input lock
@@ -128,14 +131,13 @@ matches the live ledger head; a replay is rejected. Standalone receipt
 verification is a repeatable snapshot check, not a consume-once execution token.
 There is no longer a caller-defined repository/mode/upper reservation command.
 This admission contract is trusted only when a clean workflow-owned job runs it
-before evaluated code; it is not a portable signed identity proof and is not yet
-wired to a workflow. Its `Mapping` arguments do not authenticate their own
-source or prove ownership of those directories. Production wiring must read the
-runner's default environment and event payload directly, populate the fixed
-checkout and frozen-input directories in a clean workflow-owned job, and run
-admission before evaluated code. The
-production authority and clean-job handoff therefore remain blocked, and every
-paid entry point stays hard-blocked and disabled.
+before evaluated code; it is not a portable signed identity proof. Its `Mapping`
+arguments do not authenticate their own source or prove ownership of those
+directories. Production wiring reads the runner's default environment and event
+payload directly, populates the fixed checkout and frozen-input directories in
+a clean workflow-owned job, and runs admission before evaluated code. Paid
+workflows remain disabled between explicitly approved runs; only the exact
+calibration and Flash-stage modes have the current end-to-end admission wiring.
 The paid one-task canary uses a 170-second sandbox envelope: its independently
 measured 60-second readiness window and 90-second evaluation window leave 20
 seconds for lifecycle handoff and evidence finalization. Pilot v3 targets Claude
@@ -224,6 +226,18 @@ grain-provable oracle gate; no JoinLint output is used to choose replacements.
 
 ## Bounded independent pilot
 
+The first product-effect experiment is the preregistered
+`flash_full_dataset_v1` stage. It runs the cost-efficient frozen model over all
+20 Pilot tasks in paired control/treatment arms: 40 runs and 20 paired units,
+balanced across Codex and Claude Code. The primary outcome is
+`join_correct_task_completion`; the frozen primary test is exact two-sided
+McNemar at alpha 0.05. The stage writes its preregistration and run plan before
+the first model call, and binds them to the GitHub run, campaign reservation,
+ledger commit, evaluated commit, and frozen input lock. Its CNY 7.39792 resource
+upper is reserved as CNY 7.40. A positive significant result supports only an
+exploratory claim for this frozen BIRD Pilot, Flash model, and host allocation;
+it is not a confirmatory population estimate.
+
 `formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.
 It runs 80 samples under the frozen `balanced_diagonal_crossover_v1` design.
 Every task runs on both DeepSeek V4 tiers and both control/treatment arms. For
@@ -233,7 +247,8 @@ paired arm comparisons and exercises all four model/host cells without treating
 the Pilot as a full-factorial effect study. There are no repetitions. Pilot
 tasks and outputs never enter the confirmatory effect estimate.
 
-The workflow accepts only the exact CNY 20 approval. The frozen worst-case
+The full 80-run mode remains blocked. Its workflow contract accepts only the
+exact CNY 20 approval. The frozen worst-case
 resource envelope is CNY 19.99584: CNY 14.40 for model tokens, CNY 3.59584 for
 170-second Modal sandbox lifetimes, and a CNY 2.00 image-build reserve. It also
 requires the cumulative investigation budget and the spend observed before the
