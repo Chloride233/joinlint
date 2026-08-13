@@ -353,6 +353,26 @@ def test_current_run_request_uses_trusted_identity_and_fixed_upper(mode: str) ->
     assert request.upper_micro_cny == upper
 
 
+def test_reservation_cli_accepts_the_safety_confirmation_mode() -> None:
+    with pytest.raises(CampaignReservationError, match="GITHUB_ACTIONS"):
+        campaign_reservation.main(
+            [
+                "reserve",
+                "--mode",
+                "pilot_stage_safety_confirmation",
+                "--campaign-id",
+                CAMPAIGN_ID,
+                "--ledger-branch",
+                "joinlint-campaign-ledger",
+                "--genesis-commit",
+                "c" * 40,
+                "--receipt",
+                "/tmp/unused-receipt.json",
+            ],
+            environment={},
+        )
+
+
 def test_current_run_request_accepts_the_protected_evaluation_branch() -> None:
     environment = _environment("calibration")
     protected_ref = "refs/heads/codex/evaluation-lifecycle-boundaries"

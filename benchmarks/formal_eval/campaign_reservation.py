@@ -524,7 +524,12 @@ def main(
     reserve = command.add_parser("reserve")
     reserve.add_argument(
         "--mode",
-        choices=("calibration", "pilot_stage", "pilot_stage_safety"),
+        choices=(
+            "calibration",
+            "pilot_stage",
+            "pilot_stage_safety",
+            "pilot_stage_safety_confirmation",
+        ),
         required=True,
     )
     reserve.add_argument("--campaign-id", required=True)
