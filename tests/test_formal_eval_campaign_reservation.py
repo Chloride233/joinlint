@@ -354,7 +354,7 @@ def test_current_run_request_uses_trusted_identity_and_fixed_upper(mode: str) ->
 
 
 def test_reservation_cli_accepts_the_safety_confirmation_mode() -> None:
-    with pytest.raises(CampaignReservationError, match="GITHUB_ACTIONS"):
+    with pytest.raises(CampaignReservationError, match="GITHUB_EVENT_PATH"):
         campaign_reservation.main(
             [
                 "reserve",
