@@ -1063,6 +1063,47 @@ def test_github_store_creates_one_parent_commit_and_non_force_ref_update() -> No
     assert update_ref[2] == {"force": False, "sha": "4" * 40}
 
 
+def test_github_store_retries_a_stale_successful_ref_readback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = CampaignLedger.create(
+        campaign_id=CAMPAIGN_ID,
+        budget_cny="10",
+        opening_reserved_upper_cny="0",
+    )
+    updated = initial.reserve(_request()).ledger
+    new_blob_sha = _git_blob_sha(updated.to_bytes())
+    initial_read = _remote_read_responses(
+        initial,
+        head_sha="1" * 40,
+        tree_sha="2" * 40,
+    )
+    api = _StubGitHubApi(
+        *initial_read,
+        *initial_read,
+        {"sha": new_blob_sha},
+        {"sha": "3" * 40},
+        {"sha": "4" * 40},
+        {
+            "ref": "refs/heads/joinlint-campaign-ledger",
+            "object": {"type": "commit", "sha": "4" * 40},
+        },
+        *initial_read,
+        *_lineage_read_responses(
+            (updated, "4" * 40, "3" * 40, ("1" * 40,)),
+            (initial, "1" * 40, "2" * 40, ()),
+        ),
+    )
+    monkeypatch.setattr(
+        "benchmarks.formal_eval.campaign_ledger.time.sleep",
+        lambda _: None,
+    )
+    store = _lineage_store(api, genesis_sha="1" * 40)
+    snapshot = store.read()
+
+    assert store.compare_and_swap(snapshot, updated) == "4" * 40
+
+
 @pytest.mark.parametrize("status", (None, 500, 599))
 def test_github_store_recovers_only_an_exact_commit_after_unknown_patch_result(
     status: int | None,

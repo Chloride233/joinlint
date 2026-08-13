@@ -7,6 +7,7 @@ import json
 import re
 import secrets
 import subprocess
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -1069,10 +1070,16 @@ class GitHubGitLedgerStore:
             or ref_object.get("sha") != commit_sha
         ):
             raise GitHubLedgerError("GitHub ledger ref update response is invalid")
-        current = self.read()
-        if not _ledger_is_prefix(updated, current.ledger):
-            raise GitHubLedgerError("GitHub ledger ref readback lost the reservation")
-        return commit_sha
+        for attempt in range(3):
+            current = self.read()
+            if _ledger_is_prefix(updated, current.ledger):
+                return commit_sha
+            if current != expected or attempt == 2:
+                raise GitHubLedgerError(
+                    "GitHub ledger ref readback lost the reservation"
+                )
+            time.sleep(attempt + 1)
+        raise AssertionError("unreachable GitHub ledger ref readback state")
 
     def _verify_repository_identity(self) -> None:
         repository = self._api.request("GET", f"repos/{self._repository}")
