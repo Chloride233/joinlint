@@ -59,6 +59,11 @@ POLICIES = {
         "pilot",
         8_000_000,
     ),
+    "pilot_stage_safety_confirmation": (
+        ".github/workflows/formal-pilot.yml",
+        "pilot",
+        5_530_000,
+    ),
 }
 
 
@@ -117,6 +122,13 @@ def _workflow_inputs(mode: str) -> dict[str, str]:
             "confirm_paid": "true",
             "pilot_commit": EVALUATED_COMMIT,
             "stage": "semantic_join_safety_v1",
+        }
+    if mode == "pilot_stage_safety_confirmation":
+        return {
+            "budget_cny": "5.53",
+            "confirm_paid": "true",
+            "pilot_commit": EVALUATED_COMMIT,
+            "stage": "semantic_join_safety_confirmation_v1",
         }
     return {"budget_cny": "2.25", "confirm_paid": "true"}
 

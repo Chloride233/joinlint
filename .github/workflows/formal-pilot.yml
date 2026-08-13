@@ -21,6 +21,7 @@ on:
         options:
           - flash_full_dataset_v1
           - semantic_join_safety_v1
+          - semantic_join_safety_confirmation_v1
           - full
       campaign_budget_cny:
         description: Approved cumulative investigation budget in CNY
@@ -75,9 +76,12 @@ jobs:
           github.run_attempt != 1 ||
           inputs.confirm_paid != true ||
           (inputs.stage != 'flash_full_dataset_v1' &&
-          inputs.stage != 'semantic_join_safety_v1') ||
+          inputs.stage != 'semantic_join_safety_v1' &&
+          inputs.stage != 'semantic_join_safety_confirmation_v1') ||
           (inputs.stage == 'flash_full_dataset_v1' && inputs.budget_cny != '7.4') ||
-          (inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8')
+          (inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8') ||
+          (inputs.stage == 'semantic_join_safety_confirmation_v1' &&
+          inputs.budget_cny != '5.53')
         run: exit 1
       - name: Checkout pinned public artifact verifier
         id: public_artifact_verifier
@@ -155,7 +159,7 @@ jobs:
         working-directory: .workflow-control
         env:
           GH_TOKEN: ${{ github.token }}
-          PILOT_RESERVATION_MODE: ${{ inputs.stage == 'semantic_join_safety_v1' && 'pilot_stage_safety' || 'pilot_stage' }}
+          PILOT_RESERVATION_MODE: ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && 'pilot_stage_safety_confirmation' || inputs.stage == 'semantic_join_safety_v1' && 'pilot_stage_safety' || 'pilot_stage' }}
         run: >-
           python -m benchmarks.formal_eval.campaign_reservation
           reserve
@@ -191,6 +195,7 @@ jobs:
           --workflow-run-id "${{ github.run_id }}"
           --campaign-reservation-id "$CAMPAIGN_RESERVATION_ID"
           --campaign-ledger-commit-sha "$CAMPAIGN_LEDGER_COMMIT_SHA"
+          ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && '--confirmation' || '' }}
       - name: Scan sanitized Pilot stage artifacts
         id: scan_pilot_stage_sanitized
         if: always() && steps.public_artifact_verifier.outcome == 'success'

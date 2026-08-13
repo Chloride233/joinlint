@@ -15,13 +15,19 @@ from benchmarks.formal_eval.pilot import (
     frozen_safety_pilot_registration,
 )
 from benchmarks.formal_eval.pilot_stage import (
+    SAFETY_CONFIRMATION_APPROVED_BUDGET_CNY,
+    SAFETY_CONFIRMATION_STAGE_ID,
+    SAFETY_CONFIRMATION_TASK_IDS,
     SAFETY_STAGE_APPROVED_BUDGET_CNY,
     SAFETY_STAGE_ID,
     STAGE_APPROVED_BUDGET_CNY,
     build_flash_stage_commands,
+    build_safety_confirmation_commands,
     exact_two_sided_mcnemar_p_value,
     flash_stage_budget_envelope,
     flash_stage_run_plan,
+    safety_confirmation_budget_envelope,
+    safety_confirmation_run_plan,
     pilot_stage_preregistration,
     run_flash_stage,
     stage_effect_report,
@@ -79,8 +85,20 @@ def test_safety_stage_has_separate_identity_claim_and_budget() -> None:
         update={
             "dataset_release": registration.dataset_release,
             "tasks": tuple(
-                task.model_copy(update={"corpus": "semantic_join_failure"})
-                for task in _manifest().tasks
+                task.model_copy(
+                    update={
+                        "task_id": (
+                            "sjf-commerce-ordered_products",
+                            "sjf-healthcare-visit_diagnosis",
+                            "sjf-healthcare-visit_lab",
+                            "sjf-subscriptions-account_owner",
+                        )[index]
+                        if index < 4
+                        else task.task_id,
+                        "corpus": "semantic_join_failure",
+                    }
+                )
+                for index, task in enumerate(_manifest().tasks)
             ),
         }
     )
@@ -106,6 +124,39 @@ def test_safety_stage_has_separate_identity_claim_and_budget() -> None:
     assert envelope.model_cost_upper_cny == pytest.approx(4.0)
     assert envelope.total_upper_cny == pytest.approx(7.79792)
     assert envelope.total_upper_cny < SAFETY_STAGE_APPROVED_BUDGET_CNY == 8.0
+
+
+def test_safety_confirmation_freezes_four_hard_tasks_three_pairs_and_budget() -> None:
+    registration = frozen_safety_pilot_registration(COMMIT)
+    manifest = _manifest().model_copy(
+        update={
+            "dataset_release": registration.dataset_release,
+            "tasks": tuple(
+                task.model_copy(
+                    update={
+                        "task_id": SAFETY_CONFIRMATION_TASK_IDS[index]
+                        if index < len(SAFETY_CONFIRMATION_TASK_IDS)
+                        else task.task_id,
+                        "corpus": "semantic_join_failure",
+                    }
+                )
+                for index, task in enumerate(_manifest().tasks)
+            ),
+        }
+    )
+    full_plan = build_pilot_run_plan(manifest, registration, LINEAGE_ID)
+
+    stage_plan = safety_confirmation_run_plan(registration, full_plan)
+    envelope = safety_confirmation_budget_envelope(registration)
+
+    assert stage_plan.evaluation_id.endswith(SAFETY_CONFIRMATION_STAGE_ID)
+    assert len(stage_plan.runs) == 24
+    assert len({run.task_id for run in stage_plan.runs}) == 4
+    assert {run.repetition for run in stage_plan.runs} == {0, 1, 2}
+    assert {run.condition for run in stage_plan.runs} == {"control", "treatment"}
+    assert envelope.run_count == 24
+    assert envelope.total_upper_cny == pytest.approx(5.478752)
+    assert envelope.total_upper_cny < SAFETY_CONFIRMATION_APPROVED_BUDGET_CNY == 5.53
 
 
 def test_flash_stage_commands_cover_both_hosts_and_conditions(tmp_path: Path) -> None:
@@ -135,6 +186,33 @@ def test_flash_stage_commands_cover_both_hosts_and_conditions(tmp_path: Path) ->
         command[2].endswith("benchmarks/formal_eval/inspect_task.py@formal_pilot_eval")
         for command in commands
     )
+
+
+def test_safety_confirmation_commands_use_codex_three_epochs_and_exact_tasks(
+    tmp_path: Path,
+) -> None:
+    commands = build_safety_confirmation_commands(
+        inspect="/usr/bin/inspect",
+        registration=frozen_safety_pilot_registration(COMMIT),
+        root=tmp_path / "frozen",
+        log_dir=tmp_path / "logs",
+        lineage_id=LINEAGE_ID,
+    )
+
+    assert len(commands) == 2
+    assert {command[command.index("--epochs") + 1] for command in commands} == {"3"}
+    assert {
+        next(value for value in command if value.startswith("host="))
+        for command in commands
+    } == {"host=codex"}
+    assert {
+        next(value for value in command if value.startswith("condition="))
+        for command in commands
+    } == {"condition=control", "condition=treatment"}
+    assert {
+        next(value for value in command if value.startswith("task_ids="))
+        for command in commands
+    } == {f"task_ids={','.join(SAFETY_CONFIRMATION_TASK_IDS)}"}
 
 
 @pytest.mark.parametrize(

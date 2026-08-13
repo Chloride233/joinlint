@@ -32,20 +32,37 @@ from benchmarks.formal_eval.pilot_dispatch import (
     require_batch_health,
 )
 from benchmarks.formal_eval.run_plan import RunPlanV2
+from benchmarks.formal_eval.run_plan import RunSpec, sample_id_for
 from joinlint.contracts import canonical_json
 
 
 STAGE_ID = "flash_full_dataset_v1"
 SAFETY_STAGE_ID = "semantic_join_safety_v1"
+SAFETY_CONFIRMATION_STAGE_ID = "semantic_join_safety_confirmation_v1"
 STAGE_APPROVED_BUDGET_CNY = 7.4
 SAFETY_STAGE_APPROVED_BUDGET_CNY = 8.0
+SAFETY_CONFIRMATION_APPROVED_BUDGET_CNY = 5.53
 STAGE_ALPHA = 0.05
+SAFETY_CONFIRMATION_TASK_IDS = (
+    "sjf-commerce-ordered_products",
+    "sjf-healthcare-visit_diagnosis",
+    "sjf-healthcare-visit_lab",
+    "sjf-subscriptions-account_owner",
+)
 
 
 class PilotStagePreregistration(StrictModel):
     schema_version: Literal[1] = 1
-    stage_id: Literal["flash_full_dataset_v1", "semantic_join_safety_v1"] = STAGE_ID
-    claim_scope: Literal["exploratory_bird_pilot", "synthetic_join_safety_stress"] = (
+    stage_id: Literal[
+        "flash_full_dataset_v1",
+        "semantic_join_safety_v1",
+        "semantic_join_safety_confirmation_v1",
+    ] = STAGE_ID
+    claim_scope: Literal[
+        "exploratory_bird_pilot",
+        "synthetic_join_safety_stress",
+        "posthoc_synthetic_hard_case_confirmation",
+    ] = (
         "exploratory_bird_pilot"
     )
     joinlint_commit: str
@@ -62,9 +79,9 @@ class PilotStagePreregistration(StrictModel):
         "control",
         "treatment",
     )
-    task_count: Literal[20] = 20
-    paired_unit_count: Literal[20] = 20
-    run_count: Literal[40] = 40
+    task_count: int = Field(gt=0, le=20)
+    paired_unit_count: int = Field(gt=0, le=20)
+    run_count: int = Field(gt=0, le=40)
     primary_outcome: Literal["join_correct_task_completion"] = (
         "join_correct_task_completion"
     )
@@ -72,7 +89,7 @@ class PilotStagePreregistration(StrictModel):
         "exact_two_sided_mcnemar"
     )
     alpha: Literal[0.05] = STAGE_ALPHA
-    approved_budget_cny: Literal[7.4, 8.0] = STAGE_APPROVED_BUDGET_CNY
+    approved_budget_cny: Literal[5.53, 7.4, 8.0] = STAGE_APPROVED_BUDGET_CNY
     workflow_run_id: int = Field(gt=0)
     campaign_reservation_id: str
     campaign_ledger_commit_sha: str
@@ -103,10 +120,38 @@ class PilotStagePreregistration(StrictModel):
             raise ValueError("Pilot stage ledger commit must be one full lowercase Git SHA")
         return value
 
+    @model_validator(mode="after")
+    def require_stage_shape(self) -> PilotStagePreregistration:
+        expected = {
+            STAGE_ID: ("exploratory_bird_pilot", 20, 20, 40, 7.4),
+            SAFETY_STAGE_ID: ("synthetic_join_safety_stress", 20, 20, 40, 8.0),
+            SAFETY_CONFIRMATION_STAGE_ID: (
+                "posthoc_synthetic_hard_case_confirmation",
+                4,
+                12,
+                24,
+                5.53,
+            ),
+        }[self.stage_id]
+        actual = (
+            self.claim_scope,
+            self.task_count,
+            self.paired_unit_count,
+            self.run_count,
+            self.approved_budget_cny,
+        )
+        if actual != expected:
+            raise ValueError("Pilot stage shape is inconsistent")
+        return self
+
 
 class PilotStageEffect(StrictModel):
     schema_version: Literal[1] = 1
-    stage_id: Literal["flash_full_dataset_v1", "semantic_join_safety_v1"] = STAGE_ID
+    stage_id: Literal[
+        "flash_full_dataset_v1",
+        "semantic_join_safety_v1",
+        "semantic_join_safety_confirmation_v1",
+    ] = STAGE_ID
     preregistration_sha256: str
     primary_outcome: Literal["join_correct_task_completion"] = (
         "join_correct_task_completion"
@@ -115,7 +160,7 @@ class PilotStageEffect(StrictModel):
         "exact_two_sided_mcnemar"
     )
     alpha: Literal[0.05] = STAGE_ALPHA
-    paired_unit_count: Literal[20] = 20
+    paired_unit_count: int = Field(gt=0, le=20)
     control_successes: int = Field(ge=0, le=20)
     treatment_successes: int = Field(ge=0, le=20)
     treatment_wins: int = Field(ge=0, le=20)
@@ -197,6 +242,53 @@ def flash_stage_run_plan(
     return plan
 
 
+def safety_confirmation_run_plan(
+    registration: PilotRegistration,
+    full_run_plan: RunPlanV2,
+) -> RunPlanV2:
+    flash = _flash_model(registration)
+    originals = {
+        run.task_id: run
+        for run in full_run_plan.runs
+        if run.model_id == flash.returned_id
+        and run.condition == "control"
+        and run.task_id in SAFETY_CONFIRMATION_TASK_IDS
+    }
+    if set(originals) != set(SAFETY_CONFIRMATION_TASK_IDS):
+        raise ValueError("frozen Pilot is missing a safety confirmation task")
+    runs = tuple(
+        RunSpec(
+            sample_id=sample_id_for(
+                task_id=original.task_id,
+                database_id=original.database_id,
+                corpus=original.corpus,
+                condition=condition,
+                model_id=original.model_id,
+                host="codex",
+                repetition=repetition,
+            ),
+            task_id=original.task_id,
+            database_id=original.database_id,
+            corpus=original.corpus,
+            condition=condition,
+            model_id=original.model_id,
+            host="codex",
+            repetition=repetition,
+            confirmatory=False,
+        )
+        for task_id in SAFETY_CONFIRMATION_TASK_IDS
+        for original in (originals[task_id],)
+        for repetition in range(3)
+        for condition in ("control", "treatment")
+    )
+    return RunPlanV2(
+        evaluation_id=f"{full_run_plan.evaluation_id}-{SAFETY_CONFIRMATION_STAGE_ID}",
+        lineage_id=full_run_plan.lineage_id,
+        runs=tuple(sorted(runs, key=lambda run: run.sample_id.encode("utf-8"))),
+        blind_review_sample_ids=(),
+    )
+
+
 def flash_stage_budget_envelope(registration: PilotRegistration) -> PilotBudgetEnvelope:
     flash = _flash_model(registration)
     flash_index = next(
@@ -230,6 +322,27 @@ def flash_stage_budget_envelope(registration: PilotRegistration) -> PilotBudgetE
     return envelope
 
 
+def safety_confirmation_budget_envelope(
+    registration: PilotRegistration,
+) -> PilotBudgetEnvelope:
+    full = flash_stage_budget_envelope(registration)
+    ratio = 24 / 40
+    envelope = PilotBudgetEnvelope(
+        run_count=24,
+        model_cost_upper_cny=full.model_cost_upper_cny * ratio,
+        modal_compute_upper_cny=full.modal_compute_upper_cny * ratio,
+        modal_image_build_reserve_cny=full.modal_image_build_reserve_cny,
+        total_upper_cny=(
+            full.model_cost_upper_cny * ratio
+            + full.modal_compute_upper_cny * ratio
+            + full.modal_image_build_reserve_cny
+        ),
+    )
+    if envelope.total_upper_cny > SAFETY_CONFIRMATION_APPROVED_BUDGET_CNY:
+        raise ValueError("safety confirmation exceeds its approved budget")
+    return envelope
+
+
 def build_flash_stage_commands(
     *,
     inspect: str,
@@ -259,6 +372,37 @@ def build_flash_stage_commands(
     return tuple(commands)
 
 
+def build_safety_confirmation_commands(
+    *,
+    inspect: str,
+    registration: PilotRegistration,
+    root: Path,
+    log_dir: Path,
+    lineage_id: str,
+) -> tuple[list[str], ...]:
+    commands = []
+    task_ids = ",".join(SAFETY_CONFIRMATION_TASK_IDS)
+    for original in build_flash_stage_commands(
+        inspect=inspect,
+        registration=registration,
+        root=root,
+        log_dir=log_dir,
+        lineage_id=lineage_id,
+    ):
+        if next(value for value in original if value.startswith("host=")) != "host=codex":
+            continue
+        command = list(original)
+        command[command.index("--epochs") + 1] = "3"
+        partition_index = next(
+            index for index, value in enumerate(command) if value.startswith("task_partition=")
+        )
+        command[partition_index] = f"task_ids={task_ids}"
+        commands.append(command)
+    if len(commands) != 2:
+        raise ValueError("safety confirmation requires two condition commands")
+    return tuple(commands)
+
+
 def pilot_stage_preregistration(
     registration: PilotRegistration,
     full_run_plan: RunPlanV2,
@@ -268,12 +412,26 @@ def pilot_stage_preregistration(
     workflow_run_id: int,
     campaign_reservation_id: str,
     campaign_ledger_commit_sha: str,
+    confirmation: bool = False,
 ) -> PilotStagePreregistration:
-    stage_id, claim_scope = _stage_identity(registration)
+    if confirmation:
+        if _stage_identity(registration)[0] != SAFETY_STAGE_ID:
+            raise ValueError("safety confirmation requires the frozen safety Pilot")
+        stage_id = SAFETY_CONFIRMATION_STAGE_ID
+        claim_scope = "posthoc_synthetic_hard_case_confirmation"
+        task_count, paired_unit_count, run_count = 4, 12, 24
+        approved_budget = SAFETY_CONFIRMATION_APPROVED_BUDGET_CNY
+    else:
+        stage_id, claim_scope = _stage_identity(registration)
+        task_count, paired_unit_count, run_count = 20, 20, 40
+        approved_budget = _stage_approved_budget(registration)
     return PilotStagePreregistration(
         stage_id=stage_id,
         claim_scope=claim_scope,
-        approved_budget_cny=_stage_approved_budget(registration),
+        task_count=task_count,
+        paired_unit_count=paired_unit_count,
+        run_count=run_count,
+        approved_budget_cny=approved_budget,
         joinlint_commit=registration.joinlint_commit,
         input_lock_sha256=input_lock_sha256,
         full_run_plan_sha256=digest_value(full_run_plan.model_dump(mode="json")),
@@ -335,6 +493,7 @@ def stage_effect_report(
     improvement = (treatment_successes - control_successes) / len(pairs)
     return PilotStageEffect(
         stage_id=preregistration.stage_id,
+        paired_unit_count=preregistration.paired_unit_count,
         preregistration_sha256=digest_value(preregistration.model_dump(mode="json")),
         control_successes=control_successes,
         treatment_successes=treatment_successes,
@@ -389,15 +548,28 @@ def run_flash_stage(
     workflow_run_id: int,
     campaign_reservation_id: str,
     campaign_ledger_commit_sha: str,
+    confirmation: bool = False,
 ) -> PilotStageEffect:
     if output.exists() or output.is_symlink():
         raise ValueError("Pilot stage output directory must not exist")
     if log_dir.resolve() == output.resolve():
         raise ValueError("Pilot stage log and output directories must be distinct")
     registration, _, full_run_plan, lock = verify_pilot_input_bundle(root)
-    stage_run_plan = flash_stage_run_plan(registration, full_run_plan)
-    envelope = flash_stage_budget_envelope(registration)
-    approved_budget = _stage_approved_budget(registration)
+    stage_run_plan = (
+        safety_confirmation_run_plan(registration, full_run_plan)
+        if confirmation
+        else flash_stage_run_plan(registration, full_run_plan)
+    )
+    envelope = (
+        safety_confirmation_budget_envelope(registration)
+        if confirmation
+        else flash_stage_budget_envelope(registration)
+    )
+    approved_budget = (
+        SAFETY_CONFIRMATION_APPROVED_BUDGET_CNY
+        if confirmation
+        else _stage_approved_budget(registration)
+    )
     campaign_before = pilot_campaign_budget(
         campaign_budget_cny=campaign_budget_cny,
         campaign_spend_before_cny=campaign_spend_before_cny,
@@ -413,6 +585,7 @@ def run_flash_stage(
         workflow_run_id=workflow_run_id,
         campaign_reservation_id=campaign_reservation_id,
         campaign_ledger_commit_sha=campaign_ledger_commit_sha,
+        confirmation=confirmation,
     )
     output.mkdir(parents=True)
     _write_json(output / "stage.json", preregistration)
@@ -421,7 +594,10 @@ def run_flash_stage(
     inspect = shutil.which("inspect")
     if inspect is None:
         raise ValueError("Inspect CLI is unavailable")
-    commands = build_flash_stage_commands(
+    command_builder = (
+        build_safety_confirmation_commands if confirmation else build_flash_stage_commands
+    )
+    commands = command_builder(
         inspect=inspect,
         registration=registration,
         root=root,
@@ -444,7 +620,10 @@ def run_flash_stage(
         batch_log_dir.mkdir(parents=True, exist_ok=True)
         try:
             subprocess.run(command, check=True, env=inspect_subprocess_environment())
-            require_batch_health(batch_log_dir, expected_sample_count=10)
+            require_batch_health(
+                batch_log_dir,
+                expected_sample_count=12 if confirmation else 10,
+            )
         except (subprocess.CalledProcessError, RuntimeError):
             _write_stage_checkpoint(
                 output,
@@ -596,6 +775,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workflow-run-id", type=int, required=True)
     parser.add_argument("--campaign-reservation-id", required=True)
     parser.add_argument("--campaign-ledger-commit-sha", required=True)
+    parser.add_argument("--confirmation", action="store_true")
     arguments = parser.parse_args(argv)
     effect = run_flash_stage(
         arguments.root,
@@ -606,6 +786,7 @@ def main(argv: list[str] | None = None) -> int:
         workflow_run_id=arguments.workflow_run_id,
         campaign_reservation_id=arguments.campaign_reservation_id,
         campaign_ledger_commit_sha=arguments.campaign_ledger_commit_sha,
+        confirmation=arguments.confirmation,
     )
     print(effect.model_dump_json())
     return 0
