@@ -43,3 +43,9 @@ def test_semantic_failure_bundle_is_deterministic_and_self_validating(tmp_path: 
     assert all(task.corpus == "semantic_join_failure" for task in manifest.tasks)
     assert all(task.split == "diagnostic" for task in manifest.tasks)
     assert all(row["dangerous_result_differs_from_gold"] for row in catalog)
+    assert first_report["agent_tasks"]["sha256"] == (
+        "2f6a95d50d11b8c5c0d3d9f89612c4cfdd4d02832ffc79c5f1290a4786136caa"
+    )
+    assert first_report["manifest"]["sha256"] == (
+        "f215b44eeaa15f4c98dd4368a6572191bb0ae660700900821299b53fcf5efe9a"
+    )

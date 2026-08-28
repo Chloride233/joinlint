@@ -84,6 +84,11 @@ _POLICIES = {
         job="pilot",
         upper_micro_cny=8_000_000,
     ),
+    "pilot_stage_contract_safety": _ReservationPolicy(
+        workflow_path=".github/workflows/formal-pilot.yml",
+        job="pilot",
+        upper_micro_cny=8_000_000,
+    ),
     "pilot_stage_safety_confirmation": _ReservationPolicy(
         workflow_path=".github/workflows/formal-pilot.yml",
         job="pilot",
@@ -118,6 +123,11 @@ _EXPECTED_WORKFLOW_INPUTS = {
         "budget_cny": "8",
         "confirm_paid": "true",
         "stage": "semantic_join_safety_v1",
+    },
+    "pilot_stage_contract_safety": {
+        "budget_cny": "8",
+        "confirm_paid": "true",
+        "stage": "semantic_join_contract_safety_v1",
     },
     "pilot_stage_safety_confirmation": {
         "budget_cny": "5.53",
@@ -528,6 +538,7 @@ def main(
             "calibration",
             "pilot_stage",
             "pilot_stage_safety",
+            "pilot_stage_contract_safety",
             "pilot_stage_safety_confirmation",
         ),
         required=True,

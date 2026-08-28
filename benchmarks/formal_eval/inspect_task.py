@@ -66,6 +66,7 @@ from benchmarks.formal_eval.lifecycle import (
 )
 from benchmarks.formal_eval.oracle_mcp import OracleDocument
 from benchmarks.formal_eval.pilot import pilot_partition_tasks
+from benchmarks.formal_eval.query_contract import render_task_input
 from benchmarks.formal_eval.trace import ToolEvent, assess_trace
 from benchmarks.formal_eval.validation_failure_marker import (
     VALIDATION_FAILURE_MARKER_CLEAR,
@@ -75,8 +76,8 @@ from benchmarks.formal_eval.validation_ledger import VALIDATION_LEDGER_WRITE_FAI
 from joinlint.contracts import canonical_json
 
 
-BASE_PROMPT = """You are evaluating one SQLite question. Use the EvaluationDatabase execute_sql tool for data access. Submit exactly once with the EvaluationDatabase submit_sql tool as your final action. Its sql argument must contain one read-only SELECT, or be empty only when no safe join exists; warning must be empty for submitted SQL and explain a safe abstention otherwise. Do not rely on the text of your final reply for submission."""
-HARNESS_PROMPT = """Follow one short JoinLint path. Before the first call, map every requested output and relationship phrase to its physical tables; include bridge, event, or association tables even when none of their columns are selected. Your first tool call must be JoinLint get_join_plan after choosing every physical table instance. Each entity_refs item is {"ref":"orders","entity":"orders"}: ref is a unique alias and entity is the table; repeat only for a self join. Set expected_grain_ref to the pre-aggregation row grain (normally the referencing child for child-row counts or summaries). DISTINCT, GROUP BY, and aggregation do not repair grain. Use only proof predicates returned by the plan. Then write one final SQL and call validate_sql with that SQL and plan_id; omit expected_grain_ref. A status ok is never a retry signal: do not edit or validate again. Call execute_sql at most once with the exact validated SQL, then submit immediately. Never plan after validation. Only these retries are allowed: one changed replan after UNCONNECTED_ENTITY_REF; one changed replan changing only grain after GRAIN_INCOMPATIBLE; or one changed SQL-only revision when validation explicitly says retryable and next_action revise_sql. Otherwise submit empty SQL with the stable code. JoinLint proves the join path, not the query result."""
+BASE_PROMPT = """You are evaluating one SQLite question. Use the EvaluationDatabase execute_sql tool for data access. When the input includes a Trusted query contract, its required_entities, output_fields, and row_grain_entity are authoritative intent for both conditions; do not substitute a different entity set, output, or grain. The contract contains no join predicates. Submit exactly once with the EvaluationDatabase submit_sql tool as your final action. Its sql argument must contain one read-only SELECT, or be empty only when no safe join exists; warning must be empty for submitted SQL and explain a safe abstention otherwise. Do not rely on the text of your final reply for submission."""
+HARNESS_PROMPT = """Follow one short JoinLint path. When a Trusted query contract is present, include every required_entities item exactly once in entity_refs, using the entity name as ref, and use row_grain_entity for start_ref and expected_grain_ref. Otherwise, before the first call, map every requested output and relationship phrase to its physical tables; include bridge, event, or association tables even when none of their columns are selected. Your first tool call must be JoinLint get_join_plan after choosing every physical table instance. Each entity_refs item is {"ref":"orders","entity":"orders"}: ref is a unique alias and entity is the table; repeat only for a self join. Set expected_grain_ref to the pre-aggregation row grain (normally the referencing child for child-row counts or summaries). DISTINCT, GROUP BY, and aggregation do not repair grain. Use only proof predicates returned by the plan. Then write one final SQL and call validate_sql with that SQL and plan_id; omit expected_grain_ref. A status ok is never a retry signal: do not edit or validate again. Call execute_sql at most once with the exact validated SQL, then submit immediately. Never plan after validation. Only these retries are allowed: one changed replan after UNCONNECTED_ENTITY_REF; one changed replan changing only grain after GRAIN_INCOMPATIBLE; or one changed SQL-only revision when validation explicitly says retryable and next_action revise_sql. Otherwise submit empty SQL with the stable code. JoinLint proves the join path, not the query result."""
 HOST_CONTEXT_STORE_KEY = "joinlint.formal_eval.host_context.v1"
 MCP_READINESS_HANDSHAKE_STORE_KEY = "joinlint.formal_eval.mcp_readiness_handshake.v1"
 VALIDATION_LEDGER_FAILURE_OBSERVED_STORE_KEY = (
@@ -710,7 +711,7 @@ def _samples(
             manifest_task.sql_shape_sha256,
             actual,
         )
-        body = f"Question:\n{actual.question}\n\nSchema:\n{actual.schema_text}"
+        body = render_task_input(actual)
         if condition == "oracle_inline":
             body += "\n\nAuthoritative join graphs:\n" + json.dumps(
                 actual.allowed_graphs, separators=(",", ":")

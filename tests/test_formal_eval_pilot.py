@@ -19,6 +19,7 @@ from benchmarks.formal_eval.contracts import (
 from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.manifest import require_locked_inputs, verify_input_lock
 from benchmarks.formal_eval.pilot import (
+    CONTRACT_SAFETY_DATASET_RELEASE,
     PILOT_DATASET_RELEASE,
     PILOT_ALLOCATION,
     PILOT_GROUND_TRUTH_EXCLUSIONS,
@@ -26,7 +27,9 @@ from benchmarks.formal_eval.pilot import (
     budget_envelope,
     build_pilot_calibration_spec,
     build_pilot_run_plan,
+    build_contract_safety_pilot_inputs,
     build_safety_pilot_inputs,
+    frozen_contract_safety_pilot_registration,
     frozen_pilot_registration,
     frozen_safety_pilot_registration,
     model_batch_upper_costs,
@@ -132,6 +135,20 @@ def test_safety_pilot_has_a_separate_bounded_resource_contract() -> None:
     assert envelope.model_cost_upper_cny == pytest.approx(16.0)
     assert envelope.modal_compute_upper_cny == pytest.approx(3.59584)
     assert envelope.total_upper_cny == pytest.approx(21.59584)
+    assert envelope.total_upper_cny < registration.budget_cny == 22.0
+
+
+def test_contract_safety_pilot_has_a_separate_bounded_resource_contract() -> None:
+    registration = frozen_contract_safety_pilot_registration(COMMIT)
+
+    envelope = budget_envelope(registration)
+
+    assert registration.schema_version == 7
+    assert registration.dataset_release == CONTRACT_SAFETY_DATASET_RELEASE
+    assert registration.token_limit_per_run == 45_000
+    assert registration.token_accounting_ceiling_per_run == 50_000
+    assert registration.message_limit_per_run == 30
+    assert envelope.run_count == 80
     assert envelope.total_upper_cny < registration.budget_cny == 22.0
 
 
@@ -1393,6 +1410,24 @@ def test_safety_pilot_builder_freezes_twenty_independent_semantic_tasks(
     assert report["input_lock_sha256"] == digest_value(lock.model_dump(mode="json"))
 
 
+def test_contract_safety_pilot_builder_freezes_twenty_new_contract_tasks(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "contract-safety-pilot"
+
+    report = build_contract_safety_pilot_inputs(output, commit=COMMIT)
+    registration, manifest, run_plan, lock = verify_pilot_input_bundle(output)
+
+    assert report["claim_boundary"] == "trusted_query_contract_join_safety_stress_only"
+    assert report["task_count"] == 20
+    assert report["run_count"] == 80
+    assert registration == frozen_contract_safety_pilot_registration(COMMIT)
+    assert manifest.dataset_release == CONTRACT_SAFETY_DATASET_RELEASE
+    assert len({task.database_id for task in manifest.tasks}) == 4
+    assert len(run_plan.runs) == 80
+    assert report["input_lock_sha256"] == digest_value(lock.model_dump(mode="json"))
+
+
 def test_pilot_input_lock_detects_tampering(tmp_path: Path) -> None:
     locked = tmp_path / "manifest.json"
     locked.write_text("frozen", encoding="utf-8")
@@ -1724,8 +1759,10 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert workflow["permissions"]["contents"] == "write"
     assert "inputs.stage != 'flash_full_dataset_v1'" in text
     assert "inputs.stage != 'semantic_join_safety_v1'" in text
+    assert "inputs.stage != 'semantic_join_contract_safety_v1'" in text
     assert "inputs.stage == 'flash_full_dataset_v1' && inputs.budget_cny != '7.4'" in text
     assert "inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8'" in text
+    assert "inputs.stage == 'semantic_join_contract_safety_v1'" in text
     assert "inputs.stage == 'semantic_join_safety_confirmation_v1'" in text
     assert "inputs.budget_cny != '5.53'" in text
     assert workflow["on"]["workflow_dispatch"]["inputs"]["pilot_commit"]["default"] == (
@@ -1813,6 +1850,9 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert reservation["working-directory"] == ".workflow-control"
     assert set(reservation["env"]) == {"GH_TOKEN", "PILOT_RESERVATION_MODE"}
     assert "'pilot_stage_safety' || 'pilot_stage'" in reservation["env"][
+        "PILOT_RESERVATION_MODE"
+    ]
+    assert "'pilot_stage_contract_safety'" in reservation["env"][
         "PILOT_RESERVATION_MODE"
     ]
     assert '--mode "$PILOT_RESERVATION_MODE"' in reservation["run"]

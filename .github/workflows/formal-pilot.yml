@@ -21,6 +21,7 @@ on:
         options:
           - flash_full_dataset_v1
           - semantic_join_safety_v1
+          - semantic_join_contract_safety_v1
           - semantic_join_safety_confirmation_v1
           - full
       campaign_budget_cny:
@@ -77,9 +78,12 @@ jobs:
           inputs.confirm_paid != true ||
           (inputs.stage != 'flash_full_dataset_v1' &&
           inputs.stage != 'semantic_join_safety_v1' &&
+          inputs.stage != 'semantic_join_contract_safety_v1' &&
           inputs.stage != 'semantic_join_safety_confirmation_v1') ||
           (inputs.stage == 'flash_full_dataset_v1' && inputs.budget_cny != '7.4') ||
           (inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8') ||
+          (inputs.stage == 'semantic_join_contract_safety_v1' &&
+          inputs.budget_cny != '8') ||
           (inputs.stage == 'semantic_join_safety_confirmation_v1' &&
           inputs.budget_cny != '5.53')
         run: exit 1
@@ -159,7 +163,7 @@ jobs:
         working-directory: .workflow-control
         env:
           GH_TOKEN: ${{ github.token }}
-          PILOT_RESERVATION_MODE: ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && 'pilot_stage_safety_confirmation' || inputs.stage == 'semantic_join_safety_v1' && 'pilot_stage_safety' || 'pilot_stage' }}
+          PILOT_RESERVATION_MODE: ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && 'pilot_stage_safety_confirmation' || inputs.stage == 'semantic_join_contract_safety_v1' && 'pilot_stage_contract_safety' || inputs.stage == 'semantic_join_safety_v1' && 'pilot_stage_safety' || 'pilot_stage' }}
         run: >-
           python -m benchmarks.formal_eval.campaign_reservation
           reserve

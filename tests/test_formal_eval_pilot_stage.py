@@ -11,10 +11,12 @@ from benchmarks.formal_eval.contracts import AgentResultRow, FormalManifestV2, F
 from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.pilot import (
     build_pilot_run_plan,
+    frozen_contract_safety_pilot_registration,
     frozen_pilot_registration,
     frozen_safety_pilot_registration,
 )
 from benchmarks.formal_eval.pilot_stage import (
+    CONTRACT_SAFETY_STAGE_ID,
     SAFETY_CONFIRMATION_APPROVED_BUDGET_CNY,
     SAFETY_CONFIRMATION_STAGE_ID,
     SAFETY_CONFIRMATION_TASK_IDS,
@@ -124,6 +126,36 @@ def test_safety_stage_has_separate_identity_claim_and_budget() -> None:
     assert envelope.model_cost_upper_cny == pytest.approx(4.0)
     assert envelope.total_upper_cny == pytest.approx(7.79792)
     assert envelope.total_upper_cny < SAFETY_STAGE_APPROVED_BUDGET_CNY == 8.0
+
+
+def test_contract_safety_stage_has_separate_identity_and_claim() -> None:
+    registration = frozen_contract_safety_pilot_registration(COMMIT)
+    manifest = _manifest().model_copy(
+        update={
+            "dataset_release": registration.dataset_release,
+            "tasks": tuple(
+                task.model_copy(update={"corpus": "semantic_join_failure"})
+                for task in _manifest().tasks
+            ),
+        }
+    )
+    full_plan = build_pilot_run_plan(manifest, registration, LINEAGE_ID)
+
+    stage_plan = flash_stage_run_plan(registration, full_plan)
+    preregistration = pilot_stage_preregistration(
+        registration,
+        full_plan,
+        stage_plan,
+        input_lock_sha256=INPUT_LOCK_SHA256,
+        workflow_run_id=123,
+        campaign_reservation_id=RESERVATION_ID,
+        campaign_ledger_commit_sha=LEDGER_COMMIT,
+    )
+
+    assert preregistration.stage_id == CONTRACT_SAFETY_STAGE_ID
+    assert preregistration.claim_scope == "trusted_query_contract_join_safety_stress"
+    assert preregistration.approved_budget_cny == SAFETY_STAGE_APPROVED_BUDGET_CNY
+    assert stage_plan.evaluation_id.endswith(CONTRACT_SAFETY_STAGE_ID)
 
 
 def test_safety_confirmation_freezes_four_hard_tasks_three_pairs_and_budget() -> None:

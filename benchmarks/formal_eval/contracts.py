@@ -238,6 +238,52 @@ class PreregistrationV2(StrictModel):
         return self
 
 
+class QueryOutputField(StrictModel):
+    entity: str
+    column: str
+    alias: str
+
+    @field_validator("entity", "column", "alias")
+    @classmethod
+    def validate_identifiers(cls, value: str) -> str:
+        return _validate_identifier(value)
+
+
+class QueryContract(StrictModel):
+    schema_version: Literal[1] = 1
+    required_entities: tuple[str, ...]
+    output_fields: tuple[QueryOutputField, ...]
+    row_grain_entity: str
+
+    @field_validator("required_entities")
+    @classmethod
+    def validate_required_entities(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not 2 <= len(value) <= 8 or len(set(value)) != len(value):
+            raise ValueError("query contract requires 2 to 8 unique entities")
+        for entity in value:
+            _validate_identifier(entity)
+        return value
+
+    @field_validator("row_grain_entity")
+    @classmethod
+    def validate_row_grain(cls, value: str) -> str:
+        return _validate_identifier(value)
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> QueryContract:
+        required = set(self.required_entities)
+        if self.row_grain_entity not in required:
+            raise ValueError("query contract row grain must be a required entity")
+        if not self.output_fields:
+            raise ValueError("query contract requires at least one output field")
+        if any(field.entity not in required for field in self.output_fields):
+            raise ValueError("query contract output entities must be required")
+        aliases = [field.alias for field in self.output_fields]
+        if len(set(aliases)) != len(aliases):
+            raise ValueError("query contract output aliases must be unique")
+        return self
+
+
 class SealedAgentTask(StrictModel):
     task_id: str
     database_id: str
@@ -250,6 +296,10 @@ class SealedAgentTask(StrictModel):
     expected_entities: tuple[str, ...]
     allowed_graphs: tuple[tuple[Edge, ...], ...]
     oracle_has_safe_path: bool
+    query_contract: QueryContract | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("task_id", "database_id")
     @classmethod
@@ -269,6 +319,12 @@ class SealedAgentTask(StrictModel):
             raise ValueError("expected entities must be unique")
         if self.oracle_has_safe_path != bool(self.allowed_graphs):
             raise ValueError("oracle path state must agree with allowed graphs")
+        if self.query_contract is not None:
+            if set(self.query_contract.required_entities) != set(self.expected_entities):
+                raise ValueError("query contract entity set must match expected entities")
+            for field in self.query_contract.output_fields:
+                if field.column not in self.schema_map.get(field.entity, {}):
+                    raise ValueError("query contract output field must exist in schema")
         return self
 
 

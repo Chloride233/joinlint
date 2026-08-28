@@ -142,7 +142,14 @@ class ReservationRequest:
                 pattern=_SHA256_PATTERN,
             )
         if (self.mode == "readiness" and self.input_lock_sha256 is not None) or (
-            self.mode in {"calibration", "pilot", "pilot_stage", "pilot_stage_safety"}
+            self.mode
+            in {
+                "calibration",
+                "pilot",
+                "pilot_stage",
+                "pilot_stage_safety",
+                "pilot_stage_contract_safety",
+            }
             and self.input_lock_sha256 is None
         ):
             raise CampaignLedgerError("input lock does not match reservation mode")

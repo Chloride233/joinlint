@@ -283,6 +283,18 @@ entity. Neither run supports a positive product-effect claim. The immutable
 run IDs, artifact digests, costs, and scope are recorded in
 [`docs/semantic-safety-effect-results.md`](../../docs/semantic-safety-effect-results.md).
 
+The next candidate experiment removes the observed entity-selection confound
+without rewriting those results. Both arms receive the same input-locked trusted
+query contract: complete required physical entities, requested output fields,
+and pre-aggregation row grain. Only treatment receives JoinLint relationship
+proofs and SQL validation. Its 20 tasks use four new synthetic databases and
+reuse none of the observed safety tasks. Deterministic gates prove that every
+contract matches the scored entity set, every gold SQL passes its proof, and
+every executable dangerous SQL is blocked. No model outcome exists yet, and
+the claim remains limited to Join safety downstream of a trusted semantic
+mapping. See
+[`docs/superpowers/specs/2026-08-28-query-contract-join-safety-evaluation-design.md`](../../docs/superpowers/specs/2026-08-28-query-contract-join-safety-evaluation-design.md).
+
 `formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.
 It runs 80 samples under the frozen `balanced_diagonal_crossover_v1` design.
 Every task runs on both DeepSeek V4 tiers and both control/treatment arms. For

@@ -17,7 +17,12 @@ import rfc8785
 from benchmarks.agent_join.execution import execute_readonly, execution_matches
 from benchmarks.agent_join.sql_edges import extract_join_edges
 from benchmarks.formal_eval.bird_dataset import _check_sqlite, _file_record
-from benchmarks.formal_eval.contracts import FormalManifestV2, FormalTask, SealedAgentTask
+from benchmarks.formal_eval.contracts import (
+    FormalManifestV2,
+    FormalTask,
+    QueryContract,
+    SealedAgentTask,
+)
 from benchmarks.formal_eval.manifest import semantic_fingerprint, verify_sealed_manifest
 
 
@@ -34,6 +39,7 @@ class TaskSpec:
     expected_entities: tuple[str, ...]
     trap_type: str
     fanout_type: Literal["none", "one_to_many", "many_to_many", "compound"]
+    query_contract: QueryContract | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,23 @@ class DatabaseSpec:
 
 
 def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]:
+    return build_semantic_failure_bundle(
+        sealed_root,
+        output,
+        dataset_release=DATASET_RELEASE,
+        database_specs=_database_specs(),
+        claim_boundary="safety_stress_only_not_natural_error_rate",
+    )
+
+
+def build_semantic_failure_bundle(
+    sealed_root: Path,
+    output: Path,
+    *,
+    dataset_release: str,
+    database_specs: tuple[DatabaseSpec, ...],
+    claim_boundary: str,
+) -> dict[str, Any]:
     resolved_sealed = _real_directory(sealed_root, "sealed root")
     resolved_parent = _real_directory(output.parent, "diagnostic output parent")
     try:
@@ -62,7 +85,7 @@ def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]
     manifest_tasks: list[FormalTask] = []
     catalog: list[dict[str, Any]] = []
     try:
-        for database_spec in _database_specs():
+        for database_spec in database_specs:
             database_path = database_directory / f"{database_spec.database_id}.sqlite"
             _create_database(database_path, database_spec.schema_sql)
             schema_map, schema_text = _visible_schema(database_path)
@@ -106,6 +129,7 @@ def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]
                     expected_entities=task_spec.expected_entities,
                     allowed_graphs=(gold_edges,),
                     oracle_has_safe_path=True,
+                    query_contract=task_spec.query_contract,
                 )
                 formal_task = FormalTask(
                     task_id=task_id,
@@ -141,12 +165,17 @@ def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]
                         "dangerous_sql": task_spec.dangerous_sql,
                         "dangerous_graph": dangerous_edges,
                         "dangerous_result_differs_from_gold": True,
+                        **(
+                            {"query_contract_present": True}
+                            if task_spec.query_contract is not None
+                            else {}
+                        ),
                     }
                 )
 
         sealed_tasks.sort(key=lambda task: task.task_id.encode("utf-8"))
         manifest = FormalManifestV2(
-            dataset_release=DATASET_RELEASE,
+            dataset_release=dataset_release,
             tasks=tuple(sorted(manifest_tasks, key=lambda task: task.task_id.encode("utf-8"))),
         )
         verify_sealed_manifest(manifest, sealed_tasks)
@@ -173,7 +202,7 @@ def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]
         report = {
             "schema_version": 1,
             "status": "candidate_diagnostic_not_formally_frozen",
-            "dataset_release": DATASET_RELEASE,
+            "dataset_release": dataset_release,
             "task_count": len(sealed_tasks),
             "database_count": len(database_records),
             "trap_counts": dict(sorted(Counter(row["trap_type"] for row in catalog).items())),
@@ -182,7 +211,7 @@ def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]
             "diagnostic_catalog": _file_record(catalog_path),
             "databases": database_records,
             "natural_error_rate_eligible": False,
-            "claim_boundary": "safety_stress_only_not_natural_error_rate",
+            "claim_boundary": claim_boundary,
         }
         _write_canonical(staging / "source-manifest.json", report)
         os.replace(staging, output)

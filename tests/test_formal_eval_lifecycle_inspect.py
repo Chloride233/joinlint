@@ -1193,6 +1193,9 @@ def test_pilot_task_ids_accept_inspect_list_normalization() -> None:
 
 def test_treatment_harness_is_bounded_and_fail_closed() -> None:
     assert "first tool call must be JoinLint get_join_plan" in inspect_task.HARNESS_PROMPT
+    assert "include every required_entities item exactly once" in inspect_task.HARNESS_PROMPT
+    assert "authoritative intent for both conditions" in inspect_task.BASE_PROMPT
+    assert "contains no join predicates" in inspect_task.BASE_PROMPT
     assert "one changed replan" in inspect_task.HARNESS_PROMPT
     assert "submit empty SQL" in inspect_task.HARNESS_PROMPT
     assert "GRAIN_INCOMPATIBLE" in inspect_task.HARNESS_PROMPT

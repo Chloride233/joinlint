@@ -9,7 +9,7 @@ import uuid
 from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import rfc8785
 from pydantic import Field, TypeAdapter, model_validator
@@ -45,6 +45,7 @@ from benchmarks.formal_eval.run_plan import RunPlanV2, RunSpec, sample_id_for
 
 
 PILOT_DATASET_RELEASE = "bird-train-2023-07-11-declared-fk-pilot-v4"
+CONTRACT_SAFETY_DATASET_RELEASE = "semantic-join-contract-safety-pilot-v1"
 PILOT_ALLOCATION = {"citeseer": 9, "trains": 11}
 PILOT_DOMAINS = {"citeseer": "research", "trains": "transportation"}
 PILOT_GROUND_TRUTH_EXCLUSIONS = {
@@ -59,7 +60,7 @@ PILOT_ASSIGNMENT_DESIGN = "balanced_diagonal_crossover_v1"
 
 
 class PilotRegistration(StrictModel):
-    schema_version: Literal[3, 4, 5, 6]
+    schema_version: Literal[3, 4, 5, 6, 7]
     evaluation_id: str
     dataset_release: str
     seed: int = Field(ge=0)
@@ -114,7 +115,7 @@ class PilotRegistration(StrictModel):
         ):
             return {**value, "modal_sandbox_timeout_seconds": 150}
         if (
-            value.get("schema_version") in (5, 6)
+            value.get("schema_version") in (5, 6, 7)
             and "modal_sandbox_timeout_seconds" not in value
         ):
             raise ValueError(
@@ -124,6 +125,17 @@ class PilotRegistration(StrictModel):
 
     @model_validator(mode="after")
     def require_frozen_matrix_and_budget(self) -> PilotRegistration:
+        if self.schema_version == 7 and (
+            self.evaluation_id != "joinlint-semantic-contract-safety-pilot-v1"
+            or self.dataset_release != CONTRACT_SAFETY_DATASET_RELEASE
+            or self.token_limit_per_run != 45_000
+            or self.token_accounting_ceiling_per_run != 50_000
+            or self.message_limit_per_run != 30
+            or self.budget_cny != 22.0
+        ):
+            raise ValueError(
+                "contract safety Pilot resource limits do not match schema version 7"
+            )
         if self.schema_version == 6 and (
             self.evaluation_id != "joinlint-semantic-safety-pilot-v1"
             or self.dataset_release != "semantic-join-safety-pilot-v1"
@@ -267,6 +279,18 @@ def frozen_safety_pilot_registration(commit: str) -> PilotRegistration:
             "token_accounting_ceiling_per_run": 50_000,
             "message_limit_per_run": 30,
             "budget_cny": 22.0,
+        }
+    )
+
+
+def frozen_contract_safety_pilot_registration(commit: str) -> PilotRegistration:
+    values = frozen_safety_pilot_registration(commit).model_dump(mode="json")
+    return PilotRegistration.model_validate(
+        {
+            **values,
+            "schema_version": 7,
+            "evaluation_id": "joinlint-semantic-contract-safety-pilot-v1",
+            "dataset_release": CONTRACT_SAFETY_DATASET_RELEASE,
         }
     )
 
@@ -528,13 +552,51 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
 def build_safety_pilot_inputs(output: Path, *, commit: str) -> dict[str, Any]:
     from benchmarks.formal_eval.semantic_failure import build_semantic_failure_v1
 
+    return _build_safety_pilot_inputs(
+        output,
+        commit=commit,
+        source_builder=build_semantic_failure_v1,
+        registration=frozen_safety_pilot_registration(commit),
+        dataset_release="semantic-join-safety-pilot-v1",
+        status="frozen_independent_safety_pilot",
+        claim_boundary="synthetic_join_safety_stress_only",
+    )
+
+
+def build_contract_safety_pilot_inputs(output: Path, *, commit: str) -> dict[str, Any]:
+    from benchmarks.formal_eval.semantic_contract_failure import (
+        build_semantic_contract_failure_v1,
+    )
+
+    return _build_safety_pilot_inputs(
+        output,
+        commit=commit,
+        source_builder=build_semantic_contract_failure_v1,
+        registration=frozen_contract_safety_pilot_registration(commit),
+        dataset_release=CONTRACT_SAFETY_DATASET_RELEASE,
+        status="frozen_independent_contract_safety_pilot",
+        claim_boundary="trusted_query_contract_join_safety_stress_only",
+    )
+
+
+def _build_safety_pilot_inputs(
+    output: Path,
+    *,
+    commit: str,
+    source_builder: Callable[[Path, Path], dict[str, Any]],
+    registration: PilotRegistration,
+    dataset_release: str,
+    status: str,
+    claim_boundary: str,
+) -> dict[str, Any]:
+
     if output.exists() or output.is_symlink():
         raise ValueError("safety Pilot output already exists")
     parent = output.parent.resolve(strict=True)
     source = parent / f".semantic-safety-source-{uuid.uuid4().hex}"
     staging = parent / f".{output.name}.staging-{uuid.uuid4().hex}"
     try:
-        source_report = build_semantic_failure_v1(parent, source)
+        source_report = source_builder(parent, source)
         source_tasks = TypeAdapter(list[SealedAgentTask]).validate_json(
             (source / "agent-tasks.json").read_bytes()
         )
@@ -545,7 +607,7 @@ def build_safety_pilot_inputs(output: Path, *, commit: str) -> dict[str, Any]:
         )
         manifest = source_manifest.model_copy(
             update={
-                "dataset_release": "semantic-join-safety-pilot-v1",
+                "dataset_release": dataset_release,
                 "tasks": tuple(
                     task.model_copy(update={"split": "confirmatory"})
                     for task in source_manifest.tasks
@@ -553,7 +615,8 @@ def build_safety_pilot_inputs(output: Path, *, commit: str) -> dict[str, Any]:
             }
         )
         verify_sealed_manifest(manifest, tasks)
-        registration = frozen_safety_pilot_registration(commit)
+        if registration.joinlint_commit != commit:
+            raise ValueError("safety Pilot registration commit mismatch")
         calibration = build_pilot_calibration_spec(manifest)
 
         staging.mkdir()
@@ -569,9 +632,9 @@ def build_safety_pilot_inputs(output: Path, *, commit: str) -> dict[str, Any]:
             staging / "source-manifest.json",
             {
                 **source_report,
-                "status": "frozen_independent_safety_pilot",
+                "status": status,
                 "dataset_release": manifest.dataset_release,
-                "claim_boundary": "synthetic_join_safety_stress_only",
+                "claim_boundary": claim_boundary,
             },
         )
         lock = _input_lock(staging)
@@ -587,8 +650,8 @@ def build_safety_pilot_inputs(output: Path, *, commit: str) -> dict[str, Any]:
         _write_canonical(staging / "run-plan.json", run_plan.model_dump(mode="json"))
         report = {
             "schema_version": 1,
-            "status": "frozen_independent_safety_pilot",
-            "claim_boundary": "synthetic_join_safety_stress_only",
+            "status": status,
+            "claim_boundary": claim_boundary,
             "lineage_id": lineage_id,
             "task_count": len(tasks),
             "run_count": len(run_plan.runs),
@@ -825,6 +888,9 @@ def main(argv: list[str] | None = None) -> int:
     build_safety = commands.add_parser("build-safety")
     build_safety.add_argument("--output", type=Path, required=True)
     build_safety.add_argument("--commit", required=True)
+    build_contract_safety = commands.add_parser("build-contract-safety")
+    build_contract_safety.add_argument("--output", type=Path, required=True)
+    build_contract_safety.add_argument("--commit", required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("--root", type=Path, required=True)
     verify.add_argument("--current-commit")
@@ -839,6 +905,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if arguments.command == "build-safety":
         report = build_safety_pilot_inputs(arguments.output, commit=arguments.commit)
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    if arguments.command == "build-contract-safety":
+        report = build_contract_safety_pilot_inputs(
+            arguments.output,
+            commit=arguments.commit,
+        )
         print(json.dumps(report, sort_keys=True))
         return 0
     registration, _, _ = verify_pilot_inputs(arguments.root)
