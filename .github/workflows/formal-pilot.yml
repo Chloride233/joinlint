@@ -156,7 +156,7 @@ jobs:
           --run-metadata "$GITHUB_WORKSPACE/calibration-attestation/run.json"
           --expected-run-id "$CALIBRATION_RUN_ID"
           --current-commit "${{ steps.pilot_commit.outputs.sha }}"
-          --expected-workflow-commit a565caaa5027e8c0440e24964d216e248dcdf8fb
+          --expected-workflow-commit b53a95d55b305d5eb7de3cbaffc3c0633bc07bc5
           --repository "$GITHUB_REPOSITORY"
       - name: Reserve Pilot stage budget
         id: campaign_reservation

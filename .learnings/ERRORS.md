@@ -4,6 +4,81 @@ Command failures and integration errors.
 
 ---
 
+## [ERR-20260829-004] macos_tar_extended_attributes
+
+**Logged**: 2026-08-29T00:00:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: infra
+
+### Summary
+The first query-contract calibration stopped before reservation because the macOS-built tar archive carried provenance extended attributes.
+
+### Error
+
+```text
+ValueError: required input is not frozen: databases/._education_v2.sqlite
+```
+
+### Context
+
+- GitHub Actions run 33241878997 failed at frozen-input verification.
+- Budget reservation and all model steps were skipped, so no provider spend was created.
+- The PAX headers contained `com.apple.provenance`; Linux extraction materialized an AppleDouble sidecar not present in the input lock.
+
+### Suggested Fix
+
+Build release archives with `COPYFILE_DISABLE=1 tar --no-xattrs`, then download the uploaded asset, extract it, and rerun the frozen-input verifier before dispatch.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `.github/workflows/formal-pilot-canary.yml`
+
+### Resolution
+
+- **Resolved**: 2026-08-29T00:00:00+08:00
+- **Notes**: Replaced the Draft Release asset; readback SHA-256 is c9bdcef881b9534a9d0f7f130e3fa1a835756e6a6b434f5cb2f8c38204bcf195 and extracted verification reports ready.
+
+---
+
+## [ERR-20260829-003] disabled_calibration_workflow_dispatch
+
+**Logged**: 2026-08-29T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+GitHub rejected the first calibration dispatch because the workflow was disabled.
+
+### Error
+
+```text
+HTTP 422: Cannot trigger a workflow_dispatch on a disabled workflow
+```
+
+### Context
+
+- No Actions run, campaign reservation, or provider spend was created.
+- Paid workflows are intentionally disabled between approved runs.
+
+### Suggested Fix
+
+Enable only `formal-pilot-canary.yml`, confirm its active state, and retry the identical dispatch inputs.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `.github/workflows/formal-pilot-canary.yml`
+
+### Resolution
+
+- **Resolved**: 2026-08-29T00:00:00+08:00
+- **Notes**: The retry path enables only the approved calibration workflow.
+
+---
+
 ## [ERR-20260829-002] local_inspect_ai_import_hang
 
 **Logged**: 2026-08-29T00:00:00+08:00

@@ -1829,6 +1829,12 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     )
     assert set(calibration_restore["env"]) == {"GH_TOKEN", "CALIBRATION_RUN_ID"}
     assert "gh run download" in calibration_restore["run"]
+    calibration_verify = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Verify calibration attestation binding"
+    )
+    assert "b53a95d55b305d5eb7de3cbaffc3c0633bc07bc5" in calibration_verify["run"]
     step_names = [step.get("name") for step in job["steps"]]
     reservation = next(
         step
