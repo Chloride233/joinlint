@@ -85,6 +85,43 @@ Use the unambiguous `rg --files-without-match` spelling.
 
 ---
 
+## [ERR-20260829-011] draft_pr_body_sensitive_payload_rejected
+
+**Logged**: 2026-08-29T20:54:10+08:00
+**Priority**: medium
+**Status**: blocked
+**Area**: infra
+
+### Summary
+
+The external approval reviewer rejected a Draft PR body update that repeated
+detailed evaluation and campaign-accounting values.
+
+### Error
+
+```text
+Rejected: external PR update contained evaluation and financial ledger details
+without payload-specific disclosure approval.
+```
+
+### Context
+
+- The Git branch push and CI dispatch had already succeeded.
+- The rejected operation did not change the Draft PR body or repository data.
+- No alternate publishing path was attempted.
+
+### Suggested Fix
+
+Keep the existing Draft PR body unchanged unless the user explicitly approves
+publishing that exact result-and-accounting summary there.
+
+### Metadata
+
+- Reproducible: unknown
+- Related Files: `docs/opaque-relationship-effect-results.md`
+
+---
+
 ## [ERR-20260829-008] ambiguity_reservation_mode_missing_from_cli
 
 **Logged**: 2026-08-29T00:00:00+08:00
