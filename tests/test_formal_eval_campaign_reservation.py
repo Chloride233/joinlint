@@ -398,6 +398,26 @@ def test_reservation_cli_accepts_the_safety_confirmation_mode() -> None:
         )
 
 
+def test_reservation_cli_accepts_the_contract_safety_resume_mode() -> None:
+    with pytest.raises(CampaignReservationError, match="GITHUB_EVENT_PATH"):
+        campaign_reservation.main(
+            [
+                "reserve",
+                "--mode",
+                "pilot_stage_contract_safety_resume",
+                "--campaign-id",
+                CAMPAIGN_ID,
+                "--ledger-branch",
+                "joinlint-campaign-ledger",
+                "--genesis-commit",
+                "c" * 40,
+                "--receipt",
+                "/tmp/unused-receipt.json",
+            ],
+            environment={},
+        )
+
+
 def test_current_run_request_accepts_the_protected_evaluation_branch() -> None:
     environment = _environment("calibration")
     protected_ref = "refs/heads/codex/evaluation-lifecycle-boundaries"

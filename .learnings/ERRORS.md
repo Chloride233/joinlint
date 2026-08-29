@@ -4,6 +4,48 @@ Command failures and integration errors.
 
 ---
 
+## [ERR-20260829-006] resume_reservation_mode_missing_from_cli
+
+**Logged**: 2026-08-29T00:00:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: eval
+
+### Summary
+The first infrastructure-resume dispatch passed every source-binding check but
+stopped before reservation because the new policy mode was absent from the CLI
+argument choices.
+
+### Error
+
+```text
+argument --mode: invalid choice: 'pilot_stage_contract_safety_resume'
+```
+
+### Context
+
+- GitHub Actions run `33245167866` failed before a ledger reservation or model call.
+- The policy and workflow input binding existed, but the separately maintained
+  argparse choice list and its CLI coverage had not been updated.
+
+### Suggested Fix
+
+Add the resume mode to the CLI choices and test the command boundary directly,
+not only the underlying policy table.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `benchmarks/formal_eval/campaign_reservation.py`,
+  `tests/test_formal_eval_campaign_reservation.py`
+
+### Resolution
+
+- **Resolved**: 2026-08-29T00:00:00+08:00
+- **Notes**: Added the missing CLI choice and a regression test before retrying.
+
+---
+
 ## [ERR-20260829-004] macos_tar_extended_attributes
 
 **Logged**: 2026-08-29T00:00:00+08:00
