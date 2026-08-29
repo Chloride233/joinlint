@@ -120,11 +120,15 @@ opening-balance fields fail closed; CAS rechecks that lineage before creating
 any Git object.
 Genesis ancestry alone cannot distinguish the current head from a force-reset
 to one of its formerly valid prefixes, so a protected non-force/non-delete ref
-or an independent monotonic checkpoint remains mandatory. The product-effect
-campaign fixes its public `joinlint-campaign-ledger-safety-v1` branch, empty
-genesis `96d689731148b8eb69812b4d0a82dcac75bf2fd1`, CNY 60 ceiling, and CNY
-46.717684 conservative opening reserved upper balance. Every newly enabled paid
-mode still needs a reviewed admission policy and protected non-force ledger ref.
+or an independent monotonic checkpoint remains mandatory. The completed
+semantic-safety campaign remains fixed to its public
+`joinlint-campaign-ledger-safety-v1` branch, empty genesis
+`96d689731148b8eb69812b4d0a82dcac75bf2fd1`, CNY 60 ceiling, and CNY 46.717684
+conservative opening reserved upper balance. The query-contract campaign uses
+protected public branch `joinlint-campaign-ledger-contract-v1`, empty genesis
+`3c33a92297e4a8b530a80cfbb6cdf6caa0931aef`, CNY 70 ceiling, and CNY 57.606231
+conservative opening reserved upper balance. Every newly enabled paid mode still
+needs a reviewed admission policy and protected non-force ledger ref.
 `campaign_reservation.py` narrows the workflow-owned consumer to GitHub's
 default run variables on an explicitly protected ref, fixes the admitted
 mode/upper pairs to readiness/CNY 2.10, calibration/CNY 4, full Pilot/CNY 20,

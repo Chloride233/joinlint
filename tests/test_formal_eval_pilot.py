@@ -1766,7 +1766,7 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert "inputs.stage == 'semantic_join_safety_confirmation_v1'" in text
     assert "inputs.budget_cny != '5.53'" in text
     assert workflow["on"]["workflow_dispatch"]["inputs"]["pilot_commit"]["default"] == (
-        "cd0fa65fad74e84d53729ce30d3d61ed04dcc974"
+        "eda51713acb53d676165cfa5dbd6906a25837fb5"
     )
     assert workflow["on"]["workflow_dispatch"]["inputs"]["calibration_run_id"]["required"] == (
         "true"
@@ -1856,9 +1856,9 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         "PILOT_RESERVATION_MODE"
     ]
     assert '--mode "$PILOT_RESERVATION_MODE"' in reservation["run"]
-    assert "joinlint-safety-effect-2026-08" in reservation["run"]
-    assert "joinlint-campaign-ledger-safety-v1" in reservation["run"]
-    assert "96d689731148b8eb69812b4d0a82dcac75bf2fd1" in reservation["run"]
+    assert "joinlint-safety-effect-2026-08-v2" in reservation["run"]
+    assert "joinlint-campaign-ledger-contract-v1" in reservation["run"]
+    assert "3c33a92297e4a8b530a80cfbb6cdf6caa0931aef" in reservation["run"]
     sanitized_scan = next(
         step
         for step in job["steps"]
@@ -2052,9 +2052,9 @@ def test_pilot_calibration_reserves_atomically_before_target_execution() -> None
     assert set(reserve["env"]) == {"GH_TOKEN"}
     assert "reserve" in reserve["run"]
     assert "--mode calibration" in reserve["run"]
-    assert "joinlint-product-effect-2026-08" in reserve["run"]
-    assert "joinlint-campaign-ledger" in reserve["run"]
-    assert "89358132f42dd23e82fd21b1f32a80900d2d2f98" in reserve["run"]
+    assert "joinlint-safety-effect-2026-08-v2" in reserve["run"]
+    assert "joinlint-campaign-ledger-contract-v1" in reserve["run"]
+    assert "3c33a92297e4a8b530a80cfbb6cdf6caa0931aef" in reserve["run"]
     assert paid["env"]["CAMPAIGN_BUDGET_CNY"] == (
         "${{ steps.campaign_reservation.outputs.campaign_budget_cny }}"
     )

@@ -4,6 +4,81 @@ Command failures and integration errors.
 
 ---
 
+## [ERR-20260829-002] local_inspect_ai_import_hang
+
+**Logged**: 2026-08-29T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+The combined local test command stalled while importing `inspect_ai` on macOS.
+
+### Error
+
+```text
+KeyboardInterrupt while importing inspect_ai._display.textual
+```
+
+### Context
+
+- Forty tests passed before the import stopped making progress.
+- The sandbox also denied process-list inspection, so the test was interrupted through its existing execution session.
+- The three known local-only Inspect integration tests are exercised by Linux GitHub CI.
+
+### Suggested Fix
+
+Deselect the three Inspect import tests for local verification and require the full GitHub CI suite before paid dispatch.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `tests/test_formal_eval_pilot.py`
+
+### Resolution
+
+- **Resolved**: 2026-08-29T00:00:00+08:00
+- **Notes**: The remaining local suite passed with 71 passed and 3 deselected; campaign reservation and ledger suites passed separately.
+
+---
+
+## [ERR-20260829-001] campaign_ledger_python_alias
+
+**Logged**: 2026-08-29T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+The campaign-ledger initializer used an unavailable unversioned `python` command.
+
+### Error
+
+```text
+zsh: command not found: python
+```
+
+### Context
+
+- The failed command exited before importing project code or contacting GitHub.
+- This checkout provides the required Python 3.12 runtime at `.venv/bin/python`.
+
+### Suggested Fix
+
+Use `.venv/bin/python` for repository Python commands in this local workspace.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `benchmarks/formal_eval/campaign_ledger.py`
+
+### Resolution
+
+- **Resolved**: 2026-08-29T00:00:00+08:00
+- **Notes**: Switched the retry to the repository virtual environment.
+
+---
+
 ## [ERR-20260828-002] gh_api_zsh_query_string
 
 **Logged**: 2026-08-28T03:39:19Z

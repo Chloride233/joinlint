@@ -37,7 +37,7 @@ on:
       pilot_commit:
         description: Full JoinLint commit bound to the frozen pilot input
         required: true
-        default: cd0fa65fad74e84d53729ce30d3d61ed04dcc974
+        default: eda51713acb53d676165cfa5dbd6906a25837fb5
         type: string
       pilot_release_tag:
         description: Access-controlled Draft Release tag holding the frozen pilot input
@@ -168,9 +168,9 @@ jobs:
           python -m benchmarks.formal_eval.campaign_reservation
           reserve
           --mode "$PILOT_RESERVATION_MODE"
-          --campaign-id joinlint-safety-effect-2026-08
-          --ledger-branch joinlint-campaign-ledger-safety-v1
-          --genesis-commit 96d689731148b8eb69812b4d0a82dcac75bf2fd1
+          --campaign-id joinlint-safety-effect-2026-08-v2
+          --ledger-branch joinlint-campaign-ledger-contract-v1
+          --genesis-commit 3c33a92297e4a8b530a80cfbb6cdf6caa0931aef
           --receipt "$GITHUB_WORKSPACE/campaign-reservation.json"
       - name: Install evaluated Pilot product
         run: python -m pip install -e './evaluated-checkout[dev,eval,remote]'
