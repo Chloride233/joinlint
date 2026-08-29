@@ -18,11 +18,13 @@ from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.pilot import (
     PilotBudgetCheckpoint,
     build_pilot_run_plan,
+    frozen_contract_ambiguity_pilot_registration,
     frozen_contract_safety_pilot_registration,
     frozen_pilot_registration,
     frozen_safety_pilot_registration,
 )
 from benchmarks.formal_eval.pilot_stage import (
+    CONTRACT_AMBIGUITY_STAGE_ID,
     CONTRACT_SAFETY_STAGE_ID,
     CONTRACT_SAFETY_RESUME_APPROVED_BUDGET_CNY,
     SAFETY_CONFIRMATION_APPROVED_BUDGET_CNY,
@@ -170,6 +172,38 @@ def test_contract_safety_stage_has_separate_identity_and_claim() -> None:
     assert preregistration.claim_scope == "trusted_query_contract_join_safety_stress"
     assert preregistration.approved_budget_cny == SAFETY_STAGE_APPROVED_BUDGET_CNY
     assert stage_plan.evaluation_id.endswith(CONTRACT_SAFETY_STAGE_ID)
+
+
+def test_contract_ambiguity_stage_is_independent_and_preregistered() -> None:
+    registration = frozen_contract_ambiguity_pilot_registration(COMMIT)
+    manifest = _manifest().model_copy(
+        update={
+            "dataset_release": registration.dataset_release,
+            "tasks": tuple(
+                task.model_copy(update={"corpus": "semantic_join_failure"})
+                for task in _manifest().tasks
+            ),
+        }
+    )
+    full_plan = build_pilot_run_plan(manifest, registration, LINEAGE_ID)
+
+    stage_plan = flash_stage_run_plan(registration, full_plan)
+    preregistration = pilot_stage_preregistration(
+        registration,
+        full_plan,
+        stage_plan,
+        input_lock_sha256=INPUT_LOCK_SHA256,
+        workflow_run_id=123,
+        campaign_reservation_id=RESERVATION_ID,
+        campaign_ledger_commit_sha=LEDGER_COMMIT,
+    )
+
+    assert preregistration.stage_id == CONTRACT_AMBIGUITY_STAGE_ID
+    assert preregistration.claim_scope == (
+        "trusted_query_contract_opaque_relationship_stress"
+    )
+    assert preregistration.approved_budget_cny == SAFETY_STAGE_APPROVED_BUDGET_CNY
+    assert stage_plan.evaluation_id.endswith(CONTRACT_AMBIGUITY_STAGE_ID)
 
 
 def test_contract_safety_resume_keeps_one_batch_and_fits_the_existing_campaign() -> None:

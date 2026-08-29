@@ -19,6 +19,7 @@ from benchmarks.formal_eval.contracts import (
 from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.manifest import require_locked_inputs, verify_input_lock
 from benchmarks.formal_eval.pilot import (
+    CONTRACT_AMBIGUITY_DATASET_RELEASE,
     CONTRACT_SAFETY_DATASET_RELEASE,
     PILOT_DATASET_RELEASE,
     PILOT_ALLOCATION,
@@ -28,8 +29,10 @@ from benchmarks.formal_eval.pilot import (
     build_pilot_calibration_spec,
     build_pilot_run_plan,
     build_contract_safety_pilot_inputs,
+    build_contract_ambiguity_pilot_inputs,
     build_safety_pilot_inputs,
     frozen_contract_safety_pilot_registration,
+    frozen_contract_ambiguity_pilot_registration,
     frozen_pilot_registration,
     frozen_safety_pilot_registration,
     model_batch_upper_costs,
@@ -148,6 +151,18 @@ def test_contract_safety_pilot_has_a_separate_bounded_resource_contract() -> Non
     assert registration.token_limit_per_run == 45_000
     assert registration.token_accounting_ceiling_per_run == 50_000
     assert registration.message_limit_per_run == 30
+    assert envelope.run_count == 80
+    assert envelope.total_upper_cny < registration.budget_cny == 22.0
+
+
+def test_contract_ambiguity_pilot_has_a_separate_frozen_identity() -> None:
+    registration = frozen_contract_ambiguity_pilot_registration(COMMIT)
+
+    envelope = budget_envelope(registration)
+
+    assert registration.schema_version == 8
+    assert registration.dataset_release == CONTRACT_AMBIGUITY_DATASET_RELEASE
+    assert registration.evaluation_id == "joinlint-semantic-contract-ambiguity-pilot-v1"
     assert envelope.run_count == 80
     assert envelope.total_upper_cny < registration.budget_cny == 22.0
 
@@ -1425,6 +1440,31 @@ def test_contract_safety_pilot_builder_freezes_twenty_new_contract_tasks(
     assert manifest.dataset_release == CONTRACT_SAFETY_DATASET_RELEASE
     assert len({task.database_id for task in manifest.tasks}) == 4
     assert len(run_plan.runs) == 80
+    assert report["input_lock_sha256"] == digest_value(lock.model_dump(mode="json"))
+
+
+def test_contract_ambiguity_pilot_builder_locks_design_before_outcomes(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "contract-ambiguity-pilot"
+
+    report = build_contract_ambiguity_pilot_inputs(output, commit=COMMIT)
+    registration, manifest, run_plan, lock = verify_pilot_input_bundle(output)
+    source = yaml.safe_load((output / "source-manifest.json").read_text())
+
+    assert report["claim_boundary"] == (
+        "trusted_query_contract_opaque_relationship_stress_only"
+    )
+    assert report["task_count"] == 20
+    assert report["run_count"] == 80
+    assert registration == frozen_contract_ambiguity_pilot_registration(COMMIT)
+    assert manifest.dataset_release == CONTRACT_AMBIGUITY_DATASET_RELEASE
+    assert len({task.database_id for task in manifest.tasks}) == 4
+    assert len(run_plan.runs) == 80
+    assert source["outcome_based_task_selection"] is False
+    assert source["exact_test_design"][
+        "minimum_unopposed_treatment_wins_for_significance"
+    ] == 6
     assert report["input_lock_sha256"] == digest_value(lock.model_dump(mode="json"))
 
 

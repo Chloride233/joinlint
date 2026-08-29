@@ -46,6 +46,17 @@ def test_evaluation_database_tool_is_read_only_and_bounded(tmp_path: Path) -> No
         "status": "error",
         "code": "UNSAFE_SQL",
     }
+    assert execute_readonly_sql(
+        database,
+        "SELECT sql FROM sqlite_schema WHERE name = 'items'",
+    ) == {
+        "status": "error",
+        "code": "SYSTEM_CATALOG_ACCESS_DENIED",
+    }
+    assert execute_readonly_sql(database, "SELECT * FROM pragma_foreign_key_list('items')") == {
+        "status": "error",
+        "code": "SYSTEM_CATALOG_ACCESS_DENIED",
+    }
     assert execute_readonly_sql(database, "SELECT id FROM items", max_rows=1) == {
         "status": "error",
         "code": "RESULT_LIMIT_EXCEEDED",

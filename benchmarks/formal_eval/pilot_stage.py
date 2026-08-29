@@ -41,6 +41,7 @@ from joinlint.contracts import canonical_json
 STAGE_ID = "flash_full_dataset_v1"
 SAFETY_STAGE_ID = "semantic_join_safety_v1"
 CONTRACT_SAFETY_STAGE_ID = "semantic_join_contract_safety_v1"
+CONTRACT_AMBIGUITY_STAGE_ID = "semantic_join_contract_ambiguity_v1"
 SAFETY_CONFIRMATION_STAGE_ID = "semantic_join_safety_confirmation_v1"
 STAGE_APPROVED_BUDGET_CNY = 7.4
 SAFETY_STAGE_APPROVED_BUDGET_CNY = 8.0
@@ -61,12 +62,14 @@ class PilotStagePreregistration(StrictModel):
         "flash_full_dataset_v1",
         "semantic_join_safety_v1",
         "semantic_join_contract_safety_v1",
+        "semantic_join_contract_ambiguity_v1",
         "semantic_join_safety_confirmation_v1",
     ] = STAGE_ID
     claim_scope: Literal[
         "exploratory_bird_pilot",
         "synthetic_join_safety_stress",
         "trusted_query_contract_join_safety_stress",
+        "trusted_query_contract_opaque_relationship_stress",
         "posthoc_synthetic_hard_case_confirmation",
     ] = (
         "exploratory_bird_pilot"
@@ -138,6 +141,13 @@ class PilotStagePreregistration(StrictModel):
                 40,
                 8.0,
             ),
+            CONTRACT_AMBIGUITY_STAGE_ID: (
+                "trusted_query_contract_opaque_relationship_stress",
+                20,
+                20,
+                40,
+                8.0,
+            ),
             SAFETY_CONFIRMATION_STAGE_ID: (
                 "posthoc_synthetic_hard_case_confirmation",
                 4,
@@ -164,6 +174,7 @@ class PilotStageEffect(StrictModel):
         "flash_full_dataset_v1",
         "semantic_join_safety_v1",
         "semantic_join_contract_safety_v1",
+        "semantic_join_contract_ambiguity_v1",
         "semantic_join_safety_confirmation_v1",
     ] = STAGE_ID
     preregistration_sha256: str
@@ -825,13 +836,23 @@ def _stage_identity(
         "flash_full_dataset_v1",
         "semantic_join_safety_v1",
         "semantic_join_contract_safety_v1",
+        "semantic_join_contract_ambiguity_v1",
     ],
     Literal[
         "exploratory_bird_pilot",
         "synthetic_join_safety_stress",
         "trusted_query_contract_join_safety_stress",
+        "trusted_query_contract_opaque_relationship_stress",
     ],
 ]:
+    if (
+        registration.schema_version == 8
+        and registration.dataset_release == "semantic-join-contract-ambiguity-pilot-v1"
+    ):
+        return (
+            CONTRACT_AMBIGUITY_STAGE_ID,
+            "trusted_query_contract_opaque_relationship_stress",
+        )
     if (
         registration.schema_version == 7
         and registration.dataset_release == "semantic-join-contract-safety-pilot-v1"
@@ -849,7 +870,11 @@ def _stage_identity(
 
 def _stage_approved_budget(registration: PilotRegistration) -> float:
     stage_id, _ = _stage_identity(registration)
-    if stage_id in {SAFETY_STAGE_ID, CONTRACT_SAFETY_STAGE_ID}:
+    if stage_id in {
+        SAFETY_STAGE_ID,
+        CONTRACT_SAFETY_STAGE_ID,
+        CONTRACT_AMBIGUITY_STAGE_ID,
+    }:
         return SAFETY_STAGE_APPROVED_BUDGET_CNY
     return STAGE_APPROVED_BUDGET_CNY
 

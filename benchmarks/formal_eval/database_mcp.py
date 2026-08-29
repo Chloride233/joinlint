@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
+from sqlglot import exp, parse_one
 
 from benchmarks.agent_join.sql_edges import validate_readonly_select
 from benchmarks.formal_eval.validation_ledger import ValidationLedger
@@ -24,6 +25,17 @@ def execute_readonly_sql(
     validated = validate_readonly_select(sql)
     if validated.sql is None:
         return {"status": "error", "code": validated.error_code or "UNSAFE_SQL"}
+    statement = parse_one(validated.sql, read="sqlite")
+    system_tables = any(
+        table.name.lower().startswith("sqlite_")
+        for table in statement.find_all(exp.Table)
+    )
+    table_valued_pragmas = any(
+        function.name.lower().startswith("pragma_")
+        for function in statement.find_all(exp.Anonymous)
+    )
+    if system_tables or table_valued_pragmas:
+        return {"status": "error", "code": "SYSTEM_CATALOG_ACCESS_DENIED"}
     if database.is_symlink() or not database.is_file():
         return {"status": "error", "code": "DATABASE_UNAVAILABLE"}
     path = database.resolve(strict=True)

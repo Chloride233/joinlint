@@ -291,17 +291,22 @@ entity. Neither run supports a positive product-effect claim. The immutable
 run IDs, artifact digests, costs, and scope are recorded in
 [`docs/semantic-safety-effect-results.md`](../../docs/semantic-safety-effect-results.md).
 
-The next candidate experiment removes the observed entity-selection confound
-without rewriting those results. Both arms receive the same input-locked trusted
-query contract: complete required physical entities, requested output fields,
-and pre-aggregation row grain. Only treatment receives JoinLint relationship
-proofs and SQL validation. Its 20 tasks use four new synthetic databases and
-reuse none of the observed safety tasks. Deterministic gates prove that every
-contract matches the scored entity set, every gold SQL passes its proof, and
-every executable dangerous SQL is blocked. No model outcome exists yet, and
-the claim remains limited to Join safety downstream of a trusted semantic
-mapping. See
+The trusted query-contract experiment removed the observed entity-selection
+confound without rewriting those results. It completed at 19/20 control and
+20/20 treatment successes, with one treatment-only win and exact two-sided
+McNemar `p = 1.0`. The result demonstrates clean protocol behavior but does not
+establish a statistically significant product effect. See
 [`docs/superpowers/specs/2026-08-28-query-contract-join-safety-evaluation-design.md`](../../docs/superpowers/specs/2026-08-28-query-contract-join-safety-evaluation-design.md).
+
+The next independent schema-v8 experiment addresses that corpus's control
+ceiling. It freezes 20 preconstructed tasks whose relationship columns are
+role-opaque and whose gold and decoy graphs are executable, same-depth,
+same-entity, and type-compatible. The evaluation database tool denies system
+catalog and table-valued PRAGMA access so control cannot recover hidden FK
+declarations. The input-locked exact-test boundary records that six unopposed
+treatment wins are the minimum for `p < 0.05`; task selection is fixed before
+any model output. No model outcome exists for this new corpus. See
+[`docs/superpowers/specs/2026-08-29-opaque-relationship-ambiguity-evaluation-design.md`](../../docs/superpowers/specs/2026-08-29-opaque-relationship-ambiguity-evaluation-design.md).
 
 `formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.
 It runs 80 samples under the frozen `balanced_diagonal_crossover_v1` design.

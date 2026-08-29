@@ -46,6 +46,7 @@ from benchmarks.formal_eval.run_plan import RunPlanV2, RunSpec, sample_id_for
 
 PILOT_DATASET_RELEASE = "bird-train-2023-07-11-declared-fk-pilot-v4"
 CONTRACT_SAFETY_DATASET_RELEASE = "semantic-join-contract-safety-pilot-v1"
+CONTRACT_AMBIGUITY_DATASET_RELEASE = "semantic-join-contract-ambiguity-pilot-v1"
 PILOT_ALLOCATION = {"citeseer": 9, "trains": 11}
 PILOT_DOMAINS = {"citeseer": "research", "trains": "transportation"}
 PILOT_GROUND_TRUTH_EXCLUSIONS = {
@@ -60,7 +61,7 @@ PILOT_ASSIGNMENT_DESIGN = "balanced_diagonal_crossover_v1"
 
 
 class PilotRegistration(StrictModel):
-    schema_version: Literal[3, 4, 5, 6, 7]
+    schema_version: Literal[3, 4, 5, 6, 7, 8]
     evaluation_id: str
     dataset_release: str
     seed: int = Field(ge=0)
@@ -115,7 +116,7 @@ class PilotRegistration(StrictModel):
         ):
             return {**value, "modal_sandbox_timeout_seconds": 150}
         if (
-            value.get("schema_version") in (5, 6, 7)
+            value.get("schema_version") in (5, 6, 7, 8)
             and "modal_sandbox_timeout_seconds" not in value
         ):
             raise ValueError(
@@ -125,6 +126,17 @@ class PilotRegistration(StrictModel):
 
     @model_validator(mode="after")
     def require_frozen_matrix_and_budget(self) -> PilotRegistration:
+        if self.schema_version == 8 and (
+            self.evaluation_id != "joinlint-semantic-contract-ambiguity-pilot-v1"
+            or self.dataset_release != CONTRACT_AMBIGUITY_DATASET_RELEASE
+            or self.token_limit_per_run != 45_000
+            or self.token_accounting_ceiling_per_run != 50_000
+            or self.message_limit_per_run != 30
+            or self.budget_cny != 22.0
+        ):
+            raise ValueError(
+                "contract ambiguity Pilot resource limits do not match schema version 8"
+            )
         if self.schema_version == 7 and (
             self.evaluation_id != "joinlint-semantic-contract-safety-pilot-v1"
             or self.dataset_release != CONTRACT_SAFETY_DATASET_RELEASE
@@ -291,6 +303,18 @@ def frozen_contract_safety_pilot_registration(commit: str) -> PilotRegistration:
             "schema_version": 7,
             "evaluation_id": "joinlint-semantic-contract-safety-pilot-v1",
             "dataset_release": CONTRACT_SAFETY_DATASET_RELEASE,
+        }
+    )
+
+
+def frozen_contract_ambiguity_pilot_registration(commit: str) -> PilotRegistration:
+    values = frozen_contract_safety_pilot_registration(commit).model_dump(mode="json")
+    return PilotRegistration.model_validate(
+        {
+            **values,
+            "schema_version": 8,
+            "evaluation_id": "joinlint-semantic-contract-ambiguity-pilot-v1",
+            "dataset_release": CONTRACT_AMBIGUITY_DATASET_RELEASE,
         }
     )
 
@@ -576,6 +600,22 @@ def build_contract_safety_pilot_inputs(output: Path, *, commit: str) -> dict[str
         dataset_release=CONTRACT_SAFETY_DATASET_RELEASE,
         status="frozen_independent_contract_safety_pilot",
         claim_boundary="trusted_query_contract_join_safety_stress_only",
+    )
+
+
+def build_contract_ambiguity_pilot_inputs(output: Path, *, commit: str) -> dict[str, Any]:
+    from benchmarks.formal_eval.semantic_contract_ambiguity import (
+        build_semantic_contract_ambiguity_v1,
+    )
+
+    return _build_safety_pilot_inputs(
+        output,
+        commit=commit,
+        source_builder=build_semantic_contract_ambiguity_v1,
+        registration=frozen_contract_ambiguity_pilot_registration(commit),
+        dataset_release=CONTRACT_AMBIGUITY_DATASET_RELEASE,
+        status="frozen_independent_contract_ambiguity_pilot",
+        claim_boundary="trusted_query_contract_opaque_relationship_stress_only",
     )
 
 
@@ -891,6 +931,9 @@ def main(argv: list[str] | None = None) -> int:
     build_contract_safety = commands.add_parser("build-contract-safety")
     build_contract_safety.add_argument("--output", type=Path, required=True)
     build_contract_safety.add_argument("--commit", required=True)
+    build_contract_ambiguity = commands.add_parser("build-contract-ambiguity")
+    build_contract_ambiguity.add_argument("--output", type=Path, required=True)
+    build_contract_ambiguity.add_argument("--commit", required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("--root", type=Path, required=True)
     verify.add_argument("--current-commit")
@@ -909,6 +952,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if arguments.command == "build-contract-safety":
         report = build_contract_safety_pilot_inputs(
+            arguments.output,
+            commit=arguments.commit,
+        )
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    if arguments.command == "build-contract-ambiguity":
+        report = build_contract_ambiguity_pilot_inputs(
             arguments.output,
             commit=arguments.commit,
         )
