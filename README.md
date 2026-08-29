@@ -151,15 +151,18 @@ equivalent SQL aliases/equalities, and permits only documented observation
 timestamps to differ.
 
 See the [benchmarking guide](docs/benchmarking.md) for the separation between
-deterministic capability gates and the still-pending formal Agent product
-effect study. No downstream improvement claim is made by this Developer
-Preview.
+deterministic capability gates and formal Agent product-effect evidence. The
+completed trusted-query-contract experiment was directionally positive but not
+statistically significant; no downstream improvement claim is made by this
+Developer Preview. See the
+[effect results](docs/query-contract-safety-effect-results.md).
 
 The formal workflow also has a pinned infrastructure-resume mode. It accepts
 only the exact failed source run and server-reported artifact digest, preserves
 every completed intention-to-treat row, and runs only the missing sample IDs.
-The current query-contract resume is capped at CNY 6.35 under the existing
-CNY 70 public campaign; it is not a second draw from the frozen corpus.
+The completed query-contract resume was capped at CNY 6.35 under the existing
+CNY 70 public campaign; it is not a second draw from the frozen corpus. The
+paid workflow was disabled after the completed run.
 
 ## License
 

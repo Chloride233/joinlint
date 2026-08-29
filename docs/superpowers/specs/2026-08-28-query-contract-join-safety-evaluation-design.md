@@ -1,7 +1,7 @@
 # Trusted query-contract Join-safety evaluation
 
-**Status:** formal attempt incomplete after an isolated infrastructure failure;
-no paired treatment effect has been estimated. See
+**Status:** completed through an evidence-preserving infrastructure resume. The
+paired result was directionally positive but not statistically significant. See
 [`docs/query-contract-safety-effect-results.md`](../../query-contract-safety-effect-results.md).
 
 ## 1. Why a new design is necessary
@@ -100,3 +100,13 @@ A positive result would support only this statement:
 It would not show that JoinLint independently understands business intent,
 builds a semantic layer, validates selected columns or metrics, executes SQL,
 or improves natural-world SQL accuracy.
+
+## 6. Observed outcome
+
+Control completed 19/20 tasks correctly and treatment completed 20/20. The one
+discordant pair favored treatment, giving an absolute improvement of 0.05 and
+an exact two-sided McNemar p-value of 1.0. All 20 treatment rows called a plan,
+were MCP-grounded, validated final SQL, and complied with the protocol. The
+preregistered positive-result gate did not pass, so the experiment supports a
+clean capability demonstration under the trusted contract but not a causal
+product-effect claim.

@@ -1,7 +1,7 @@
 # Trusted query-contract join-safety effect results
 
-Status: incomplete infrastructure attempt. No paired treatment effect has been
-estimated yet.
+Status: completed. The paired estimate is directionally positive but does not
+meet the preregistered significance gate.
 
 ## Evidence boundary
 
@@ -78,18 +78,70 @@ and the million-row benchmark:
 [33243609433](https://github.com/Chloride233/joinlint/actions/runs/33243609433) and
 [33243612750](https://github.com/Chloride233/joinlint/actions/runs/33243612750).
 
-## Campaign state and retry boundary
+## Completed evidence-preserving recovery
 
-The public ledger head after both evidence-bound settlements is
-`e240aca8cd3a03b2be3b3f49a4fca7c98f168428`. Cumulative conservative accounting
-is CNY 62.600378 and the remaining balance is CNY 7.399622.
+- GitHub Actions run:
+  [33245404583](https://github.com/Chloride233/joinlint/actions/runs/33245404583).
+- Workflow-control commit:
+  `e0c361676cb29b4f8887f02b8a7b37959ee9fa74`.
+- Source rows retained unchanged: 10.
+- Missing preregistered rows executed: 30.
+- Complete result rows: 40/40; incomplete artifacts: 0.
+- GitHub Actions artifact ID: `9712912695`.
+- Server-reported artifact SHA-256:
+  `eec8ea1eccebe755b6f89f7bf4ba148c0b6ae4ca04f3fc196bf92f1ed85210c8`.
+
+The recovery attestation binds the source run, workflow commit, original
+reservation, source artifact ID and digest, source stage and result-bundle
+digests, new reservation, frozen input lock, and both run plans. The exported
+artifact passed the strict `pilot-stage-resume` public scan.
+
+## Paired result
+
+- Control: 19/20 join-correct completions.
+- Treatment: 20/20 join-correct completions.
+- Treatment wins: 1; control wins: 0; both success: 19; both failure: 0.
+- Absolute improvement: +0.05.
+- Exact two-sided McNemar p-value: 1.0.
+- Preregistered significance decision: false.
+- Treatment `plan_called`, MCP-grounded, final-SQL-validated, and
+  protocol-compliant rows: 20/20 each.
+
+The only control failure is the retained zero-token infrastructure failure from
+the incomplete attempt. It remains an intention-to-treat zero and was not
+replaced. The observed direction favors treatment, but one discordant pair is
+far below the evidence needed for `p < 0.05`; this run therefore does not prove
+that JoinLint improves task completion. The frozen corpus must not be rerun or
+expanded in response to this result.
+
+## Campaign closeout
+
+The CNY 6.350000 recovery reservation
+`fe3fd99277a8ea5d4033f891a2a842ad0d2c3e4ff6371d358449dd382c926b86`
+was settled at CNY 3.449908 and bound to the server-reported recovery artifact
+digest. This is the upward micro-CNY accounting of:
+
+```text
+0.101468 + 1.348440 + 2.000000 = 3.449908 CNY
+```
+
+The first term is observed model cost for the 30 newly executed rows; the other
+terms are the full incremental Modal compute upper bound and image-build
+reserve. Settlement ID
+`4f836541a3ff7056dbee0e6b65164392e9602058cb0e450796421411291833d5`
+produced public ledger head
+`3dcbbe801cd5cce0f54439d434f4a162517745de`. Final cumulative conservative
+accounting is CNY 66.050286 and the remaining CNY 70 campaign balance is
+CNY 3.949714. The paid formal workflow was disabled after the terminal run.
+
+## Historical retry boundary
 
 A full 40-sample rerun still requires a CNY 8.000000 atomic reservation and has
 a CNY 7.797920 resource upper bound, so it remains forbidden under this
-campaign. The evidence-preserving recovery path instead retains the exact 10
-completed control rows and runs only the 30 missing preregistered sample IDs.
-Its incremental resource upper bound is CNY 6.348440 and its fixed reservation
-is CNY 6.350000, which fits the existing campaign ceiling.
+campaign. The completed evidence-preserving recovery retained the exact 10
+control rows and ran only the 30 missing preregistered sample IDs. Its
+incremental resource upper bound was CNY 6.348440 and its fixed reservation was
+CNY 6.350000.
 
 The recovery is bound before reservation to workflow run `33242737801`, its
 workflow commit, original reservation, repository identity, failed conclusion,
