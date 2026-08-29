@@ -1447,8 +1447,10 @@ def test_contract_ambiguity_pilot_builder_locks_design_before_outcomes(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "contract-ambiguity-pilot"
+    second = tmp_path / "contract-ambiguity-pilot-second"
 
     report = build_contract_ambiguity_pilot_inputs(output, commit=COMMIT)
+    second_report = build_contract_ambiguity_pilot_inputs(second, commit=COMMIT)
     registration, manifest, run_plan, lock = verify_pilot_input_bundle(output)
     source = yaml.safe_load((output / "source-manifest.json").read_text())
 
@@ -1466,6 +1468,16 @@ def test_contract_ambiguity_pilot_builder_locks_design_before_outcomes(
         "minimum_unopposed_treatment_wins_for_significance"
     ] == 6
     assert report["input_lock_sha256"] == digest_value(lock.model_dump(mode="json"))
+    assert second_report == report
+    assert {
+        path.relative_to(output): path.read_bytes()
+        for path in output.rglob("*")
+        if path.is_file()
+    } == {
+        path.relative_to(second): path.read_bytes()
+        for path in second.rglob("*")
+        if path.is_file()
+    }
 
 
 def test_pilot_input_lock_detects_tampering(tmp_path: Path) -> None:

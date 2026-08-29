@@ -675,6 +675,8 @@ def _build_safety_pilot_inputs(
                 "status": status,
                 "dataset_release": manifest.dataset_release,
                 "claim_boundary": claim_boundary,
+                "agent_tasks": _file_record(staging / "agent-tasks.json"),
+                "manifest": _file_record(staging / "manifest.json"),
             },
         )
         lock = _input_lock(staging)

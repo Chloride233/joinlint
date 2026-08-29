@@ -305,3 +305,48 @@ continue to reject incomplete and systemic batches and keep calibration strict.
   passed full Linux CI in runs `33243609433` and `33243612750`.
 
 ---
+## [ERR-20260829-007] pilot_source_manifest_bound_random_staging_path
+
+**Logged**: 2026-08-29T18:36:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: eval
+
+### Summary
+
+Two schema-v8 Pilot freezes built from identical inputs produced different
+input locks because the carried source `agent_tasks` digest included a random
+staging-directory name in each task's pre-normalization database path.
+
+### Error
+
+```text
+identical task, manifest, registration, and database bytes; different
+source-manifest.json agent_tasks.sha256, input-lock, lineage, and run-plan
+```
+
+### Context
+
+- The final `agent-tasks.json` already normalized every database path.
+- `source-manifest.json` retained the earlier source-builder file record,
+  although that temporary file was not part of the frozen bundle.
+- A single successful `pilot verify` therefore did not prove reproducibility.
+
+### Suggested Fix
+
+Bind the source manifest to the final frozen task and manifest records, then
+require two independent full-bundle builds to match byte for byte.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `benchmarks/formal_eval/pilot.py`,
+  `tests/test_formal_eval_pilot.py`
+
+### Resolution
+
+- **Resolved**: 2026-08-29T18:36:00+08:00
+- **Notes**: Final bundle construction now has a byte-for-byte double-build
+  regression before release upload.
+
+---
