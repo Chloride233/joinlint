@@ -170,19 +170,25 @@ def _workflow_inputs(mode: str) -> dict[str, str]:
     return {"budget_cny": "2.25", "confirm_paid": "true"}
 
 
+@pytest.mark.parametrize(
+    ("mode", "reserved_after_micro_cny"),
+    (("calibration", 30_663_153), ("pilot_stage_contract_ambiguity", 34_663_153)),
+)
 def test_reservation_cli_reads_the_actions_event_and_writes_a_fresh_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    reserved_after_micro_cny: int,
 ) -> None:
     event = tmp_path / "event.json"
     event.write_text(
-        json.dumps({"inputs": _workflow_inputs("calibration")}),
+        json.dumps({"inputs": _workflow_inputs(mode)}),
         encoding="utf-8",
     )
     receipt_path = tmp_path / "reservation.json"
     github_output = tmp_path / "github-output"
     environment = {
-        **_environment("calibration"),
+        **_environment(mode),
         "GITHUB_EVENT_PATH": str(event),
         "GITHUB_OUTPUT": str(github_output),
     }
@@ -205,7 +211,7 @@ def test_reservation_cli_reads_the_actions_event_and_writes_a_fresh_receipt(
         [
             "reserve",
             "--mode",
-            "calibration",
+            mode,
             "--campaign-id",
             CAMPAIGN_ID,
             "--ledger-branch",
@@ -234,7 +240,7 @@ def test_reservation_cli_reads_the_actions_event_and_writes_a_fresh_receipt(
     )
     assert receipt.authorized is True
     assert receipt.reserved_before_micro_cny == 26_663_153
-    assert receipt.reserved_after_micro_cny == 30_663_153
+    assert receipt.reserved_after_micro_cny == reserved_after_micro_cny
     assert receipt_path.stat().st_mode & 0o777 == 0o600
     assert github_output.read_text(encoding="utf-8").splitlines() == [
         "campaign_budget_cny=50",

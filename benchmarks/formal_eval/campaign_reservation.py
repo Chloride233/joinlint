@@ -560,6 +560,7 @@ def main(
             "pilot_stage",
             "pilot_stage_safety",
             "pilot_stage_contract_safety",
+            "pilot_stage_contract_ambiguity",
             "pilot_stage_contract_safety_resume",
             "pilot_stage_safety_confirmation",
         ),
