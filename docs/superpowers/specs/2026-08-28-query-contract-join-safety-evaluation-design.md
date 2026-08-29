@@ -1,6 +1,8 @@
 # Trusted query-contract Join-safety evaluation
 
-**Status:** candidate design; no model outcome has been observed.
+**Status:** formal attempt incomplete after an isolated infrastructure failure;
+no paired treatment effect has been estimated. See
+[`docs/query-contract-safety-effect-results.md`](../../query-contract-safety-effect-results.md).
 
 ## 1. Why a new design is necessary
 

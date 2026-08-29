@@ -218,3 +218,48 @@ Retry after the approval service recovers or obtain an explicit interactive appr
 - Related Files: `.git/index`
 
 ---
+
+## [ERR-20260829-005] formal_stage_aborted_on_isolated_infrastructure_failure
+
+**Logged**: 2026-08-29T00:00:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: eval
+
+### Summary
+The formal effect stage aborted after one isolated zero-token infrastructure
+failure even though the scorer had already preserved that sample as an
+intention-to-treat zero.
+
+### Error
+
+```text
+RuntimeError: pilot batch contains an infrastructure failure
+```
+
+### Context
+
+- GitHub Actions run `33242737801` completed one of four batches.
+- Nine control samples succeeded and one control sample recorded
+  `INFRASTRUCTURE_FAILURE`; no treatment batch ran.
+- Calibration must reject any infrastructure failure, but an effect stage must
+  retain isolated failures in its denominator.
+
+### Suggested Fix
+
+Allow isolated lifecycle infrastructure failures only in formal effect stages;
+continue to reject incomplete and systemic batches and keep calibration strict.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `benchmarks/formal_eval/pilot_dispatch.py`,
+  `benchmarks/formal_eval/pilot_stage.py`
+
+### Resolution
+
+- **Resolved**: 2026-08-29T00:00:00+08:00
+- **Notes**: Commit `bc2bc0fdc8535831101658ddb1f302aabc09561a`
+  passed full Linux CI in runs `33243609433` and `33243612750`.
+
+---
