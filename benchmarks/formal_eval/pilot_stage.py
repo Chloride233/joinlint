@@ -647,6 +647,7 @@ def run_flash_stage(
             require_batch_health(
                 batch_log_dir,
                 expected_sample_count=12 if confirmation else 10,
+                allow_isolated_infrastructure_failures=True,
             )
         except (subprocess.CalledProcessError, RuntimeError):
             _write_stage_checkpoint(

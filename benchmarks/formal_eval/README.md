@@ -64,6 +64,10 @@ separate, while the Modal sandbox timeout remains the global bound across both.
 Readiness failures and Agents that never reach a first model request produce a
 task outcome with `INFRASTRUCTURE_FAILURE`; they are never interpreted as SQL
 parse failures. A timeout after the first model request remains `MODEL_TIMEOUT`.
+Formal effect stages retain isolated infrastructure failures in the
+intention-to-treat denominator and stop only for an incomplete batch or a
+systemic batch failure. Calibration remains fail-closed on any infrastructure
+failure because it is an admission gate rather than an effect estimate.
 Message, turn, or token exhaustion after that boundary remains `MODEL_LIMIT`.
 Tool-surface drift is a readiness failure and stops before the provider model is
 called, so a host upgrade cannot silently restore a large coding-agent context.

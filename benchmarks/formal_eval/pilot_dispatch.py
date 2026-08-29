@@ -138,7 +138,12 @@ def _write_checkpoint(output: Path, checkpoint: PilotBudgetCheckpoint) -> None:
     (output / "budget-checkpoint.json").write_bytes(canonical_json(payload) + b"\n")
 
 
-def require_batch_health(log_dir: Path, *, expected_sample_count: int) -> None:
+def require_batch_health(
+    log_dir: Path,
+    *,
+    expected_sample_count: int,
+    allow_isolated_infrastructure_failures: bool = False,
+) -> None:
     from inspect_ai.log import list_eval_logs, read_eval_log
 
     samples = [
@@ -146,20 +151,29 @@ def require_batch_health(log_dir: Path, *, expected_sample_count: int) -> None:
         for info in list_eval_logs(str(log_dir), recursive=True)
         for sample in (read_eval_log(info.name, header_only=False).samples or [])
     ]
-    require_sample_batch_health(samples, expected_sample_count=expected_sample_count)
+    require_sample_batch_health(
+        samples,
+        expected_sample_count=expected_sample_count,
+        allow_isolated_infrastructure_failures=allow_isolated_infrastructure_failures,
+    )
 
 
 def require_sample_batch_health(
     samples: list[Any],
     *,
     expected_sample_count: int,
+    allow_isolated_infrastructure_failures: bool = False,
 ) -> None:
     if len(samples) != expected_sample_count:
         raise RuntimeError("pilot batch produced an incomplete sample set")
     for sample in samples:
         sample_store = getattr(sample, "store", None) or {}
         lifecycle = sample_store.get(LIFECYCLE_STORE_KEY, {})
-        if isinstance(lifecycle, dict) and lifecycle.get("infrastructure_status") == "failed":
+        if (
+            not allow_isolated_infrastructure_failures
+            and isinstance(lifecycle, dict)
+            and lifecycle.get("infrastructure_status") == "failed"
+        ):
             raise RuntimeError("pilot batch contains an infrastructure failure")
     if all(sample.error is not None and not sample.scores for sample in samples):
         raise RuntimeError("pilot batch has a systemic infrastructure failure")

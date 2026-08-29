@@ -303,6 +303,7 @@ def test_stage_infrastructure_failure_exports_partial_sanitized_rows(
     registration = frozen_pilot_registration(COMMIT)
     full_plan = build_pilot_run_plan(_manifest(), registration, LINEAGE_ID)
     exported: list[bool] = []
+    health_checks: list[bool] = []
     observed_costs = iter((0.0, 0.125))
     monkeypatch.setattr(
         "benchmarks.formal_eval.pilot_stage.verify_pilot_input_bundle",
@@ -334,11 +335,14 @@ def test_stage_infrastructure_failure_exports_partial_sanitized_rows(
         "benchmarks.formal_eval.pilot_stage.subprocess.run",
         lambda *args, **kwargs: None,
     )
+    def fail_systemic_batch(*args: object, **kwargs: object) -> None:
+        del args
+        health_checks.append(bool(kwargs["allow_isolated_infrastructure_failures"]))
+        raise RuntimeError("pilot batch has a systemic infrastructure failure")
+
     monkeypatch.setattr(
         "benchmarks.formal_eval.pilot_stage.require_batch_health",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            RuntimeError("pilot batch contains an infrastructure failure")
-        ),
+        fail_systemic_batch,
     )
     monkeypatch.setattr(
         "benchmarks.formal_eval.pilot_stage.observed_model_cost_cny",
@@ -350,7 +354,7 @@ def test_stage_infrastructure_failure_exports_partial_sanitized_rows(
     )
     output = tmp_path / "output"
 
-    with pytest.raises(RuntimeError, match="infrastructure failure"):
+    with pytest.raises(RuntimeError, match="systemic infrastructure failure"):
         run_flash_stage(
             tmp_path / "frozen",
             tmp_path / "logs",
@@ -363,6 +367,7 @@ def test_stage_infrastructure_failure_exports_partial_sanitized_rows(
         )
 
     assert exported == [True]
+    assert health_checks == [True]
     checkpoint = json.loads((output / "budget-checkpoint.json").read_bytes())
     assert checkpoint["completed_batches"] == 1
     assert checkpoint["actual_model_cost_cny"] == 0.125

@@ -1511,6 +1511,26 @@ def test_pilot_dispatch_stops_on_any_lifecycle_infrastructure_failure() -> None:
     with pytest.raises(RuntimeError, match="contains an infrastructure failure"):
         require_sample_batch_health([healthy] * 9 + [failed], expected_sample_count=10)
 
+    require_sample_batch_health(
+        [healthy] * 9 + [failed],
+        expected_sample_count=10,
+        allow_isolated_infrastructure_failures=True,
+    )
+
+
+def test_pilot_dispatch_still_stops_on_systemic_failure_when_isolated_failures_allowed() -> None:
+    failed_samples = [
+        SimpleNamespace(error=RuntimeError("sandbox failed"), scores={}, model_usage={})
+        for _ in range(10)
+    ]
+
+    with pytest.raises(RuntimeError, match="systemic infrastructure failure"):
+        require_sample_batch_health(
+            failed_samples,
+            expected_sample_count=10,
+            allow_isolated_infrastructure_failures=True,
+        )
+
 
 def test_pilot_budget_report_fails_when_observed_total_exceeds_ceiling() -> None:
     registration = frozen_pilot_registration(COMMIT)
