@@ -64,6 +64,10 @@ undeclared relationships.
 - GitHub Actions artifact ID: `9714292688`.
 - Server-reported artifact SHA-256:
   `8bc0e5fab38ddd03553d3780bcae75390e6966380382d68945e332acbab8ba6c`.
+- Durable Draft Release asset:
+  `joinlint-opaque-result-run-33249402590.tar.gz`, ID `535169362`.
+- Release-asset SHA-256 after upload and download readback:
+  `a4fedc10811830eab5dfd93db3c7ba5ccc35b98905e95dfed13cc2def30ebd02`.
 - Actual model cost: CNY 0.38191628.
 - Modal compute upper: CNY 1.79792000.
 - Image-build reserve: CNY 2.00000000.
