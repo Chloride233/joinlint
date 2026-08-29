@@ -3,6 +3,9 @@
 Status: completed positive result. The preregistered paired estimate meets the
 significance gate within the frozen synthetic stress scope.
 
+Evidence tier: preregistered bounded synthetic Pilot; exploratory
+product-effect evidence, not the separate naturalistic confirmatory program.
+
 ## Evidence boundary
 
 - Evaluated product commit:
@@ -66,6 +69,10 @@ undeclared relationships.
   `8bc0e5fab38ddd03553d3780bcae75390e6966380382d68945e332acbab8ba6c`.
 - Durable Draft Release asset:
   `joinlint-opaque-result-run-33249402590.tar.gz`, ID `535169362`.
+- Draft Release tag name (not a Git tag ref):
+  `joinlint-formal-opaque-v1-eda517`.
+- Frozen-input asset: `pilot-input.tar.gz`, ID `535093165`, SHA-256
+  `d9cd3fff1c7c957b3810553df0ddbb33afda47cd83415af1febb50f4f34bf36e`.
 - Release-asset SHA-256 after upload and download readback:
   `a4fedc10811830eab5dfd93db3c7ba5ccc35b98905e95dfed13cc2def30ebd02`.
 - Actual model cost: CNY 0.38191628.
@@ -78,6 +85,10 @@ The sanitized artifact passed the repository's strict `pilot-stage` public
 artifact validator after download. Its stage record binds the evaluated commit,
 input lock, run plans, campaign reservation and ledger commit, model, hosts, and
 GitHub run identity.
+
+The repository-pinned sanitized files, per-file hashes, external archive
+anchors, and CI reconstruction gate live in
+[`benchmarks/formal_eval/published/opaque-relationship-v1/`](../benchmarks/formal_eval/published/opaque-relationship-v1/).
 
 ## Failure and sensitivity analysis
 

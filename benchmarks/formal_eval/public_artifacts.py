@@ -518,6 +518,11 @@ def _validate_pilot_stage_artifacts(values: dict[str, Any]) -> None:
     if run_plan is not None and bundle is not None:
         if bundle.run_plan_sha256 != digest_value(run_plan.model_dump(mode="json")):
             raise ValueError("public Pilot stage results do not match their run plan")
+        _validate_result_rows_match_run_plan(
+            run_plan,
+            bundle,
+            require_complete=effect is not None,
+        )
     if stage is not None and effect is not None:
         if effect.preregistration_sha256 != digest_value(stage.model_dump(mode="json")):
             raise ValueError("public Pilot stage effect is not preregistered")
@@ -540,6 +545,38 @@ def _validate_pilot_stage_artifacts(values: dict[str, Any]) -> None:
             or budget.expected_run_count != resume.remaining_run_count
         ):
             raise ValueError("public Pilot resume budget does not match its attestation")
+
+
+def _validate_result_rows_match_run_plan(
+    run_plan: RunPlanV2,
+    bundle: AgentResultBundle,
+    *,
+    require_complete: bool,
+) -> None:
+    identity_fields = (
+        "sample_id",
+        "task_id",
+        "database_id",
+        "corpus",
+        "condition",
+        "model_id",
+        "host",
+        "repetition",
+    )
+    planned = {
+        run.sample_id: tuple(getattr(run, field) for field in identity_fields)
+        for run in run_plan.runs
+    }
+    observed = {
+        row.sample_id: tuple(getattr(row, field) for field in identity_fields)
+        for row in bundle.rows
+    }
+    if not observed.keys() <= planned.keys() or any(
+        identity != planned[sample_id] for sample_id, identity in observed.items()
+    ):
+        raise ValueError("public Pilot stage result identities do not match their run plan")
+    if require_complete and observed.keys() != planned.keys():
+        raise ValueError("public Pilot stage result inventory is incomplete")
 
 
 def main(argv: list[str] | None = None) -> int:

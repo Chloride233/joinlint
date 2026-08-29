@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "evidence_id": "opaque-relationship-v1",
+  "evidence_tier": "preregistered_bounded_synthetic_pilot",
+  "claim_scope": "trusted_query_contract_opaque_relationship_stress",
+  "evaluated_commit": "eda51713acb53d676165cfa5dbd6906a25837fb5",
+  "input_lock_sha256": "64d43e78e71de8ec676cf60aa7a4847a610f7c5cb652c7f9c51bc381708017f1",
+  "stage_id": "semantic_join_contract_ambiguity_v1",
+  "excluded_claims": [
+    "natural_sql_error_rates",
+    "business_semantics",
+    "undeclared_relationship_discovery",
+    "pooling_or_rerun"
+  ],
+  "calibration": {
+    "workflow_run_id": 33248554896,
+    "artifact_id": 9713719441,
+    "server_reported_artifact_sha256": "c12955c0c5ba72a18c279ea87f6c4f3d898f0d0b0c40a08fb2fc4cc246323296",
+    "actual_model_cost_cny": 0.07351804,
+    "settled_cost_cny": 2.433103,
+    "settlement_id": "8aae67122fa74d5bf77491761254cb59214006e17089d8b3d5b57284017fc910"
+  },
+  "formal_run": {
+    "workflow_run_id": 33249402590,
+    "workflow_control_commit": "9c7f09f231eb9b073b283afd712a42e0ae48ce6e",
+    "artifact_id": 9714292688,
+    "server_reported_artifact_sha256": "8bc0e5fab38ddd03553d3780bcae75390e6966380382d68945e332acbab8ba6c",
+    "actual_model_cost_cny": 0.38191628,
+    "settled_cost_cny": 4.179837,
+    "settlement_id": "81afd54c43c6ed8b915e858c78694d5bb6e63615a12d30b8153f103b089961e5"
+  },
+  "draft_release": {
+    "release_id": 378950455,
+    "tag_name": "joinlint-formal-opaque-v1-eda517",
+    "draft": true,
+    "immutable": false,
+    "git_ref_exists": false,
+    "target_commit": "eda51713acb53d676165cfa5dbd6906a25837fb5",
+    "input_asset": {
+      "name": "pilot-input.tar.gz",
+      "asset_id": 535093165,
+      "sha256": "d9cd3fff1c7c957b3810553df0ddbb33afda47cd83415af1febb50f4f34bf36e"
+    },
+    "result_asset": {
+      "name": "joinlint-opaque-result-run-33249402590.tar.gz",
+      "asset_id": 535169362,
+      "sha256": "a4fedc10811830eab5dfd93db3c7ba5ccc35b98905e95dfed13cc2def30ebd02"
+    }
+  },
+  "campaign_ledger": {
+    "branch": "joinlint-campaign-ledger-ambiguity-v1",
+    "genesis_commit": "c3a748b999059cfefe6eeb6eeccc1cfbf998db1d",
+    "final_head": "84e38400c7489a4deb024cc1f872e291852509be",
+    "campaign_budget_cny": 82.0,
+    "final_cumulative_cny": 72.663226,
+    "remaining_cny": 9.336774,
+    "round_actual_model_cost_cny": 0.45543432,
+    "round_settled_cost_cny": 6.61294
+  },
+  "published_files": {
+    "calibration/calibration.json": "2add40e68473e379a5185a6d58e80b2691d03a17181cf24b867eb95ad6ed4cfa",
+    "pilot-stage/agent-results-bundle.json": "a2a2a81b03c3f55392de98b09784744977bbf1e714ee38d94fa5b9900a33dd79",
+    "pilot-stage/budget-checkpoint.json": "343384380b70beea249a7acba9d3cc78d9cf66941004542cef6ada8e81f04448",
+    "pilot-stage/budget.json": "c34cf2eec796787069340e23cd8c043a4302e066da4ad824b76dcc26a0568e52",
+    "pilot-stage/campaign-budget.json": "b26fee89c2eaf55b06624eb527d24ca75bb54c00b113dfa4b6d0339c41e09fc1",
+    "pilot-stage/cleaning.json": "d8b5e05f0dbe0c1fe30c420a1b50adc5600af16732cf0c55edd2440a25c37f2d",
+    "pilot-stage/effect.json": "8ccf0779e25f6f781ce5e0723bb92a8ef4361ebd3235b852921bc827c900ca0c",
+    "pilot-stage/pilot-agent-results.json": "79ab1a1e9b5bc4ccc8490db73c051988d32dbd00f826e3e2a9c992a141b65682",
+    "pilot-stage/stage-run-plan.json": "dc111cd4b815690d69eefb2ce83bead42b8c6fccb152ba9482e791ec92274f7d",
+    "pilot-stage/stage.json": "809af18b51458828a6791d2fa88b5a84761565442a4b30e0006b4e7c902bc18d"
+  }
+}

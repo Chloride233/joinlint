@@ -85,7 +85,8 @@ This sensitivity check is supporting analysis, not a replacement primary test.
 The completed CNY 70 campaign remains immutable. Campaign
 `joinlint-safety-effect-2026-08-v3` carries its CNY 66.050286 conservative
 accounting forward as the opening balance, raises the public cumulative cap to
-CNY 82, and begins with CNY 15.949714 available. Its pinned genesis is
+CNY 82, and began with CNY 15.949714 available. Its pinned genesis is
 `c3a748b999059cfefe6eeb6eeccc1cfbf998db1d`. Calibration and the formal stage
-must obtain separate atomic reservations from that ledger before provider
-credentials become reachable.
+obtained separate atomic reservations before provider credentials became
+reachable. Both reservations are settled, and the final public ledger head is
+`84e38400c7489a4deb024cc1f872e291852509be`.

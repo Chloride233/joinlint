@@ -4,6 +4,87 @@ Command failures and integration errors.
 
 ---
 
+## [ERR-20260829-009] project_python_not_selected
+
+**Logged**: 2026-08-29T20:34:31+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+The repository verification first used a missing `python` alias, then the
+dependency-free system `python3` instead of the project's virtual environment.
+
+### Error
+
+```text
+zsh:1: command not found: python
+ModuleNotFoundError: No module named 'pydantic'
+```
+
+### Context
+
+- Both failed commands were read-only public-artifact validations.
+- System `python3` is Python 3.9; `.venv/bin/python` is the configured Python
+  3.12 environment with the repository dependencies.
+- No artifact or repository state was changed by either failed command.
+
+### Suggested Fix
+
+Use `.venv/bin/python` for local repository verification.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `pyproject.toml`
+
+### Resolution
+
+- **Resolved**: 2026-08-29T20:34:31+08:00
+- **Notes**: Continued with `.venv/bin/python`.
+
+---
+
+## [ERR-20260829-010] ripgrep_short_option_misread
+
+**Logged**: 2026-08-29T20:49:34+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+`rg -L` was assumed to mean files without matches, but this installed ripgrep
+uses it as the short form of `--follow`.
+
+### Error
+
+```text
+ERROR: file or directory not found: tests/test_agent_join_scorers.py:pytest.importorskip(inspect_ai)
+```
+
+### Context
+
+- The command was selecting non-Inspect test files for local verification.
+- Pytest exited before running any tests.
+
+### Suggested Fix
+
+Use the unambiguous `rg --files-without-match` spelling.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `tests/`
+
+### Resolution
+
+- **Resolved**: 2026-08-29T20:49:34+08:00
+- **Notes**: The corrected command completed with 521 passing tests.
+
+---
+
 ## [ERR-20260829-008] ambiguity_reservation_mode_missing_from_cli
 
 **Logged**: 2026-08-29T00:00:00+08:00
@@ -194,7 +275,12 @@ Deselect the three Inspect import tests for local verification and require the f
 ### Metadata
 
 - Reproducible: yes
-- Related Files: `tests/test_formal_eval_pilot.py`
+- Related Files: `tests/test_agent_join_arm_isolation.py`,
+  `tests/test_formal_eval_guidance_diagnostic.py`,
+  `tests/test_formal_eval_inspect_smoke.py`, `tests/test_formal_eval_pilot.py`
+- Pattern-Key: local.inspect_ai_import_hang
+- Recurrence-Count: 5
+- Last-Seen: 2026-08-29
 
 ### Resolution
 
