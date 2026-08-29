@@ -303,15 +303,19 @@ McNemar `p = 1.0`. The result demonstrates clean protocol behavior but does not
 establish a statistically significant product effect. See
 [`docs/superpowers/specs/2026-08-28-query-contract-join-safety-evaluation-design.md`](../../docs/superpowers/specs/2026-08-28-query-contract-join-safety-evaluation-design.md).
 
-The next independent schema-v8 experiment addresses that corpus's control
-ceiling. It freezes 20 preconstructed tasks whose relationship columns are
-role-opaque and whose gold and decoy graphs are executable, same-depth,
-same-entity, and type-compatible. The evaluation database tool denies system
-catalog and table-valued PRAGMA access so control cannot recover hidden FK
-declarations. The input-locked exact-test boundary records that six unopposed
-treatment wins are the minimum for `p < 0.05`; task selection is fixed before
-any model output. No model outcome exists for this new corpus. See
-[`docs/superpowers/specs/2026-08-29-opaque-relationship-ambiguity-evaluation-design.md`](../../docs/superpowers/specs/2026-08-29-opaque-relationship-ambiguity-evaluation-design.md).
+The independent schema-v8 experiment addressed that corpus's control ceiling.
+It froze 20 preconstructed tasks whose relationship columns are role-opaque and
+whose gold and decoy graphs are executable, same-depth, same-entity, and
+type-compatible. The evaluation database tool denied system catalog and
+table-valued PRAGMA access so control could not recover hidden FK declarations.
+The completed single-shot run produced 6/20 control successes and 20/20
+treatment successes (absolute improvement +0.70; treatment-only wins 14;
+control-only wins 0; exact two-sided McNemar p=0.0001220703125). All 20
+treatment rows called the plan tool, used MCP evidence, validated final SQL,
+and complied with the protocol. This is positive evidence only for the frozen
+synthetic opaque-relationship stress scope. See the
+[`design`](../../docs/superpowers/specs/2026-08-29-opaque-relationship-ambiguity-evaluation-design.md)
+and [`immutable result record`](../../docs/opaque-relationship-effect-results.md).
 
 `formal-pilot.yml` is a separate, manually approved 20-task BIRD Train pilot.
 It runs 80 samples under the frozen `balanced_diagonal_crossover_v1` design.

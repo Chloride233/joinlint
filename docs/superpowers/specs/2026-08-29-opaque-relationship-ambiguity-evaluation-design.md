@@ -1,7 +1,8 @@
 # Opaque relationship-ambiguity evaluation
 
-**Status:** local schema-v8 construction and freeze verification complete; no
-model outcomes exist for this corpus. Formal dispatch remains a separate step.
+**Status:** completed single-shot formal experiment with a preregistered
+significant positive result. The immutable result record is
+[`docs/opaque-relationship-effect-results.md`](../../opaque-relationship-effect-results.md).
 
 ## Why this is independent
 
@@ -62,6 +63,24 @@ A positive result would support only an effect for the named model, hosts,
 prompts, product commit, and synthetic opaque-relationship stress corpus. It
 would not estimate natural SQL error rates, prove business semantics, or show
 that JoinLint discovers undeclared relationships.
+
+## Completed result
+
+GitHub Actions run
+[`33249402590`](https://github.com/Chloride233/joinlint/actions/runs/33249402590)
+completed all 40 model runs and exported 40/40 complete result rows. Control
+completed 6/20 tasks; treatment completed 20/20. There were 14 treatment-only
+wins, no control-only wins, six paired successes, and no paired failures. The
+absolute improvement was +0.70 and the preregistered exact two-sided McNemar
+p-value was `0.0001220703125`, so the frozen significance rule passed.
+
+All 20 treatment rows called the plan tool, were MCP-grounded, validated the
+final SQL, and complied with the protocol. The control failures included three
+model timeouts and two model-limit outcomes, which the preregistered
+intention-to-treat analysis retains as failures. A posthoc conservative
+sensitivity check that instead treats all five as control successes still has
+nine unopposed treatment wins and an exact two-sided p-value of `0.00390625`.
+This sensitivity check is supporting analysis, not a replacement primary test.
 
 The completed CNY 70 campaign remains immutable. Campaign
 `joinlint-safety-effect-2026-08-v3` carries its CNY 66.050286 conservative

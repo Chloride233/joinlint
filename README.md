@@ -151,11 +151,13 @@ equivalent SQL aliases/equalities, and permits only documented observation
 timestamps to differ.
 
 See the [benchmarking guide](docs/benchmarking.md) for the separation between
-deterministic capability gates and formal Agent product-effect evidence. The
-completed trusted-query-contract experiment was directionally positive but not
-statistically significant; no downstream improvement claim is made by this
-Developer Preview. See the
-[effect results](docs/query-contract-safety-effect-results.md).
+deterministic capability gates and formal Agent product-effect evidence. In the
+completed 20-pair opaque-relationship stress experiment, control completed
+6/20 tasks and the JoinLint treatment completed 20/20 (absolute improvement
++0.70; exact two-sided McNemar p=0.0001220703125). This supports only the frozen
+synthetic stress scope; it does not estimate natural SQL error rates, prove
+business meaning, or show relationship discovery. See the
+[effect results](docs/opaque-relationship-effect-results.md).
 
 The formal workflow also has a pinned infrastructure-resume mode. It accepts
 only the exact failed source run and server-reported artifact digest, preserves

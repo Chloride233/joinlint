@@ -4,6 +4,50 @@ Command failures and integration errors.
 
 ---
 
+## [ERR-20260829-008] ambiguity_reservation_mode_missing_from_cli
+
+**Logged**: 2026-08-29T00:00:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: eval
+
+### Summary
+The first opaque-relationship formal dispatch passed the frozen-input,
+calibration, and budget-envelope checks but stopped before reservation because
+the new admission mode was absent from the CLI argument choices.
+
+### Error
+
+```text
+argument --mode: invalid choice: 'pilot_stage_contract_ambiguity'
+```
+
+### Context
+
+- GitHub Actions run `33249211372` failed before a ledger reservation or model
+  call, so it created no provider spend.
+- The policy table and workflow mapping already admitted the mode; the
+  separately maintained argparse list had drifted.
+
+### Suggested Fix
+
+Keep the CLI choice list covered by a command-boundary regression test whenever
+a reservation policy mode is added.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `benchmarks/formal_eval/campaign_reservation.py`,
+  `tests/test_formal_eval_campaign_reservation.py`
+
+### Resolution
+
+- **Resolved**: 2026-08-29T00:00:00+08:00
+- **Notes**: Added the missing choice and an actual CLI regression test in
+  commit `9c7f09f231eb9b073b283afd712a42e0ae48ce6e` before the successful retry.
+
+---
+
 ## [ERR-20260829-006] resume_reservation_mode_missing_from_cli
 
 **Logged**: 2026-08-29T00:00:00+08:00
