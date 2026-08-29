@@ -22,6 +22,7 @@ on:
           - flash_full_dataset_v1
           - semantic_join_safety_v1
           - semantic_join_contract_safety_v1
+          - semantic_join_contract_ambiguity_v1
           - semantic_join_contract_safety_resume_v1
           - semantic_join_safety_confirmation_v1
           - full
@@ -85,11 +86,14 @@ jobs:
           (inputs.stage != 'flash_full_dataset_v1' &&
           inputs.stage != 'semantic_join_safety_v1' &&
           inputs.stage != 'semantic_join_contract_safety_v1' &&
+          inputs.stage != 'semantic_join_contract_ambiguity_v1' &&
           inputs.stage != 'semantic_join_contract_safety_resume_v1' &&
           inputs.stage != 'semantic_join_safety_confirmation_v1') ||
           (inputs.stage == 'flash_full_dataset_v1' && inputs.budget_cny != '7.4') ||
           (inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8') ||
           (inputs.stage == 'semantic_join_contract_safety_v1' &&
+          inputs.budget_cny != '8') ||
+          (inputs.stage == 'semantic_join_contract_ambiguity_v1' &&
           inputs.budget_cny != '8') ||
           (inputs.stage == 'semantic_join_contract_safety_resume_v1' &&
           (inputs.budget_cny != '6.35' || inputs.resume_run_id != '33242737801')) ||
@@ -211,14 +215,14 @@ jobs:
         working-directory: .workflow-control
         env:
           GH_TOKEN: ${{ github.token }}
-          PILOT_RESERVATION_MODE: ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && 'pilot_stage_safety_confirmation' || inputs.stage == 'semantic_join_contract_safety_resume_v1' && 'pilot_stage_contract_safety_resume' || inputs.stage == 'semantic_join_contract_safety_v1' && 'pilot_stage_contract_safety' || inputs.stage == 'semantic_join_safety_v1' && 'pilot_stage_safety' || 'pilot_stage' }}
+          PILOT_RESERVATION_MODE: ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && 'pilot_stage_safety_confirmation' || inputs.stage == 'semantic_join_contract_safety_resume_v1' && 'pilot_stage_contract_safety_resume' || inputs.stage == 'semantic_join_contract_ambiguity_v1' && 'pilot_stage_contract_ambiguity' || inputs.stage == 'semantic_join_contract_safety_v1' && 'pilot_stage_contract_safety' || inputs.stage == 'semantic_join_safety_v1' && 'pilot_stage_safety' || 'pilot_stage' }}
         run: >-
           python -m benchmarks.formal_eval.campaign_reservation
           reserve
           --mode "$PILOT_RESERVATION_MODE"
-          --campaign-id joinlint-safety-effect-2026-08-v2
-          --ledger-branch joinlint-campaign-ledger-contract-v1
-          --genesis-commit 3c33a92297e4a8b530a80cfbb6cdf6caa0931aef
+          --campaign-id joinlint-safety-effect-2026-08-v3
+          --ledger-branch joinlint-campaign-ledger-ambiguity-v1
+          --genesis-commit c3a748b999059cfefe6eeb6eeccc1cfbf998db1d
           --receipt "$GITHUB_WORKSPACE/campaign-reservation.json"
       - name: Install evaluated Pilot product
         run: python -m pip install -e './evaluated-checkout[dev,eval,remote]'

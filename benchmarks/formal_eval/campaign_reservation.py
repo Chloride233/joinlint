@@ -89,6 +89,11 @@ _POLICIES = {
         job="pilot",
         upper_micro_cny=8_000_000,
     ),
+    "pilot_stage_contract_ambiguity": _ReservationPolicy(
+        workflow_path=".github/workflows/formal-pilot.yml",
+        job="pilot",
+        upper_micro_cny=8_000_000,
+    ),
     "pilot_stage_contract_safety_resume": _ReservationPolicy(
         workflow_path=".github/workflows/formal-pilot.yml",
         job="pilot",
@@ -133,6 +138,11 @@ _EXPECTED_WORKFLOW_INPUTS = {
         "budget_cny": "8",
         "confirm_paid": "true",
         "stage": "semantic_join_contract_safety_v1",
+    },
+    "pilot_stage_contract_ambiguity": {
+        "budget_cny": "8",
+        "confirm_paid": "true",
+        "stage": "semantic_join_contract_ambiguity_v1",
     },
     "pilot_stage_contract_safety_resume": {
         "budget_cny": "6.35",

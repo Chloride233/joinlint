@@ -131,13 +131,18 @@ semantic-safety campaign remains fixed to its public
 conservative opening reserved upper balance. The query-contract campaign uses
 protected public branch `joinlint-campaign-ledger-contract-v1`, empty genesis
 `3c33a92297e4a8b530a80cfbb6cdf6caa0931aef`, CNY 70 ceiling, and CNY 57.606231
-conservative opening reserved upper balance. Every newly enabled paid mode still
-needs a reviewed admission policy and protected non-force ledger ref.
+conservative opening reserved upper balance. The opaque-relationship campaign
+carries the settled CNY 66.050286 total forward on protected public branch
+`joinlint-campaign-ledger-ambiguity-v1`, empty genesis
+`c3a748b999059cfefe6eeb6eeccc1cfbf998db1d`, and a CNY 82 cumulative ceiling.
+Every newly enabled paid mode still needs a reviewed admission policy and
+protected non-force ledger ref.
 `campaign_reservation.py` narrows the workflow-owned consumer to GitHub's
 default run variables on an explicitly protected ref, fixes the admitted
 mode/upper pairs to readiness/CNY 2.10, calibration/CNY 4, full Pilot/CNY 20,
 the BIRD Flash full-dataset stage/CNY 7.40, the synthetic semantic-safety Flash
-stage/CNY 8.00, and the posthoc synthetic hard-case confirmation/CNY 5.53,
+stage/CNY 8.00, the posthoc synthetic hard-case confirmation/CNY 5.53, and the
+independent opaque-relationship Flash stage/CNY 8.00; it
 requires the exact matching policy-driving dispatch flags and budget string,
 reads the actual Git HEAD from a clean fixed checkout path, and
 requires calibration/Pilot reservations to bind the verified frozen-input lock

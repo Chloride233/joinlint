@@ -1820,10 +1820,12 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert "inputs.stage != 'flash_full_dataset_v1'" in text
     assert "inputs.stage != 'semantic_join_safety_v1'" in text
     assert "inputs.stage != 'semantic_join_contract_safety_v1'" in text
+    assert "inputs.stage != 'semantic_join_contract_ambiguity_v1'" in text
     assert "inputs.stage != 'semantic_join_contract_safety_resume_v1'" in text
     assert "inputs.stage == 'flash_full_dataset_v1' && inputs.budget_cny != '7.4'" in text
     assert "inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8'" in text
     assert "inputs.stage == 'semantic_join_contract_safety_v1'" in text
+    assert "inputs.stage == 'semantic_join_contract_ambiguity_v1'" in text
     assert "inputs.stage == 'semantic_join_contract_safety_resume_v1'" in text
     assert "inputs.budget_cny != '6.35'" in text
     assert "inputs.resume_run_id != '33242737801'" in text
@@ -1963,13 +1965,16 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert "'pilot_stage_contract_safety'" in reservation["env"][
         "PILOT_RESERVATION_MODE"
     ]
+    assert "'pilot_stage_contract_ambiguity'" in reservation["env"][
+        "PILOT_RESERVATION_MODE"
+    ]
     assert "'pilot_stage_contract_safety_resume'" in reservation["env"][
         "PILOT_RESERVATION_MODE"
     ]
     assert '--mode "$PILOT_RESERVATION_MODE"' in reservation["run"]
-    assert "joinlint-safety-effect-2026-08-v2" in reservation["run"]
-    assert "joinlint-campaign-ledger-contract-v1" in reservation["run"]
-    assert "3c33a92297e4a8b530a80cfbb6cdf6caa0931aef" in reservation["run"]
+    assert "joinlint-safety-effect-2026-08-v3" in reservation["run"]
+    assert "joinlint-campaign-ledger-ambiguity-v1" in reservation["run"]
+    assert "c3a748b999059cfefe6eeb6eeccc1cfbf998db1d" in reservation["run"]
     sanitized_scan = next(
         step
         for step in job["steps"]
@@ -2171,9 +2176,9 @@ def test_pilot_calibration_reserves_atomically_before_target_execution() -> None
     assert set(reserve["env"]) == {"GH_TOKEN"}
     assert "reserve" in reserve["run"]
     assert "--mode calibration" in reserve["run"]
-    assert "joinlint-safety-effect-2026-08-v2" in reserve["run"]
-    assert "joinlint-campaign-ledger-contract-v1" in reserve["run"]
-    assert "3c33a92297e4a8b530a80cfbb6cdf6caa0931aef" in reserve["run"]
+    assert "joinlint-safety-effect-2026-08-v3" in reserve["run"]
+    assert "joinlint-campaign-ledger-ambiguity-v1" in reserve["run"]
+    assert "c3a748b999059cfefe6eeb6eeccc1cfbf998db1d" in reserve["run"]
     assert paid["env"]["CAMPAIGN_BUDGET_CNY"] == (
         "${{ steps.campaign_reservation.outputs.campaign_budget_cny }}"
     )

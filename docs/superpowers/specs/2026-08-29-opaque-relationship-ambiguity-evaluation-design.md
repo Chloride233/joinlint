@@ -63,7 +63,10 @@ prompts, product commit, and synthetic opaque-relationship stress corpus. It
 would not estimate natural SQL error rates, prove business semantics, or show
 that JoinLint discovers undeclared relationships.
 
-The formal run must use a new atomic reservation and public-ledger campaign
-boundary. The remaining balance of the completed CNY 70 campaign is not enough
-for the CNY 7.797920 full-stage resource envelope, so that campaign cannot fund
-this stage.
+The completed CNY 70 campaign remains immutable. Campaign
+`joinlint-safety-effect-2026-08-v3` carries its CNY 66.050286 conservative
+accounting forward as the opening balance, raises the public cumulative cap to
+CNY 82, and begins with CNY 15.949714 available. Its pinned genesis is
+`c3a748b999059cfefe6eeb6eeccc1cfbf998db1d`. Calibration and the formal stage
+must obtain separate atomic reservations from that ledger before provider
+credentials become reachable.
