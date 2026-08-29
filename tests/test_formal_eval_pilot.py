@@ -1913,7 +1913,7 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         for step in job["steps"]
         if step.get("name") == "Verify calibration attestation binding"
     )
-    assert "b53a95d55b305d5eb7de3cbaffc3c0633bc07bc5" in calibration_verify["run"]
+    assert "69abef61b490c90f88ae0aa9aae5d6909b1be413" in calibration_verify["run"]
     resume_restore = next(
         step
         for step in job["steps"]

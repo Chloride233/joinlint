@@ -169,7 +169,7 @@ jobs:
           --run-metadata "$GITHUB_WORKSPACE/calibration-attestation/run.json"
           --expected-run-id "$CALIBRATION_RUN_ID"
           --current-commit "${{ steps.pilot_commit.outputs.sha }}"
-          --expected-workflow-commit b53a95d55b305d5eb7de3cbaffc3c0633bc07bc5
+          --expected-workflow-commit 69abef61b490c90f88ae0aa9aae5d6909b1be413
           --repository "$GITHUB_REPOSITORY"
       - name: Restore pinned incomplete formal stage
         if: inputs.stage == 'semantic_join_contract_safety_resume_v1'
