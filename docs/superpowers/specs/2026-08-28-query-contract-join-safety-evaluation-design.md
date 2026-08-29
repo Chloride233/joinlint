@@ -81,6 +81,14 @@ All model limits, timeouts, malformed outputs, tool failures, protocol failures,
 and unsafe abstentions remain in the intention-to-treat denominator. The run is
 single-shot after calibration; it is not repeated until favorable.
 
+An infrastructure resume may reuse only a complete batch from a pinned failed
+workflow artifact whose repository, workflow commit, reservation, artifact
+digest, input lock, run plan, and completed sample IDs all verify before a new
+reservation. Every completed row remains unchanged in the intention-to-treat
+denominator, only the missing preregistered IDs may run, and the final effect
+test still covers the original 20 pairs. A resume is not permission to replace
+a failed row or redraw the frozen corpus.
+
 ## 5. Claim boundary
 
 A positive result would support only this statement:

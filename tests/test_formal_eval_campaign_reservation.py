@@ -64,6 +64,11 @@ POLICIES = {
         "pilot",
         8_000_000,
     ),
+    "pilot_stage_contract_safety_resume": (
+        ".github/workflows/formal-pilot.yml",
+        "pilot",
+        6_350_000,
+    ),
     "pilot_stage_safety_confirmation": (
         ".github/workflows/formal-pilot.yml",
         "pilot",
@@ -134,6 +139,14 @@ def _workflow_inputs(mode: str) -> dict[str, str]:
             "confirm_paid": "true",
             "pilot_commit": EVALUATED_COMMIT,
             "stage": "semantic_join_contract_safety_v1",
+        }
+    if mode == "pilot_stage_contract_safety_resume":
+        return {
+            "budget_cny": "6.35",
+            "confirm_paid": "true",
+            "pilot_commit": EVALUATED_COMMIT,
+            "resume_run_id": "33242737801",
+            "stage": "semantic_join_contract_safety_resume_v1",
         }
     if mode == "pilot_stage_safety_confirmation":
         return {

@@ -84,9 +84,16 @@ The public ledger head after both evidence-bound settlements is
 `e240aca8cd3a03b2be3b3f49a4fca7c98f168428`. Cumulative conservative accounting
 is CNY 62.600378 and the remaining balance is CNY 7.399622.
 
-The frozen contract-safety stage requires a CNY 8.000000 atomic reservation and
-has a CNY 7.797920 resource upper bound. It therefore cannot be retried under
-the current CNY 70 campaign without weakening the frozen resource contract.
-A retry requires a separately authorized public campaign ceiling and must be
-identified as an infrastructure retry, not as repeated sampling after an
-observed treatment effect.
+A full 40-sample rerun still requires a CNY 8.000000 atomic reservation and has
+a CNY 7.797920 resource upper bound, so it remains forbidden under this
+campaign. The evidence-preserving recovery path instead retains the exact 10
+completed control rows and runs only the 30 missing preregistered sample IDs.
+Its incremental resource upper bound is CNY 6.348440 and its fixed reservation
+is CNY 6.350000, which fits the existing campaign ceiling.
+
+The recovery is bound before reservation to workflow run `33242737801`, its
+workflow commit, original reservation, repository identity, failed conclusion,
+artifact ID, server-reported artifact digest, frozen input lock, run plan, and
+the exact completed sample set. It never replaces or resamples an observed
+row. The final exact McNemar test uses all 20 original pairs and remains the
+single preregistered effect estimate.

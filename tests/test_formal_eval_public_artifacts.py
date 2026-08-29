@@ -342,13 +342,22 @@ def test_evidence_scans_run_only_from_the_pinned_verifier_checkout(
     scan = next(step for step in steps if step.get("name") == scan_name)
     assert "steps.public_artifact_verifier.outcome == 'success'" in scan["if"]
     assert scan["working-directory"] == verifier_path
-    assert scan["env"] == {
+    expected_env = {
         "PYTHONPATH": (
             f"${{{{ github.workspace }}}}/{verifier_path}/src:"
             f"${{{{ github.workspace }}}}/{verifier_path}"
         )
     }
+    if workflow_path == ".github/workflows/formal-pilot.yml":
+        expected_env["PILOT_STAGE_ARTIFACT_PROFILE"] = (
+            "${{ inputs.stage == 'semantic_join_contract_safety_resume_v1' && "
+            "'pilot-stage-resume' || 'pilot-stage' }}"
+        )
+        expected_profile = '"$PILOT_STAGE_ARTIFACT_PROFILE"'
+    else:
+        expected_profile = profile
+    assert scan["env"] == expected_env
     assert scan["run"] == (
         "python -m benchmarks.formal_eval.public_artifacts "
-        f"--profile {profile} --root \"$GITHUB_WORKSPACE/{artifact_root}\""
+        f"--profile {expected_profile} --root \"$GITHUB_WORKSPACE/{artifact_root}\""
     )

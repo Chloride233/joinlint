@@ -34,6 +34,7 @@ from benchmarks.formal_eval.pilot_dispatch import (
 from benchmarks.formal_eval.pilot_stage import (
     PilotStageEffect,
     PilotStagePreregistration,
+    PilotStageResume,
     stage_effect_report,
 )
 from benchmarks.formal_eval.power import PowerPlan, PowerReadiness
@@ -108,6 +109,18 @@ PUBLIC_ARTIFACT_FILES: dict[str, tuple[str, ...]] = {
         "campaign-budget.json",
         "effect.json",
     ),
+    "pilot-stage-resume": (
+        "stage.json",
+        "stage-run-plan.json",
+        "resume.json",
+        "budget-checkpoint.json",
+        "agent-results-bundle.json",
+        "cleaning.json",
+        "pilot-agent-results.json",
+        "budget.json",
+        "campaign-budget.json",
+        "effect.json",
+    ),
 }
 
 _JSON_ARTIFACT_SPECS = {
@@ -153,10 +166,13 @@ _JSON_ARTIFACT_SPECS = {
     "campaign-budget.json": JsonArtifactSpec(TypeAdapter(PilotCampaignBudget), True),
     "stage.json": JsonArtifactSpec(TypeAdapter(PilotStagePreregistration), True),
     "stage-run-plan.json": JsonArtifactSpec(TypeAdapter(RunPlanV2), True),
+    "resume.json": JsonArtifactSpec(TypeAdapter(PilotStageResume), True),
     "effect.json": JsonArtifactSpec(TypeAdapter(PilotStageEffect), True),
 }
 
-_PREFIX_PROFILES = frozenset({"formal-evaluation", "pilot", "pilot-stage"})
+_PREFIX_PROFILES = frozenset(
+    {"formal-evaluation", "pilot", "pilot-stage", "pilot-stage-resume"}
+)
 _TERMINAL_INVENTORIES = {
     "formal-report": (frozenset(PUBLIC_ARTIFACT_FILES["formal-report"]),),
     "modal-readiness": (frozenset(PUBLIC_ARTIFACT_FILES["modal-readiness"]),),
@@ -362,7 +378,7 @@ def _validate_cross_file_invariants(
         )
     elif profile == "pilot":
         _validate_pilot_artifacts(values)
-    elif profile == "pilot-stage":
+    elif profile in {"pilot-stage", "pilot-stage-resume"}:
         _validate_pilot_stage_artifacts(values)
 
 
@@ -508,6 +524,22 @@ def _validate_pilot_stage_artifacts(values: dict[str, Any]) -> None:
     if stage is not None and bundle is not None and effect is not None:
         if effect != stage_effect_report(bundle.rows, stage):
             raise ValueError("public Pilot stage effect does not match its result rows")
+    resume = values.get("resume.json")
+    if resume is not None and stage is not None:
+        if resume.stage_sha256 != digest_value(stage.model_dump(mode="json")):
+            raise ValueError("public Pilot resume does not match its stage")
+    budget = values.get("budget.json")
+    if resume is not None and budget is not None:
+        if (
+            budget.approved_budget_cny != resume.execution_budget_cny
+            or budget.modal_compute_upper_cny
+            != resume.execution_modal_compute_upper_cny
+            or budget.modal_image_build_reserve_cny
+            != resume.execution_modal_image_build_reserve_cny
+            or budget.run_count != resume.remaining_run_count
+            or budget.expected_run_count != resume.remaining_run_count
+        ):
+            raise ValueError("public Pilot resume budget does not match its attestation")
 
 
 def main(argv: list[str] | None = None) -> int:

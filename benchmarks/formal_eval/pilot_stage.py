@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import shutil
 import subprocess
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from benchmarks.formal_eval.contracts import AgentResultBundle, AgentResultRow, StrictModel
 from benchmarks.formal_eval.dispatch import inspect_subprocess_environment
-from benchmarks.formal_eval.export import export_agent_rows
+from benchmarks.formal_eval.export import ExportSummary, export_agent_rows
 from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.pilot import (
     MODAL_CPU_USD_PER_CORE_SECOND,
@@ -43,6 +45,7 @@ SAFETY_CONFIRMATION_STAGE_ID = "semantic_join_safety_confirmation_v1"
 STAGE_APPROVED_BUDGET_CNY = 7.4
 SAFETY_STAGE_APPROVED_BUDGET_CNY = 8.0
 SAFETY_CONFIRMATION_APPROVED_BUDGET_CNY = 5.53
+CONTRACT_SAFETY_RESUME_APPROVED_BUDGET_CNY = 6.35
 STAGE_ALPHA = 0.05
 SAFETY_CONFIRMATION_TASK_IDS = (
     "sjf-commerce-ordered_products",
@@ -224,6 +227,59 @@ class PilotStageEffect(StrictModel):
         return self
 
 
+class PilotStageResume(StrictModel):
+    schema_version: Literal[1] = 1
+    source_workflow_run_id: int = Field(gt=0)
+    source_workflow_commit: str
+    source_artifact_id: int = Field(gt=0)
+    source_artifact_size_bytes: int = Field(gt=0)
+    source_artifact_sha256: str
+    source_campaign_reservation_id: str
+    source_stage_sha256: str
+    source_bundle_sha256: str
+    source_row_count: Literal[10] = 10
+    remaining_run_count: Literal[30] = 30
+    stage_sha256: str
+    execution_budget_cny: Literal[6.35] = CONTRACT_SAFETY_RESUME_APPROVED_BUDGET_CNY
+    execution_model_cost_upper_cny: float = Field(gt=0)
+    execution_modal_compute_upper_cny: float = Field(gt=0)
+    execution_modal_image_build_reserve_cny: float = Field(gt=0)
+    execution_total_upper_cny: float = Field(gt=0)
+
+    @field_validator(
+        "source_artifact_sha256",
+        "source_campaign_reservation_id",
+        "source_stage_sha256",
+        "source_bundle_sha256",
+        "stage_sha256",
+    )
+    @classmethod
+    def require_sha256(cls, value: str) -> str:
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise ValueError("Pilot stage resume digest must be one lowercase SHA-256")
+        return value
+
+    @field_validator("source_workflow_commit")
+    @classmethod
+    def require_commit(cls, value: str) -> str:
+        if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
+            raise ValueError("Pilot stage resume commit must be one full lowercase Git SHA")
+        return value
+
+    @model_validator(mode="after")
+    def require_execution_total(self) -> PilotStageResume:
+        expected = (
+            self.execution_model_cost_upper_cny
+            + self.execution_modal_compute_upper_cny
+            + self.execution_modal_image_build_reserve_cny
+        )
+        if not math.isclose(self.execution_total_upper_cny, expected, abs_tol=1e-12):
+            raise ValueError("Pilot stage resume budget is inconsistent")
+        if self.execution_total_upper_cny > self.execution_budget_cny:
+            raise ValueError("Pilot stage resume exceeds its approved budget")
+        return self
+
+
 def flash_stage_run_plan(
     registration: PilotRegistration,
     full_run_plan: RunPlanV2,
@@ -333,6 +389,210 @@ def flash_stage_budget_envelope(registration: PilotRegistration) -> PilotBudgetE
     return envelope
 
 
+def contract_safety_resume_budget_envelope(
+    registration: PilotRegistration,
+) -> PilotBudgetEnvelope:
+    if _stage_identity(registration)[0] != CONTRACT_SAFETY_STAGE_ID:
+        raise ValueError("resume requires the frozen contract-safety Pilot")
+    full = flash_stage_budget_envelope(registration)
+    ratio = 30 / 40
+    envelope = PilotBudgetEnvelope(
+        run_count=30,
+        model_cost_upper_cny=full.model_cost_upper_cny * ratio,
+        modal_compute_upper_cny=full.modal_compute_upper_cny * ratio,
+        modal_image_build_reserve_cny=full.modal_image_build_reserve_cny,
+        total_upper_cny=(
+            full.model_cost_upper_cny * ratio
+            + full.modal_compute_upper_cny * ratio
+            + full.modal_image_build_reserve_cny
+        ),
+    )
+    if envelope.total_upper_cny > CONTRACT_SAFETY_RESUME_APPROVED_BUDGET_CNY:
+        raise ValueError("contract-safety resume exceeds its approved budget")
+    return envelope
+
+
+def verify_contract_safety_resume_source(
+    root: Path,
+    run_metadata_path: Path,
+    artifact_metadata_path: Path,
+    *,
+    registration: PilotRegistration,
+    full_run_plan: RunPlanV2,
+    stage_run_plan: RunPlanV2,
+    input_lock_sha256: str,
+    expected_source_run_id: int,
+    expected_source_artifact_sha256: str,
+    expected_source_workflow_commit: str,
+    expected_source_reservation_id: str,
+) -> tuple[AgentResultBundle, ExportSummary, int, int]:
+    expected_files = {
+        "agent-results-bundle.json",
+        "budget-checkpoint.json",
+        "cleaning.json",
+        "pilot-agent-results.json",
+        "stage-run-plan.json",
+        "stage.json",
+    }
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("resume source must be one real directory")
+    actual_files = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    if actual_files != expected_files or any(path.is_symlink() for path in root.rglob("*")):
+        raise ValueError("resume source artifact inventory is invalid")
+
+    run_metadata = _read_json_mapping(run_metadata_path, label="resume run metadata")
+    repository = run_metadata.get("repository")
+    head_repository = run_metadata.get("head_repository")
+    if (
+        run_metadata.get("id") != expected_source_run_id
+        or run_metadata.get("run_attempt") != 1
+        or run_metadata.get("event") != "workflow_dispatch"
+        or run_metadata.get("status") != "completed"
+        or run_metadata.get("conclusion") != "failure"
+        or run_metadata.get("name") != "formal-pilot"
+        or run_metadata.get("path") != ".github/workflows/formal-pilot.yml"
+        or run_metadata.get("head_sha") != expected_source_workflow_commit
+        or not isinstance(repository, dict)
+        or repository.get("id") != 1_311_654_200
+        or repository.get("full_name") != "Chloride233/joinlint"
+        or not isinstance(head_repository, dict)
+        or head_repository.get("id") != 1_311_654_200
+    ):
+        raise ValueError("resume run metadata is not the pinned failed run")
+
+    artifact_metadata = _read_json_mapping(
+        artifact_metadata_path,
+        label="resume artifact metadata",
+    )
+    artifacts = artifact_metadata.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ValueError("resume artifact metadata is invalid")
+    matches = [
+        artifact
+        for artifact in artifacts
+        if isinstance(artifact, dict)
+        and artifact.get("name") == "joinlint-formal-pilot-stage-sanitized"
+    ]
+    if len(matches) != 1:
+        raise ValueError("resume source requires exactly one sanitized artifact")
+    artifact = matches[0]
+    artifact_workflow = artifact.get("workflow_run")
+    if (
+        artifact.get("expired") is not False
+        or artifact.get("digest") != f"sha256:{expected_source_artifact_sha256}"
+        or not isinstance(artifact.get("id"), int)
+        or not isinstance(artifact.get("size_in_bytes"), int)
+        or artifact["size_in_bytes"] <= 0
+        or not isinstance(artifact_workflow, dict)
+        or artifact_workflow.get("id") != expected_source_run_id
+        or artifact_workflow.get("head_sha") != expected_source_workflow_commit
+        or artifact_workflow.get("repository_id") != 1_311_654_200
+        or artifact_workflow.get("head_repository_id") != 1_311_654_200
+    ):
+        raise ValueError("resume artifact metadata is not the pinned artifact")
+
+    source_stage = PilotStagePreregistration.model_validate_json(
+        (root / "stage.json").read_bytes(),
+        strict=True,
+    )
+    source_plan = RunPlanV2.model_validate_json(
+        (root / "stage-run-plan.json").read_bytes(),
+        strict=True,
+    )
+    source_bundle = AgentResultBundle.model_validate_json(
+        (root / "agent-results-bundle.json").read_bytes(),
+        strict=True,
+    )
+    source_rows = TypeAdapter(tuple[AgentResultRow, ...]).validate_json(
+        (root / "pilot-agent-results.json").read_bytes(),
+        strict=True,
+    )
+    source_summary = ExportSummary.model_validate_json(
+        (root / "cleaning.json").read_bytes(),
+        strict=True,
+    )
+    checkpoint = PilotBudgetCheckpoint.model_validate_json(
+        (root / "budget-checkpoint.json").read_bytes(),
+        strict=True,
+    )
+    full_plan_sha256 = digest_value(full_run_plan.model_dump(mode="json"))
+    stage_plan_sha256 = digest_value(stage_run_plan.model_dump(mode="json"))
+    expected_source_ids = {
+        run.sample_id
+        for run in stage_run_plan.runs
+        if run.host == "codex" and run.condition == "control"
+    }
+    actual_source_ids = {row.sample_id for row in source_bundle.rows}
+    observed_cost = sum(row.calculated_cost_cny for row in source_bundle.rows)
+    full_envelope = flash_stage_budget_envelope(registration)
+    if (
+        source_stage.stage_id != CONTRACT_SAFETY_STAGE_ID
+        or source_stage.joinlint_commit != registration.joinlint_commit
+        or source_stage.input_lock_sha256 != input_lock_sha256
+        or source_stage.full_run_plan_sha256 != full_plan_sha256
+        or source_stage.stage_run_plan_sha256 != stage_plan_sha256
+        or source_stage.workflow_run_id != expected_source_run_id
+        or source_stage.campaign_reservation_id != expected_source_reservation_id
+        or source_plan != stage_run_plan
+        or source_bundle.run_plan_sha256 != stage_plan_sha256
+        or source_bundle.lineage_id != full_run_plan.lineage_id
+        or source_bundle.rows != source_rows
+        or actual_source_ids != expected_source_ids
+        or len(source_bundle.rows) != 10
+        or sum(row.join_correct_task_completion for row in source_bundle.rows) != 9
+        or sum(
+            row.failure_code == "INFRASTRUCTURE_FAILURE"
+            for row in source_bundle.rows
+        )
+        != 1
+        or source_summary.row_count != 10
+        or source_summary.artifact_incomplete_count
+        != sum(not row.artifact_complete for row in source_bundle.rows)
+        or source_summary.model_ids
+        != tuple(sorted({row.model_id for row in source_bundle.rows}))
+        or source_summary.conditions != ("control",)
+        or checkpoint.completed_batches != 1
+        or checkpoint.total_batches != 4
+        or not math.isclose(checkpoint.actual_model_cost_cny, observed_cost, abs_tol=1e-12)
+        or not math.isclose(
+            checkpoint.remaining_model_cost_upper_cny,
+            full_envelope.model_cost_upper_cny * 3 / 4,
+            abs_tol=1e-12,
+        )
+        or not math.isclose(
+            checkpoint.modal_compute_upper_cny,
+            full_envelope.modal_compute_upper_cny,
+            abs_tol=1e-12,
+        )
+        or checkpoint.modal_image_build_reserve_cny
+        != full_envelope.modal_image_build_reserve_cny
+        or checkpoint.safe_to_continue is not True
+    ):
+        raise ValueError("resume source does not match the frozen incomplete stage")
+    return (
+        source_bundle,
+        source_summary,
+        artifact["id"],
+        artifact["size_in_bytes"],
+    )
+
+
+def _read_json_mapping(path: Path, *, label: str) -> dict[str, object]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} must be one real file")
+    try:
+        value = json.loads(path.read_bytes().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{label} is invalid") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
 def safety_confirmation_budget_envelope(
     registration: PilotRegistration,
 ) -> PilotBudgetEnvelope:
@@ -412,6 +672,38 @@ def build_safety_confirmation_commands(
     if len(commands) != 2:
         raise ValueError("safety confirmation requires two condition commands")
     return tuple(commands)
+
+
+def remaining_resume_commands(
+    commands: tuple[list[str], ...],
+    stage_run_plan: RunPlanV2,
+    source_rows: tuple[AgentResultRow, ...],
+) -> tuple[list[str], ...]:
+    source_ids = {row.sample_id for row in source_rows}
+    selected: list[list[str]] = []
+    covered_ids: set[str] = set()
+    for command in commands:
+        host = next(value.removeprefix("host=") for value in command if value.startswith("host="))
+        condition = next(
+            value.removeprefix("condition=")
+            for value in command
+            if value.startswith("condition=")
+        )
+        command_ids = {
+            run.sample_id
+            for run in stage_run_plan.runs
+            if run.host == host and run.condition == condition
+        }
+        overlap = source_ids & command_ids
+        if overlap == command_ids:
+            covered_ids.update(command_ids)
+        elif overlap:
+            raise ValueError("resume source contains a partial host-condition batch")
+        else:
+            selected.append(command)
+    if covered_ids != source_ids or len(selected) != 3:
+        raise ValueError("resume source does not cover exactly one completed batch")
+    return tuple(selected)
 
 
 def pilot_stage_preregistration(
@@ -573,6 +865,13 @@ def run_flash_stage(
     campaign_reservation_id: str,
     campaign_ledger_commit_sha: str,
     confirmation: bool = False,
+    resume_root: Path | None = None,
+    resume_run_metadata: Path | None = None,
+    resume_artifact_metadata: Path | None = None,
+    resume_source_run_id: int | None = None,
+    resume_source_artifact_sha256: str | None = None,
+    resume_source_workflow_commit: str | None = None,
+    resume_source_reservation_id: str | None = None,
 ) -> PilotStageEffect:
     if output.exists() or output.is_symlink():
         raise ValueError("Pilot stage output directory must not exist")
@@ -584,20 +883,59 @@ def run_flash_stage(
         if confirmation
         else flash_stage_run_plan(registration, full_run_plan)
     )
+    input_lock_sha256 = digest_value(lock.model_dump(mode="json"))
+    resume_values = (
+        resume_root,
+        resume_run_metadata,
+        resume_artifact_metadata,
+        resume_source_run_id,
+        resume_source_artifact_sha256,
+        resume_source_workflow_commit,
+        resume_source_reservation_id,
+    )
+    resume_requested = any(value is not None for value in resume_values)
+    if resume_requested and (confirmation or any(value is None for value in resume_values)):
+        raise ValueError("resume arguments must be complete and cannot use confirmation")
+
+    source_bundle: AgentResultBundle | None = None
+    source_summary: ExportSummary | None = None
+    source_artifact_id: int | None = None
+    source_artifact_size: int | None = None
+    if resume_requested:
+        source_bundle, source_summary, source_artifact_id, source_artifact_size = (
+            verify_contract_safety_resume_source(
+                resume_root,  # type: ignore[arg-type]
+                resume_run_metadata,  # type: ignore[arg-type]
+                resume_artifact_metadata,  # type: ignore[arg-type]
+                registration=registration,
+                full_run_plan=full_run_plan,
+                stage_run_plan=stage_run_plan,
+                input_lock_sha256=input_lock_sha256,
+                expected_source_run_id=resume_source_run_id,  # type: ignore[arg-type]
+                expected_source_artifact_sha256=resume_source_artifact_sha256,  # type: ignore[arg-type]
+                expected_source_workflow_commit=resume_source_workflow_commit,  # type: ignore[arg-type]
+                expected_source_reservation_id=resume_source_reservation_id,  # type: ignore[arg-type]
+            )
+        )
+
     envelope = (
-        safety_confirmation_budget_envelope(registration)
+        contract_safety_resume_budget_envelope(registration)
+        if resume_requested
+        else safety_confirmation_budget_envelope(registration)
         if confirmation
         else flash_stage_budget_envelope(registration)
     )
-    approved_budget = (
-        SAFETY_CONFIRMATION_APPROVED_BUDGET_CNY
+    execution_budget = (
+        CONTRACT_SAFETY_RESUME_APPROVED_BUDGET_CNY
+        if resume_requested
+        else SAFETY_CONFIRMATION_APPROVED_BUDGET_CNY
         if confirmation
         else _stage_approved_budget(registration)
     )
     campaign_before = pilot_campaign_budget(
         campaign_budget_cny=campaign_budget_cny,
         campaign_spend_before_cny=campaign_spend_before_cny,
-        pilot_cost_upper_cny=approved_budget,
+        pilot_cost_upper_cny=execution_budget,
     )
     if not campaign_before.passed:
         raise ValueError("Flash Pilot stage could exceed the campaign budget")
@@ -605,7 +943,7 @@ def run_flash_stage(
         registration,
         full_run_plan,
         stage_run_plan,
-        input_lock_sha256=digest_value(lock.model_dump(mode="json")),
+        input_lock_sha256=input_lock_sha256,
         workflow_run_id=workflow_run_id,
         campaign_reservation_id=campaign_reservation_id,
         campaign_ledger_commit_sha=campaign_ledger_commit_sha,
@@ -614,6 +952,33 @@ def run_flash_stage(
     output.mkdir(parents=True)
     _write_json(output / "stage.json", preregistration)
     _write_json(output / "stage-run-plan.json", stage_run_plan)
+
+    if resume_requested:
+        assert source_bundle is not None
+        assert source_artifact_id is not None
+        assert source_artifact_size is not None
+        source_stage = PilotStagePreregistration.model_validate_json(
+            (resume_root / "stage.json").read_bytes(),  # type: ignore[union-attr]
+            strict=True,
+        )
+        resume = PilotStageResume(
+            source_workflow_run_id=resume_source_run_id,
+            source_workflow_commit=resume_source_workflow_commit,
+            source_artifact_id=source_artifact_id,
+            source_artifact_size_bytes=source_artifact_size,
+            source_artifact_sha256=resume_source_artifact_sha256,
+            source_campaign_reservation_id=resume_source_reservation_id,
+            source_stage_sha256=digest_value(source_stage.model_dump(mode="json")),
+            source_bundle_sha256=digest_value(source_bundle.model_dump(mode="json")),
+            stage_sha256=digest_value(preregistration.model_dump(mode="json")),
+            execution_model_cost_upper_cny=envelope.model_cost_upper_cny,
+            execution_modal_compute_upper_cny=envelope.modal_compute_upper_cny,
+            execution_modal_image_build_reserve_cny=(
+                envelope.modal_image_build_reserve_cny
+            ),
+            execution_total_upper_cny=envelope.total_upper_cny,
+        )
+        _write_json(output / "resume.json", resume)
 
     inspect = shutil.which("inspect")
     if inspect is None:
@@ -628,13 +993,16 @@ def run_flash_stage(
         log_dir=log_dir,
         lineage_id=full_run_plan.lineage_id,
     )
+    if resume_requested:
+        assert source_bundle is not None
+        commands = remaining_resume_commands(commands, stage_run_plan, source_bundle.rows)
     batch_upper = envelope.model_cost_upper_cny / len(commands)
     for batch_index, command in enumerate(commands):
         observed = observed_model_cost_cny(log_dir, registration)
         _write_stage_checkpoint(
             output,
             envelope=envelope,
-            approved_budget_cny=approved_budget,
+            approved_budget_cny=execution_budget,
             completed_batches=batch_index,
             total_batches=len(commands),
             actual_model_cost_cny=observed,
@@ -653,7 +1021,7 @@ def run_flash_stage(
             _write_stage_checkpoint(
                 output,
                 envelope=envelope,
-                approved_budget_cny=approved_budget,
+                approved_budget_cny=execution_budget,
                 completed_batches=batch_index + 1,
                 total_batches=len(commands),
                 actual_model_cost_cny=observed_model_cost_cny(log_dir, registration),
@@ -666,13 +1034,15 @@ def run_flash_stage(
                 lineage_id=full_run_plan.lineage_id,
                 stage_run_plan=stage_run_plan,
                 allow_incomplete_run_plan=True,
+                source_bundle=source_bundle,
+                source_summary=source_summary,
             )
             raise
     observed = observed_model_cost_cny(log_dir, registration)
     _write_stage_checkpoint(
         output,
         envelope=envelope,
-        approved_budget_cny=approved_budget,
+        approved_budget_cny=execution_budget,
         completed_batches=len(commands),
         total_batches=len(commands),
         actual_model_cost_cny=observed,
@@ -686,22 +1056,31 @@ def run_flash_stage(
         lineage_id=full_run_plan.lineage_id,
         stage_run_plan=stage_run_plan,
         allow_incomplete_run_plan=False,
+        source_bundle=source_bundle,
+        source_summary=source_summary,
     )
-    actual_model_cost = sum(row.calculated_cost_cny for row in bundle.rows)
+    source_ids = (
+        {row.sample_id for row in source_bundle.rows}
+        if source_bundle is not None
+        else set()
+    )
+    actual_model_cost = sum(
+        row.calculated_cost_cny for row in bundle.rows if row.sample_id not in source_ids
+    )
     total_upper = (
         actual_model_cost
         + envelope.modal_compute_upper_cny
         + envelope.modal_image_build_reserve_cny
     )
     budget = PilotBudgetReport(
-        approved_budget_cny=approved_budget,
+        approved_budget_cny=execution_budget,
         actual_model_cost_cny=actual_model_cost,
         modal_compute_upper_cny=envelope.modal_compute_upper_cny,
         modal_image_build_reserve_cny=envelope.modal_image_build_reserve_cny,
         total_cost_upper_cny=total_upper,
-        run_count=len(bundle.rows),
-        expected_run_count=len(stage_run_plan.runs),
-        passed=total_upper <= approved_budget,
+        run_count=len(bundle.rows) - len(source_ids),
+        expected_run_count=len(stage_run_plan.runs) - len(source_ids),
+        passed=total_upper <= execution_budget,
     )
     _write_json(output / "budget.json", budget)
     campaign = pilot_campaign_budget(
@@ -725,17 +1104,75 @@ def _export_stage_rows(
     lineage_id: str,
     stage_run_plan: RunPlanV2,
     allow_incomplete_run_plan: bool,
+    source_bundle: AgentResultBundle | None = None,
+    source_summary: ExportSummary | None = None,
 ) -> AgentResultBundle:
     flash = _flash_model(registration)
-    bundle = export_agent_rows(
-        log_dir,
-        output / "agent-results-bundle.json",
-        expected_model_ids={flash.returned_id},
-        model_pricing={flash.returned_id: flash.pricing_cny},
+    if source_bundle is None:
+        bundle = export_agent_rows(
+            log_dir,
+            output / "agent-results-bundle.json",
+            expected_model_ids={flash.returned_id},
+            model_pricing={flash.returned_id: flash.pricing_cny},
+            lineage_id=lineage_id,
+            run_plan=stage_run_plan,
+            summary_output=output / "cleaning.json",
+            allow_incomplete_run_plan=allow_incomplete_run_plan,
+        )
+        _write_json(output / "pilot-agent-results.json", bundle.rows)
+        return bundle
+    if source_summary is None:
+        raise ValueError("resume source summary is required")
+
+    with tempfile.TemporaryDirectory(prefix=".resume-export-", dir=output.parent) as temporary:
+        temporary_root = Path(temporary)
+        new_bundle = export_agent_rows(
+            log_dir,
+            temporary_root / "agent-results-bundle.json",
+            expected_model_ids={flash.returned_id},
+            model_pricing={flash.returned_id: flash.pricing_cny},
+            lineage_id=lineage_id,
+            run_plan=stage_run_plan,
+            summary_output=temporary_root / "cleaning.json",
+            allow_incomplete_run_plan=True,
+        )
+        new_summary = ExportSummary.model_validate_json(
+            (temporary_root / "cleaning.json").read_bytes(),
+            strict=True,
+        )
+    source_ids = {row.sample_id for row in source_bundle.rows}
+    new_ids = {row.sample_id for row in new_bundle.rows}
+    if source_ids & new_ids:
+        raise ValueError("resume logs duplicate source run identities")
+    rows = tuple(
+        sorted(
+            (*source_bundle.rows, *new_bundle.rows),
+            key=lambda row: row.sample_id.encode("utf-8"),
+        )
+    )
+    expected_ids = {run.sample_id for run in stage_run_plan.runs}
+    actual_ids = {row.sample_id for row in rows}
+    if actual_ids != expected_ids and not (
+        allow_incomplete_run_plan and actual_ids < expected_ids
+    ):
+        raise ValueError("resumed rows do not match the frozen run plan")
+    bundle = AgentResultBundle(
         lineage_id=lineage_id,
-        run_plan=stage_run_plan,
-        summary_output=output / "cleaning.json",
-        allow_incomplete_run_plan=allow_incomplete_run_plan,
+        run_plan_sha256=digest_value(stage_run_plan.model_dump(mode="json")),
+        rows=rows,
+    )
+    summary = ExportSummary(
+        log_count=source_summary.log_count + new_summary.log_count,
+        row_count=len(rows),
+        artifact_incomplete_count=sum(not row.artifact_complete for row in rows),
+        model_ids=tuple(sorted({row.model_id for row in rows})),
+        conditions=tuple(sorted({row.condition for row in rows})),
+    )
+    (output / "agent-results-bundle.json").write_bytes(
+        canonical_json(bundle.model_dump(mode="json"))
+    )
+    (output / "cleaning.json").write_bytes(
+        canonical_json(summary.model_dump(mode="json"))
     )
     _write_json(output / "pilot-agent-results.json", bundle.rows)
     return bundle
@@ -801,6 +1238,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--campaign-reservation-id", required=True)
     parser.add_argument("--campaign-ledger-commit-sha", required=True)
     parser.add_argument("--confirmation", action="store_true")
+    parser.add_argument("--resume-root", type=Path)
+    parser.add_argument("--resume-run-metadata", type=Path)
+    parser.add_argument("--resume-artifact-metadata", type=Path)
+    parser.add_argument("--resume-source-run-id", type=int)
+    parser.add_argument("--resume-source-artifact-sha256")
+    parser.add_argument("--resume-source-workflow-commit")
+    parser.add_argument("--resume-source-reservation-id")
     arguments = parser.parse_args(argv)
     effect = run_flash_stage(
         arguments.root,
@@ -812,6 +1256,13 @@ def main(argv: list[str] | None = None) -> int:
         campaign_reservation_id=arguments.campaign_reservation_id,
         campaign_ledger_commit_sha=arguments.campaign_ledger_commit_sha,
         confirmation=arguments.confirmation,
+        resume_root=arguments.resume_root,
+        resume_run_metadata=arguments.resume_run_metadata,
+        resume_artifact_metadata=arguments.resume_artifact_metadata,
+        resume_source_run_id=arguments.resume_source_run_id,
+        resume_source_artifact_sha256=arguments.resume_source_artifact_sha256,
+        resume_source_workflow_commit=arguments.resume_source_workflow_commit,
+        resume_source_reservation_id=arguments.resume_source_reservation_id,
     )
     print(effect.model_dump_json())
     return 0

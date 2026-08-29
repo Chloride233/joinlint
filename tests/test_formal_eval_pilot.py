@@ -1780,9 +1780,13 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert "inputs.stage != 'flash_full_dataset_v1'" in text
     assert "inputs.stage != 'semantic_join_safety_v1'" in text
     assert "inputs.stage != 'semantic_join_contract_safety_v1'" in text
+    assert "inputs.stage != 'semantic_join_contract_safety_resume_v1'" in text
     assert "inputs.stage == 'flash_full_dataset_v1' && inputs.budget_cny != '7.4'" in text
     assert "inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8'" in text
     assert "inputs.stage == 'semantic_join_contract_safety_v1'" in text
+    assert "inputs.stage == 'semantic_join_contract_safety_resume_v1'" in text
+    assert "inputs.budget_cny != '6.35'" in text
+    assert "inputs.resume_run_id != '33242737801'" in text
     assert "inputs.stage == 'semantic_join_safety_confirmation_v1'" in text
     assert "inputs.budget_cny != '5.53'" in text
     assert workflow["on"]["workflow_dispatch"]["inputs"]["pilot_commit"]["default"] == (
@@ -1831,6 +1835,7 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         "CAMPAIGN_RESERVATION_ID",
             "CAMPAIGN_LEDGER_COMMIT_SHA",
             "PILOT_STAGE_CONFIRMATION_ARG",
+            "PILOT_STAGE_RESUME_ARGS",
             "PYTHONPATH",
     }
     assert "--campaign-budget-cny \"$CAMPAIGN_BUDGET_CNY\"" in run_step["run"]
@@ -1855,6 +1860,37 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         if step.get("name") == "Verify calibration attestation binding"
     )
     assert "b53a95d55b305d5eb7de3cbaffc3c0633bc07bc5" in calibration_verify["run"]
+    resume_restore = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Restore pinned incomplete formal stage"
+    )
+    resume_verify = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Verify sanitized incomplete formal stage"
+    )
+    resume_binding = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Verify incomplete formal stage resume binding"
+    )
+    assert resume_restore["if"] == (
+        "inputs.stage == 'semantic_join_contract_safety_resume_v1'"
+    )
+    assert set(resume_restore["env"]) == {"GH_TOKEN", "RESUME_RUN_ID"}
+    assert "actions/runs/$RESUME_RUN_ID/artifacts" in resume_restore["run"]
+    assert "joinlint-formal-pilot-stage-sanitized" in resume_restore["run"]
+    assert "--profile pilot-stage" in resume_verify["run"]
+    assert "benchmarks.formal_eval.pilot_resume" in resume_binding["run"]
+    assert "--source-run-id 33242737801" in resume_binding["run"]
+    assert "1ada78564601993b5804713e02c4aaeb6a897db20fff9dfbdb72a856a871ec5d" in resume_binding["run"]
+    assert set(resume_binding["env"]) == {"PYTHONPATH"}
+    resume_args = run_step["env"]["PILOT_STAGE_RESUME_ARGS"]
+    assert "--resume-source-run-id 33242737801" in resume_args
+    assert "1ada78564601993b5804713e02c4aaeb6a897db20fff9dfbdb72a856a871ec5d" in resume_args
+    assert "a29d218fd882ce9f9081b1d8abc2995c364c2776" in resume_args
+    assert "549120889e6127f845bbf6656d33f81cd777d977684bdf7327e6e39cf9d3e8e1" in resume_args
     step_names = [step.get("name") for step in job["steps"]]
     reservation = next(
         step
@@ -1870,6 +1906,12 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     assert step_names.index("Verify calibration attestation binding") < step_names.index(
         reservation["name"]
     )
+    assert step_names.index(resume_verify["name"]) < step_names.index(
+        reservation["name"]
+    )
+    assert step_names.index(resume_binding["name"]) < step_names.index(
+        reservation["name"]
+    )
     assert step_names.index(reservation["name"]) < step_names.index(
         run_step["name"]
     )
@@ -1879,6 +1921,9 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
         "PILOT_RESERVATION_MODE"
     ]
     assert "'pilot_stage_contract_safety'" in reservation["env"][
+        "PILOT_RESERVATION_MODE"
+    ]
+    assert "'pilot_stage_contract_safety_resume'" in reservation["env"][
         "PILOT_RESERVATION_MODE"
     ]
     assert '--mode "$PILOT_RESERVATION_MODE"' in reservation["run"]
@@ -1893,16 +1938,24 @@ def test_pilot_workflow_requires_exact_approval_and_scopes_paid_secrets() -> Non
     sanitized_upload = next(
         step
         for step in job["steps"]
-        if (step.get("with") or {}).get("name")
-        == "joinlint-formal-pilot-stage-sanitized"
+        if "steps.scan_pilot_stage_sanitized.outcome == 'success'"
+        in step.get("if", "")
+        and str(step.get("uses", "")).startswith("actions/upload-artifact@")
     )
     assert sanitized_scan["id"] == "scan_pilot_stage_sanitized"
-    assert "--profile pilot-stage" in sanitized_scan["run"]
+    assert '--profile "$PILOT_STAGE_ARTIFACT_PROFILE"' in sanitized_scan["run"]
+    assert "pilot-stage-resume" in sanitized_scan["env"][
+        "PILOT_STAGE_ARTIFACT_PROFILE"
+    ]
     assert (
         "steps.scan_pilot_stage_sanitized.outcome == 'success'"
         in sanitized_upload["if"]
     )
     assert sanitized_upload["with"]["if-no-files-found"] == "error"
+    assert "joinlint-formal-pilot-stage-resume-sanitized" in sanitized_upload["with"][
+        "name"
+    ]
+    assert "joinlint-formal-pilot-stage-sanitized" in sanitized_upload["with"]["name"]
 
 
 def test_pilot_canary_workflow_has_an_independent_spend_gate() -> None:

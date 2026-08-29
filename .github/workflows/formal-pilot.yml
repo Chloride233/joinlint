@@ -22,6 +22,7 @@ on:
           - flash_full_dataset_v1
           - semantic_join_safety_v1
           - semantic_join_contract_safety_v1
+          - semantic_join_contract_safety_resume_v1
           - semantic_join_safety_confirmation_v1
           - full
       campaign_budget_cny:
@@ -54,6 +55,11 @@ on:
         required: true
         default: ""
         type: string
+      resume_run_id:
+        description: Pinned failed formal run ID for an infrastructure resume
+        required: true
+        default: "0"
+        type: string
 
 permissions:
   # The protected, manually dispatched Pilot needs this scope to restore the
@@ -79,11 +85,14 @@ jobs:
           (inputs.stage != 'flash_full_dataset_v1' &&
           inputs.stage != 'semantic_join_safety_v1' &&
           inputs.stage != 'semantic_join_contract_safety_v1' &&
+          inputs.stage != 'semantic_join_contract_safety_resume_v1' &&
           inputs.stage != 'semantic_join_safety_confirmation_v1') ||
           (inputs.stage == 'flash_full_dataset_v1' && inputs.budget_cny != '7.4') ||
           (inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8') ||
           (inputs.stage == 'semantic_join_contract_safety_v1' &&
           inputs.budget_cny != '8') ||
+          (inputs.stage == 'semantic_join_contract_safety_resume_v1' &&
+          (inputs.budget_cny != '6.35' || inputs.resume_run_id != '33242737801')) ||
           (inputs.stage == 'semantic_join_safety_confirmation_v1' &&
           inputs.budget_cny != '5.53')
         run: exit 1
@@ -158,12 +167,51 @@ jobs:
           --current-commit "${{ steps.pilot_commit.outputs.sha }}"
           --expected-workflow-commit b53a95d55b305d5eb7de3cbaffc3c0633bc07bc5
           --repository "$GITHUB_REPOSITORY"
+      - name: Restore pinned incomplete formal stage
+        if: inputs.stage == 'semantic_join_contract_safety_resume_v1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+        run: |
+          mkdir -p resume-source/artifact
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID" \
+            > resume-source/run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID/artifacts" \
+            > resume-source/artifacts.json
+          gh run download "$RESUME_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name joinlint-formal-pilot-stage-sanitized \
+            --dir resume-source/artifact
+      - name: Verify sanitized incomplete formal stage
+        if: inputs.stage == 'semantic_join_contract_safety_resume_v1'
+        working-directory: .workflow-control
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-control/src:${{ github.workspace }}/.workflow-control
+        run: >-
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile pilot-stage
+          --root "$GITHUB_WORKSPACE/resume-source/artifact"
+      - name: Verify incomplete formal stage resume binding
+        if: inputs.stage == 'semantic_join_contract_safety_resume_v1'
+        working-directory: .workflow-control
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-control/src:${{ github.workspace }}/.workflow-control
+        run: >-
+          python -m benchmarks.formal_eval.pilot_resume
+          --root "$GITHUB_WORKSPACE/frozen-pilot-input"
+          --source-root "$GITHUB_WORKSPACE/resume-source/artifact"
+          --run-metadata "$GITHUB_WORKSPACE/resume-source/run.json"
+          --artifact-metadata "$GITHUB_WORKSPACE/resume-source/artifacts.json"
+          --source-run-id 33242737801
+          --source-artifact-sha256 1ada78564601993b5804713e02c4aaeb6a897db20fff9dfbdb72a856a871ec5d
+          --source-workflow-commit a29d218fd882ce9f9081b1d8abc2995c364c2776
+          --source-reservation-id 549120889e6127f845bbf6656d33f81cd777d977684bdf7327e6e39cf9d3e8e1
       - name: Reserve Pilot stage budget
         id: campaign_reservation
         working-directory: .workflow-control
         env:
           GH_TOKEN: ${{ github.token }}
-          PILOT_RESERVATION_MODE: ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && 'pilot_stage_safety_confirmation' || inputs.stage == 'semantic_join_contract_safety_v1' && 'pilot_stage_contract_safety' || inputs.stage == 'semantic_join_safety_v1' && 'pilot_stage_safety' || 'pilot_stage' }}
+          PILOT_RESERVATION_MODE: ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && 'pilot_stage_safety_confirmation' || inputs.stage == 'semantic_join_contract_safety_resume_v1' && 'pilot_stage_contract_safety_resume' || inputs.stage == 'semantic_join_contract_safety_v1' && 'pilot_stage_contract_safety' || inputs.stage == 'semantic_join_safety_v1' && 'pilot_stage_safety' || 'pilot_stage' }}
         run: >-
           python -m benchmarks.formal_eval.campaign_reservation
           reserve
@@ -189,6 +237,7 @@ jobs:
           CAMPAIGN_RESERVATION_ID: ${{ steps.campaign_reservation.outputs.campaign_reservation_id }}
           CAMPAIGN_LEDGER_COMMIT_SHA: ${{ steps.campaign_reservation.outputs.campaign_ledger_commit_sha }}
           PILOT_STAGE_CONFIRMATION_ARG: ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && '--confirmation' || '' }}
+          PILOT_STAGE_RESUME_ARGS: ${{ inputs.stage == 'semantic_join_contract_safety_resume_v1' && format('--resume-root {0}/resume-source/artifact --resume-run-metadata {0}/resume-source/run.json --resume-artifact-metadata {0}/resume-source/artifacts.json --resume-source-run-id 33242737801 --resume-source-artifact-sha256 1ada78564601993b5804713e02c4aaeb6a897db20fff9dfbdb72a856a871ec5d --resume-source-workflow-commit a29d218fd882ce9f9081b1d8abc2995c364c2776 --resume-source-reservation-id 549120889e6127f845bbf6656d33f81cd777d977684bdf7327e6e39cf9d3e8e1', github.workspace) || '' }}
           PYTHONPATH: ${{ github.workspace }}/.workflow-control
         run: >-
           python -P "$GITHUB_WORKSPACE/.workflow-control/benchmarks/formal_eval/pilot_stage.py"
@@ -201,20 +250,22 @@ jobs:
           --campaign-reservation-id "$CAMPAIGN_RESERVATION_ID"
           --campaign-ledger-commit-sha "$CAMPAIGN_LEDGER_COMMIT_SHA"
           $PILOT_STAGE_CONFIRMATION_ARG
+          $PILOT_STAGE_RESUME_ARGS
       - name: Scan sanitized Pilot stage artifacts
         id: scan_pilot_stage_sanitized
         if: always() && steps.public_artifact_verifier.outcome == 'success'
         working-directory: .workflow-control
         env:
           PYTHONPATH: ${{ github.workspace }}/.workflow-control/src:${{ github.workspace }}/.workflow-control
+          PILOT_STAGE_ARTIFACT_PROFILE: ${{ inputs.stage == 'semantic_join_contract_safety_resume_v1' && 'pilot-stage-resume' || 'pilot-stage' }}
         run: >-
           python -m benchmarks.formal_eval.public_artifacts
-          --profile pilot-stage
+          --profile "$PILOT_STAGE_ARTIFACT_PROFILE"
           --root "$GITHUB_WORKSPACE/pilot-stage-artifacts"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && steps.scan_pilot_stage_sanitized.outcome == 'success'
         with:
-          name: joinlint-formal-pilot-stage-sanitized
+          name: ${{ inputs.stage == 'semantic_join_contract_safety_resume_v1' && 'joinlint-formal-pilot-stage-resume-sanitized' || 'joinlint-formal-pilot-stage-sanitized' }}
           path: pilot-stage-artifacts
           if-no-files-found: error
           retention-days: 90
