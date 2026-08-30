@@ -8,109 +8,78 @@ general release claim.
 Solid arrows are execution paths. Dashed arrows show a dependency or an
 explicitly excluded responsibility.
 
+## Product runtime
+
 ```mermaid
 flowchart TB
-    U["Natural-language request"] --> A["AI SQL Agent / Harness<br/>selects entities, fields, and target grain"]
-    A -.->|"JoinLint does not establish"| GAP["Upstream responsibility<br/>business intent and entity-set completeness"]
+    U["Natural-language request"] --> A["AI SQL Agent<br/>selects entities, fields, and target grain"]
+    A -.->|"JoinLint does not establish"| GAP["Business intent and<br/>entity-set completeness"]
 
-    subgraph PRODUCT["Current product: Stage 1 Developer Preview"]
-        direction TB
+    A -->|"inspect schema"| DBMCP["Separate database MCP"]
+    DBMCP --> DB["SQLite database"]
 
+    subgraph PRODUCT["JoinLint Stage 1 Developer Preview"]
         MCP["Local read-only STDIO MCP<br/>exactly two tools"]
-        PLAN["get_join_plan<br/>2–8 entity refs, at most 4 hops"]
-        VALIDATE["validate_sql<br/>final SQL plus optional plan_id"]
-        SERVICE["Deterministic runtime service"]
+        PLAN["get_join_plan<br/>returns immutable Join Proof"]
+        VALIDATE["validate_sql<br/>parses final SQL and binds proof"]
+        RUNTIME["Deterministic runtime<br/>relationship evidence + graph planning"]
+        INPUTS["SQLite source + declared FK<br/>+ curated model"]
+        PARSER["SQLGlot parse-only validator"]
+        CACHE["Private sanitized<br/>content-addressed cache"]
+        OUTPUT["Scope + findings + recovery guidance<br/>execution_count = 0"]
+        CLI["Separate human CLI<br/>scan → candidates → accept → check"]
 
-        SOURCE["Trusted project-relative SQLite source<br/>explicit or bounded discovery"]
-        REL["Authorized relationships<br/>declared foreign keys plus curated model"]
-        EVIDENCE["Current exact evidence<br/>uniqueness, cardinality, grain, fan-out"]
-        GRAPH["Relationship graph planner"]
-        PARSER["SQLGlot parse-only validation<br/>SELECT / WITH"]
-        CACHE["Private user cache<br/>sanitized and content-addressed"]
-        PROOF["Immutable Join Proof<br/>plan_id plus evidence digest"]
-        RESULT["Structured result<br/>scope, findings, recovery guidance<br/>execution_count = 0"]
-
-        CLI["Separate human-governed CLI<br/>scan → candidates → accept<br/>baseline → check"]
-
-        MCP --> PLAN
-        MCP --> VALIDATE
-        PLAN --> SERVICE
-        VALIDATE --> PARSER
-        PARSER --> SERVICE
-
-        SOURCE --> REL
-        CLI --> REL
-        REL --> EVIDENCE
-        EVIDENCE --> GRAPH
-        GRAPH --> SERVICE
-        SERVICE <--> CACHE
-        SERVICE --> PROOF
-        SERVICE --> RESULT
+        MCP --> PLAN --> RUNTIME
+        MCP --> VALIDATE --> PARSER --> RUNTIME
+        INPUTS --> RUNTIME
+        CLI --> INPUTS
+        RUNTIME <--> CACHE
+        RUNTIME --> OUTPUT
     end
 
-    A -->|"1. request a Join Proof"| MCP
-    PROOF -->|"return proof"| A
-    A -->|"2. submit final SQL and plan_id"| VALIDATE
-    RESULT -->|"pass, block, or inconclusive"| A
+    A -->|"1. entity refs and grain"| MCP
+    OUTPUT -->|"proof or inconclusive"| A
+    A -->|"2. final SQL and plan_id"| VALIDATE
+    OUTPUT -->|"execute only after pass"| DBMCP
+    INPUTS -.->|"read evidence only"| DB
 
-    DBMCP["Separate database MCP<br/>schema inspection and SQL execution"]
-    DB["SQLite database"]
+    MCP -.->|"explicitly outside scope"| BOUNDARY["Business semantics, metrics, filters,<br/>answer correctness, relationship discovery,<br/>and complete entity selection"]
+```
 
-    A -->|"inspect schema"| DBMCP
-    RESULT -->|"continue only after validation passes"| DBMCP
-    DBMCP --> DB
-    SOURCE -.->|"JoinLint reads evidence; it never executes SQL"| DB
+## Formal experiment and evidence path
 
-    BOUNDARY["Explicitly outside JoinLint scope<br/>business semantics, metric definitions, filters,<br/>answer correctness, and complete entity selection"]
-    MCP -.->|"not_validated_scope"| BOUNDARY
+```mermaid
+flowchart TB
+    TASKS["Frozen tasks and data<br/>trusted query contract when applicable"]
+    LOCK["Input lock + run plan + lineage<br/>bind commit, samples, hosts, and model"]
+    GUARD["GitHub admission gate<br/>authorization, digests, duplicates, environment"]
+    BUDGET["Atomic campaign ledger<br/>reserve → consume → settle"]
+    INCIDENTS["Failure ledger<br/>Pattern-Key + recurrence guard"]
 
-    subgraph EXPERIMENT["Current experiment architecture: frozen, paired, traceable, fail-closed"]
-        direction TB
+    RUNNER["Inspect AI harness<br/>GitHub Actions + Modal<br/>fixed Codex / Claude host and model"]
+    CONTROL["Control<br/>same task, model, host, database MCP<br/>without JoinLint"]
+    TREATMENT["Treatment<br/>only difference: current JoinLint MCP"]
+    PRODUCT["Same Stage 1<br/>product implementation"]
 
-        TASKS["Frozen tasks and data<br/>trusted query contract when applicable"]
-        LOCK["Input lock + run plan + lineage<br/>bind commit, samples, hosts, and model"]
-        GUARD["GitHub admission gate<br/>authorization, archive digest, duplicates, environment"]
-        BUDGET["Atomic campaign ledger<br/>reserve → consume → settle"]
-        INCIDENTS["Evaluation and CI failure ledger<br/>Pattern-Key plus deterministic recurrence guard"]
+    TRACE["Trace and mechanism scorer<br/>plan call / grounding / SQL validation / protocol"]
+    ITT["Paired intention-to-treat rows<br/>isolated infrastructure failures remain zeros"]
+    STATS["Join-Correct Task Completion<br/>exact two-sided McNemar test"]
+    VERIFY["Independent strict verifier<br/>inventory, digests, run identity"]
+    PUBLIC["Durable sanitized evidence<br/>result docs + Draft Release + public ledger"]
+    RAW["Private raw traces<br/>runner-ephemeral or ignored local preservation"]
 
-        RUNNER["Inspect AI harness<br/>GitHub Actions + Modal<br/>fixed Codex / Claude host and model"]
-        CONTROL["Control<br/>same task, model, host, and database MCP<br/>without JoinLint"]
-        TREATMENT["Treatment<br/>only experimental difference: add current JoinLint MCP"]
+    TASKS --> LOCK --> GUARD --> RUNNER
+    BUDGET --> GUARD
+    INCIDENTS --> GUARD
+    RUNNER --> CONTROL --> TRACE
+    RUNNER --> TREATMENT --> TRACE
+    PRODUCT -.->|"reused, not an evaluation fork"| TREATMENT
+    RUNNER -.-> RAW
+    TRACE --> ITT --> STATS --> VERIFY --> PUBLIC
 
-        TRACE["Trace and mechanism scoring<br/>plan_called / MCP-grounded / SQL-validated / protocol"]
-        ITT["Paired intention-to-treat rows<br/>isolated infrastructure failures remain zeros"]
-        STATS["Primary analysis<br/>Join-Correct Task Completion<br/>exact two-sided McNemar test"]
-        VERIFY["Independent strict verifier<br/>inventory, digests, and run identity"]
-        PUBLIC["Durable sanitized evidence<br/>result docs + Draft Release + public ledger"]
-        RAW["Private raw Inspect traces<br/>runner-ephemeral or ignored local preservation"]
-
-        TASKS --> LOCK
-        LOCK --> GUARD
-        BUDGET --> GUARD
-        INCIDENTS --> GUARD
-        GUARD --> RUNNER
-        RUNNER --> CONTROL
-        RUNNER --> TREATMENT
-        CONTROL --> TRACE
-        TREATMENT --> TRACE
-        TRACE --> ITT
-        ITT --> STATS
-        STATS --> VERIFY
-        VERIFY --> PUBLIC
-        RUNNER -.-> RAW
-    end
-
-    TREATMENT -.->|"uses the same product implementation"| MCP
-    DBMCP -.->|"shared dependency"| CONTROL
-    DBMCP -.->|"shared dependency"| TREATMENT
-
-    POSITIVE["Supported narrow result<br/>trusted complete contract plus opaque relationships:<br/>control 6/20 → treatment 20/20; p = 0.0001220703125"]
-    COUNTER["Constraint evidence<br/>semantic-safety experiments were negative;<br/>local natural BIRD probe was a negative diagnostic"]
-    LIMIT["Current claim boundary<br/>no general natural-language SQL, business-semantic,<br/>relationship-discovery, or entity-selection claim"]
-
-    STATS --> POSITIVE
-    STATS --> COUNTER
-    POSITIVE --> LIMIT
+    STATS --> POSITIVE["Supported narrow result<br/>opaque-relationship stress:<br/>6/20 → 20/20; p = 0.0001220703125"]
+    STATS --> COUNTER["Constraint evidence<br/>semantic-safety negative;<br/>local BIRD negative diagnostic"]
+    POSITIVE --> LIMIT["No general natural-language SQL,<br/>business-semantic, discovery,<br/>or entity-selection claim"]
     COUNTER --> LIMIT
 ```
 

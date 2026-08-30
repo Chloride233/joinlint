@@ -6,6 +6,43 @@ Corrections, insights, and knowledge gaps captured during development.
 
 ---
 
+## [LRN-20260830-004] best_practice
+
+**Logged**: 2026-08-30T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: docs
+
+### Summary
+
+Render architecture diagrams on their actual documentation surface before
+accepting them; a syntactically valid all-in-one Mermaid graph can still be
+unreadable at the repository's default preview width.
+
+### Details
+
+The first combined product-and-experiment graph rendered successfully on
+GitHub, but its node labels were too small without zooming. Splitting the same
+facts into two task-oriented diagrams improved readability without introducing
+new concepts or decorative structure.
+
+### Suggested Action
+
+For documentation diagrams, keep one execution question per panel and perform
+one real preview check after rendering.
+
+### Metadata
+
+- Source: visual_review
+- Related Files: `docs/current-architecture.md`
+- Tags: docs, mermaid, visual-qa
+- Pattern-Key: docs.render_architecture_before_acceptance
+- Recurrence-Count: 1
+- First-Seen: 2026-08-30
+- Last-Seen: 2026-08-30
+
+---
+
 ## [LRN-20260830-003] best_practice
 
 **Logged**: 2026-08-30T00:00:00+08:00
