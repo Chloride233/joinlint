@@ -270,6 +270,7 @@ jobs:
         id: scan_formal_sanitized
         if: >-
           always() &&
+          hashFiles('formal-artifacts/**') != '' &&
           steps.public_artifact_verifier.outcome == 'success'
         working-directory: .workflow-verifier
         env:

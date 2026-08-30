@@ -56,6 +56,7 @@ class _ReservationPolicy:
     workflow_path: str
     job: str
     upper_micro_cny: int
+    cli_enabled: bool = False
 
 
 _POLICIES = {
@@ -68,6 +69,7 @@ _POLICIES = {
         workflow_path=".github/workflows/formal-pilot-canary.yml",
         job="canary",
         upper_micro_cny=4_000_000,
+        cli_enabled=True,
     ),
     "pilot": _ReservationPolicy(
         workflow_path=".github/workflows/formal-pilot.yml",
@@ -78,33 +80,43 @@ _POLICIES = {
         workflow_path=".github/workflows/formal-pilot.yml",
         job="pilot",
         upper_micro_cny=7_400_000,
+        cli_enabled=True,
     ),
     "pilot_stage_safety": _ReservationPolicy(
         workflow_path=".github/workflows/formal-pilot.yml",
         job="pilot",
         upper_micro_cny=8_000_000,
+        cli_enabled=True,
     ),
     "pilot_stage_contract_safety": _ReservationPolicy(
         workflow_path=".github/workflows/formal-pilot.yml",
         job="pilot",
         upper_micro_cny=8_000_000,
+        cli_enabled=True,
     ),
     "pilot_stage_contract_ambiguity": _ReservationPolicy(
         workflow_path=".github/workflows/formal-pilot.yml",
         job="pilot",
         upper_micro_cny=8_000_000,
+        cli_enabled=True,
     ),
     "pilot_stage_contract_safety_resume": _ReservationPolicy(
         workflow_path=".github/workflows/formal-pilot.yml",
         job="pilot",
         upper_micro_cny=6_350_000,
+        cli_enabled=True,
     ),
     "pilot_stage_safety_confirmation": _ReservationPolicy(
         workflow_path=".github/workflows/formal-pilot.yml",
         job="pilot",
         upper_micro_cny=5_530_000,
+        cli_enabled=True,
     ),
 }
+
+_RESERVATION_CLI_MODES = tuple(
+    mode for mode, policy in _POLICIES.items() if policy.cli_enabled
+)
 
 _EXPECTED_WORKFLOW_INPUTS = {
     "readiness": {
@@ -555,15 +567,7 @@ def main(
     reserve = command.add_parser("reserve")
     reserve.add_argument(
         "--mode",
-        choices=(
-            "calibration",
-            "pilot_stage",
-            "pilot_stage_safety",
-            "pilot_stage_contract_safety",
-            "pilot_stage_contract_ambiguity",
-            "pilot_stage_contract_safety_resume",
-            "pilot_stage_safety_confirmation",
-        ),
+        choices=_RESERVATION_CLI_MODES,
         required=True,
     )
     reserve.add_argument("--campaign-id", required=True)

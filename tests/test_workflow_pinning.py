@@ -45,3 +45,18 @@ def test_all_workflow_actions_use_approved_immutable_commits() -> None:
 
     assert workflow_paths
     assert not violations, "unapproved workflow actions:\n" + "\n".join(violations)
+
+
+def test_ci_runs_once_per_feature_branch_update() -> None:
+    workflow = yaml.load(
+        Path(".github/workflows/ci.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+
+    assert set(workflow["on"]) == {"push", "pull_request"}
+    assert workflow["on"]["push"] == {"branches": ["main"]}
+    assert workflow["on"]["pull_request"] == ""
+    assert workflow["concurrency"] == {
+        "group": "ci-${{ github.workflow }}-${{ github.ref }}",
+        "cancel-in-progress": "true",
+    }

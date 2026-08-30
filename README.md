@@ -158,6 +158,9 @@ completed 20-pair opaque-relationship stress experiment, control completed
 synthetic stress scope; it does not estimate natural SQL error rates, prove
 business meaning, or show relationship discovery. See the
 [effect results](docs/opaque-relationship-effect-results.md).
+The [evaluation and failure ledger](docs/evaluation-ledger.md) keeps the full
+positive, negative, incomplete, and local experiment history together with the
+recurring CI and harness root causes; it is the starting point before any retry.
 
 The formal workflow also has a pinned infrastructure-resume mode. It accepts
 only the exact failed source run and server-reported artifact digest, preserves

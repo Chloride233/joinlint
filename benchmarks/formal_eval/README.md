@@ -13,6 +13,11 @@ refusal when an oracle path exists, timeout, malformed output, missing joins,
 extra joins, and validation bypass remain failures. A refusal is successful
 only when the frozen oracle also has no safe path.
 
+The concise cross-run history is maintained in
+[`docs/evaluation-ledger.md`](../../docs/evaluation-ledger.md). Consult it
+before retrying a failed run so infrastructure, admission, and product outcomes
+are not conflated.
+
 ## Free deterministic smoke
 
 After installing `.[dev,eval]`, run:
@@ -356,7 +361,23 @@ message/token limits remain explicit Agent outcomes and are not relabeled as
 infrastructure failures.
 
 The frozen inputs are packaged as one access-controlled GitHub Draft Release
-asset. The manual workflow checks out the full commit bound to that asset,
+asset. Build the asset with the repository helper, never with a hand-written
+macOS tar command:
+
+```bash
+python -m benchmarks.formal_eval.release_archive create \
+  --root <frozen-input-directory> \
+  --output /tmp/pilot-input.tar.gz
+python -m benchmarks.formal_eval.release_archive verify \
+  --archive /tmp/pilot-input-readback.tar.gz
+```
+
+The second command is run on the asset downloaded back from the Draft Release;
+its SHA-256 must match the uploaded asset before dispatch. The helper rejects
+AppleDouble files, extended-attribute headers, links, and special files, then
+round-trip verifies the frozen Pilot bundle.
+
+The manual workflow checks out the full commit bound to that asset,
 which remains correct even if the PR itself enters the default branch through
 a merge or squash commit. After download and extraction, the workflow checks
 the complete content lock before proceeding. This avoids requiring a developer

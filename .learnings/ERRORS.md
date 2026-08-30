@@ -4,6 +4,307 @@ Command failures and integration errors.
 
 ---
 
+## [ERR-20260830-008] artifact_scan_cascaded_missing_root
+
+**Logged**: 2026-08-30T00:00:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: ci
+
+### Summary
+
+Formal workflows used `always()` for sanitized-artifact scanning, so an
+upstream failure that created no artifact directory could produce a second,
+misleading scanner error.
+
+### Suggested Fix
+
+Run the scanner only when the verifier checkout succeeded and the expected
+artifact tree exists.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `.github/workflows/formal-evaluation.yml`,
+  `.github/workflows/formal-pilot.yml`,
+  `.github/workflows/formal-pilot-canary.yml`
+- Pattern-Key: eval.artifact_scan.missing_root
+- Recurrence-Count: 2
+- Last-Seen: 2026-08-30
+
+### Resolution
+
+- **Resolved**: 2026-08-30T00:00:00+08:00
+- **Notes**: All public formal artifact scans now require a matching tree; the
+  workflow contract test enforces the condition.
+
+---
+
+## [ERR-20260830-007] duplicate_ci_push_pr_notifications
+
+**Logged**: 2026-08-30T00:00:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: ci
+
+### Summary
+
+Ordinary CI ran once for a feature-branch push and again for the corresponding
+pull request update, duplicating both work and red failure notifications.
+
+### Context
+
+- The audit found 256 CI runs for 136 commits: 120 duplicate runs.
+- Twenty-eight red runs represented 17 unique failed commits; 11 failed
+  commits emitted both push and pull-request failures.
+
+### Suggested Fix
+
+Run push CI only on `main`, use pull-request CI for feature branches, and cancel
+superseded runs on the same ref.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `.github/workflows/ci.yml`,
+  `tests/test_workflow_pinning.py`
+- Pattern-Key: ci.duplicate_push_pr
+- Recurrence-Count: 11
+- Last-Seen: 2026-08-30
+
+### Resolution
+
+- **Resolved**: 2026-08-30T00:00:00+08:00
+- **Notes**: CI trigger and concurrency contracts now have a regression test.
+
+---
+
+## [ERR-20260830-006] phoenix_container_name_survived_stop
+
+**Logged**: 2026-08-30T15:44:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: eval
+
+### Summary
+
+The existing Phoenix container was not configured for auto-removal, so stopping
+it did not release its name before the sanitized review database restart.
+
+### Error
+
+```text
+Conflict. The container name "/joinlint-phoenix" is already in use
+```
+
+### Suggested Fix
+
+Inspect the stopped container identity and `AutoRemove` flag, remove only that
+container shell after its data bind is separated, then restart with `--rm`.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `benchmarks/formal_eval/README.md`
+
+### Resolution
+
+- **Resolved**: 2026-08-30T15:45:00+08:00
+- **Notes**: Verified the exact stopped Phoenix 20.2.1 container, removed it, and restarted the loopback-only service with `--rm`.
+
+---
+
+## [ERR-20260830-005] in_app_browser_edge_button_click
+
+**Logged**: 2026-08-30T15:48:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+The in-app browser located Phoenix's right-edge annotation button but could not
+dispatch a mouse event to its reported coordinates.
+
+### Error
+
+```text
+Unable to translate Input.dispatchMouseEvent: No element found at point
+```
+
+### Context
+
+- The button remained visible and enabled in the DOM snapshot.
+- The failure affected only the optional annotation-form interaction check.
+
+### Suggested Fix
+
+Use keyboard activation for right-edge controls after locating them, and keep
+the DOM snapshot as the acceptance source.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `benchmarks/formal_eval/phoenix_review.py`
+
+### Resolution
+
+- **Resolved**: 2026-08-30T15:48:00+08:00
+- **Notes**: Retried the control through keyboard activation without creating an annotation.
+
+---
+
+## [ERR-20260830-004] in_app_browser_visibility_docs_shape
+
+**Logged**: 2026-08-30T15:46:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+The visibility capability exposes its usage note through `info.description`,
+not a callable `docs()` method.
+
+### Error
+
+```text
+(intermediate value).docs is not a function
+```
+
+### Suggested Fix
+
+Read the capability object before invoking `set(true)`.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `benchmarks/formal_eval/phoenix_review.py`
+
+### Resolution
+
+- **Resolved**: 2026-08-30T15:46:00+08:00
+- **Notes**: Read `info.description` and retained background visibility until final delivery.
+
+---
+
+## [ERR-20260830-003] in_app_browser_networkidle
+
+**Logged**: 2026-08-30T15:36:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+
+The in-app browser rejected the documented `networkidle` load-state option during local UI QA.
+
+### Error
+
+```text
+playwright_wait_for_load_state does not support networkidle
+```
+
+### Context
+
+- The Phoenix page navigation itself succeeded.
+- The failure was limited to the requested wait condition.
+
+### Suggested Fix
+
+Use the supported `domcontentloaded` state followed by a fresh DOM snapshot.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `benchmarks/formal_eval/phoenix_review.py`
+
+### Resolution
+
+- **Resolved**: 2026-08-30T15:36:00+08:00
+- **Notes**: Switched the UI acceptance check to `domcontentloaded` plus DOM inspection.
+
+---
+
+## [ERR-20260830-001] local_codex_exec_sandbox_state
+
+**Logged**: 2026-08-30T11:36:42+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+A local Codex CLI evaluation probe could not start inside the managed filesystem sandbox because the CLI needs writable state under the existing Codex home.
+
+### Error
+
+```text
+failed to open state_5.sqlite: attempt to write a readonly database
+failed to initialize in-process app-server client: Operation not permitted
+```
+
+### Context
+
+- The probe used `codex exec --ephemeral` with a read-only task sandbox.
+- The outer managed sandbox still made the Codex state database read-only.
+- No credential or token value was read or logged.
+
+### Suggested Fix
+
+Run the bounded `codex exec` process through the normal sandbox-escalation path while keeping the nested task sandbox read-only and the session ephemeral.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: local Codex state database
+
+### Resolution
+
+- **Resolved**: 2026-08-30T11:36:42+08:00
+- **Notes**: The identical sandbox-external probe returned `LOCAL_CODEX_OK` using the existing local login state.
+
+---
+
+## [ERR-20260830-002] local_codex_mcp_approval_cancellation
+
+**Logged**: 2026-08-30T11:51:32+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+Direct local Codex evaluation runs cancelled fixed MCP calls even with `approval_policy="never"` until the nested CLI approval boundary was explicitly bypassed.
+
+### Error
+
+```text
+user cancelled MCP tool call
+```
+
+### Context
+
+- The first treatment calibration exposed only the evaluation database and JoinLint MCP servers.
+- Shell, apps, plugins, computer use, workspace dependencies, and multi-agent features were disabled.
+- A separate startup failure occurred until the evaluation-only validation marker was pre-created; the final unguarded local design does not use that marker.
+
+### Suggested Fix
+
+For this bounded runner, use an ephemeral Codex process with all unrelated tools disabled, an isolated temporary working directory, and the CLI approval bypass inside the separately controlled outer sandbox escalation.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `benchmarks/formal_eval/database_mcp.py`, `benchmarks/formal_eval/recording_joinlint_mcp.py`
+
+### Resolution
+
+- **Resolved**: 2026-08-30T11:51:32+08:00
+- **Notes**: A treatment calibration completed `get_join_plan`, `validate_sql`, one read-only execution, and one accepted submission using the restricted tool surface.
+
+---
+
 ## [ERR-20260829-009] project_python_not_selected
 
 **Logged**: 2026-08-29T20:34:31+08:00
@@ -38,11 +339,15 @@ Use `.venv/bin/python` for local repository verification.
 
 - Reproducible: yes
 - Related Files: `pyproject.toml`
+- Pattern-Key: local.project_python_not_selected
+- Recurrence-Count: 2
+- Last-Seen: 2026-08-30
 
 ### Resolution
 
 - **Resolved**: 2026-08-29T20:34:31+08:00
-- **Notes**: Continued with `.venv/bin/python`.
+- **Notes**: Continued with `.venv/bin/python`; the failure recurred during the
+  2026-08-30 ledger audit and the same correction was applied.
 
 ---
 
@@ -157,12 +462,15 @@ a reservation policy mode is added.
 - Reproducible: yes
 - Related Files: `benchmarks/formal_eval/campaign_reservation.py`,
   `tests/test_formal_eval_campaign_reservation.py`
+- Pattern-Key: eval.reservation.cli_policy_drift
+- Recurrence-Count: 2
+- Last-Seen: 2026-08-29
 
 ### Resolution
 
 - **Resolved**: 2026-08-29T00:00:00+08:00
-- **Notes**: Added the missing choice and an actual CLI regression test in
-  commit `9c7f09f231eb9b073b283afd712a42e0ae48ce6e` before the successful retry.
+- **Notes**: The CLI choice list now derives from the policy table, and workflow
+  parity plus every enabled CLI mode are covered by regression tests.
 
 ---
 
@@ -200,11 +508,15 @@ not only the underlying policy table.
 - Reproducible: yes
 - Related Files: `benchmarks/formal_eval/campaign_reservation.py`,
   `tests/test_formal_eval_campaign_reservation.py`
+- Pattern-Key: eval.reservation.cli_policy_drift
+- Recurrence-Count: 2
+- Last-Seen: 2026-08-29
 
 ### Resolution
 
 - **Resolved**: 2026-08-29T00:00:00+08:00
-- **Notes**: Added the missing CLI choice and a regression test before retrying.
+- **Notes**: The CLI choice list now derives from the policy table, and workflow
+  parity plus every enabled CLI mode are covered by regression tests.
 
 ---
 
@@ -232,17 +544,24 @@ ValueError: required input is not frozen: databases/._education_v2.sqlite
 
 ### Suggested Fix
 
-Build release archives with `COPYFILE_DISABLE=1 tar --no-xattrs`, then download the uploaded asset, extract it, and rerun the frozen-input verifier before dispatch.
+Build release archives with the repository's deterministic archive helper,
+then download and verify the uploaded asset before dispatch.
 
 ### Metadata
 
 - Reproducible: yes
-- Related Files: `.github/workflows/formal-pilot-canary.yml`
+- Related Files: `benchmarks/formal_eval/release_archive.py`,
+  `tests/test_formal_eval_release_archive.py`
+- Pattern-Key: eval.archive.appledouble_xattr
+- Recurrence-Count: 2
+- Last-Seen: 2026-08-29
 
 ### Resolution
 
 - **Resolved**: 2026-08-29T00:00:00+08:00
-- **Notes**: Replaced the Draft Release asset; readback SHA-256 is c9bdcef881b9534a9d0f7f130e3fa1a835756e6a6b434f5cb2f8c38204bcf195 and extracted verification reports ready.
+- **Notes**: The first asset was replaced and verified. After the same class
+  recurred in run `33248395766`, a deterministic helper and AppleDouble/xattr
+  rejection tests replaced the manual tar recipe.
 
 ---
 
@@ -322,7 +641,9 @@ Deselect the three Inspect import tests for local verification and require the f
 ### Resolution
 
 - **Resolved**: 2026-08-29T00:00:00+08:00
-- **Notes**: The remaining local suite passed with 71 passed and 3 deselected; campaign reservation and ledger suites passed separately.
+- **Notes**: The remaining local suite passed with the Inspect imports
+  deselected; full Linux CI is required. This mitigates the workflow, but the
+  underlying macOS import hang remains unresolved.
 
 ---
 

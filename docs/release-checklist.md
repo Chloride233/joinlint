@@ -29,6 +29,9 @@
 
 ## Completed-product formal evaluation v2
 
+- Review `docs/evaluation-ledger.md`; map every failed prerequisite or run to an
+  existing `Pattern-Key`, and do not retry a recurring root cause until its
+  deterministic guard passes.
 - Install `.[dev,eval]` and run `python -m pytest tests/test_formal_eval_*.py -q`
   with no failures.
 - Run `python -m benchmarks.formal_eval.cli fake-model --output /tmp/joinlint-formal-smoke`
@@ -47,6 +50,10 @@
   scheduling, and workspace tools before the first provider model call.
 - Verify the input lock covers every sealed corpus, SQL label, task payload,
   database, independent pilot row, and raw deterministic performance fixture.
+- Build `pilot-input.tar.gz` with
+  `python -m benchmarks.formal_eval.release_archive create`, upload it, download
+  it back, and run `release_archive verify` on the readback before dispatch.
+  Never use a hand-written macOS tar command for a frozen input asset.
 - Verify preflight reports at least 12 confirmatory databases, 60 natural tasks,
   20 diagnostic tasks, no ambiguous confirmatory truth, no exact duplicate, and
   no database variant crossing a split.

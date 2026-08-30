@@ -2275,6 +2275,7 @@ def test_public_formal_workflows_keep_raw_inspect_logs_runner_ephemeral(
         "steps.public_artifact_verifier.outcome == 'success'" in step["if"]
         for step in scans
     )
+    assert all("hashFiles(" in step["if"] for step in scans)
 
 
 @pytest.mark.parametrize(

@@ -257,7 +257,9 @@ jobs:
           $PILOT_STAGE_RESUME_ARGS
       - name: Scan sanitized Pilot stage artifacts
         id: scan_pilot_stage_sanitized
-        if: always() && steps.public_artifact_verifier.outcome == 'success'
+        if: >-
+          always() && hashFiles('pilot-stage-artifacts/**') != '' &&
+          steps.public_artifact_verifier.outcome == 'success'
         working-directory: .workflow-control
         env:
           PYTHONPATH: ${{ github.workspace }}/.workflow-control/src:${{ github.workspace }}/.workflow-control

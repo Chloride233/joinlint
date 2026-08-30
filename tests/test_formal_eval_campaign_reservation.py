@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 import subprocess
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from benchmarks.formal_eval import campaign_reservation, pilot
 from benchmarks.formal_eval.campaign_ledger import (
@@ -396,13 +398,14 @@ def test_current_run_request_uses_trusted_identity_and_fixed_upper(mode: str) ->
     assert request.upper_micro_cny == upper
 
 
-def test_reservation_cli_accepts_the_safety_confirmation_mode() -> None:
+@pytest.mark.parametrize("mode", campaign_reservation._RESERVATION_CLI_MODES)
+def test_reservation_cli_accepts_every_enabled_policy_mode(mode: str) -> None:
     with pytest.raises(CampaignReservationError, match="GITHUB_EVENT_PATH"):
         campaign_reservation.main(
             [
                 "reserve",
                 "--mode",
-                "pilot_stage_safety_confirmation",
+                mode,
                 "--campaign-id",
                 CAMPAIGN_ID,
                 "--ledger-branch",
@@ -416,24 +419,23 @@ def test_reservation_cli_accepts_the_safety_confirmation_mode() -> None:
         )
 
 
-def test_reservation_cli_accepts_the_contract_safety_resume_mode() -> None:
-    with pytest.raises(CampaignReservationError, match="GITHUB_EVENT_PATH"):
-        campaign_reservation.main(
-            [
-                "reserve",
-                "--mode",
-                "pilot_stage_contract_safety_resume",
-                "--campaign-id",
-                CAMPAIGN_ID,
-                "--ledger-branch",
-                "joinlint-campaign-ledger",
-                "--genesis-commit",
-                "c" * 40,
-                "--receipt",
-                "/tmp/unused-receipt.json",
-            ],
-            environment={},
-        )
+def test_formal_pilot_workflow_uses_only_enabled_reservation_modes() -> None:
+    workflow = yaml.load(
+        Path(".github/workflows/formal-pilot.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    reservation = next(
+        step
+        for step in workflow["jobs"]["pilot"]["steps"]
+        if step.get("name") == "Reserve Pilot stage budget"
+    )
+    workflow_modes = set(
+        re.findall(r"'(pilot_stage[^']*)'", reservation["env"]["PILOT_RESERVATION_MODE"])
+    )
+
+    assert workflow_modes == set(campaign_reservation._RESERVATION_CLI_MODES) - {
+        "calibration"
+    }
 
 
 def test_current_run_request_accepts_the_protected_evaluation_branch() -> None:

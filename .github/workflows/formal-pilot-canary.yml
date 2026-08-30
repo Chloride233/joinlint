@@ -176,6 +176,7 @@ jobs:
         id: scan_readiness_sanitized
         if: >-
           always() &&
+          hashFiles('modal-readiness-artifacts/**') != '' &&
           steps.public_artifact_verifier.outcome == 'success'
         working-directory: .workflow-verifier
         env:
@@ -355,6 +356,7 @@ jobs:
         id: scan_canary_sanitized
         if: >-
           always() && inputs.calibration != true &&
+          hashFiles('pilot-canary-artifacts/**') != '' &&
           steps.public_artifact_verifier.outcome == 'success'
         working-directory: .workflow-verifier
         env:
@@ -376,6 +378,7 @@ jobs:
         id: scan_calibration_sanitized
         if: >-
           always() && inputs.calibration == true &&
+          hashFiles('pilot-calibration-artifacts/**') != '' &&
           steps.public_artifact_verifier.outcome == 'success'
         working-directory: .workflow-verifier
         env:
