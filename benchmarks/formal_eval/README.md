@@ -388,6 +388,65 @@ corresponding to its adjacent official release version. The version comments
 are informational, and the workflow pinning test rejects unapproved remote,
 local, Docker, tag, branch, or revision references.
 
+## Local Phoenix review cockpit
+
+`phoenix_review.py` projects an already frozen local run into a local Phoenix
+UI for side-by-side review. It first rechecks the input lock, preregistration,
+result order, checkpoints, process manifests, task hashes, and raw stdout/stderr
+hashes. The importer then replays the frozen result objects into two Phoenix
+experiments; it does not call a model, execute SQL, or change the MCP runtime.
+Repeated imports reuse a complete matching experiment instead of creating a
+duplicate.
+
+The projection includes the question, required entities, relationship-free
+visible schema, submitted SQL or warning, deterministic outcomes, mechanism
+fields, tool names, usage, frozen elapsed time, and evidence hashes. It excludes
+gold SQL, allowed relationship graphs, absolute database/task paths, query
+result rows, and full raw transcripts. The frozen files remain authoritative;
+Phoenix IDs, replay latency, aggregates, notes, and human annotations are a
+derived review layer and never write back to `results.jsonl`, `effect.json`, or
+checkpoints.
+
+Verify the projection before starting the UI:
+
+```bash
+python -m benchmarks.formal_eval.phoenix_review verify \
+  --run-id bird-local-codex-11-v1-20260830
+```
+
+Start the pinned Phoenix server on loopback only. Its persistent database stays
+under the already ignored `results/` directory; gRPC is not published.
+
+```bash
+mkdir -p benchmarks/formal_eval/results/phoenix
+docker run --rm -d \
+  --name joinlint-phoenix \
+  -p 127.0.0.1:6006:6006 \
+  -v "$PWD/benchmarks/formal_eval/results/phoenix:/mnt/data" \
+  -e PHOENIX_WORKING_DIR=/mnt/data \
+  -e PHOENIX_ALLOW_EXTERNAL_RESOURCES=false \
+  -e PHOENIX_TELEMETRY_ENABLED=false \
+  -e PHOENIX_DISABLE_AGENT_ASSISTANT=true \
+  -e PHOENIX_AGENTS_DISABLE_BASH=true \
+  -e PHOENIX_ENABLE_MCP_SERVER=false \
+  -e PHOENIX_ALLOWED_SANDBOX_PROVIDERS=NONE \
+  -e PHOENIX_ALLOWED_PROVIDERS=NONE \
+  arizephoenix/phoenix@sha256:5ae3c414e8ee7ee47caa022edf8e94bdef7a90634a4e914a99dbe9d1f70790b8
+```
+
+Import with the Phoenix client isolated from JoinLint's product dependencies:
+
+```bash
+uv run --with arize-phoenix-client==3.3.0 \
+  python -m benchmarks.formal_eval.phoenix_review import \
+  --run-id bird-local-codex-11-v1-20260830
+```
+
+Open `http://127.0.0.1:6006`, select the dataset, and compare the control and
+treatment experiments. Each run trace exposes Phoenix's manual annotation and
+notes controls; leaving them empty preserves a purely deterministic review.
+Stop the local service with `docker stop joinlint-phoenix`.
+
 ## Formal remote run
 
 Formal inputs stay under the ignored `sealed/` boundary described in
