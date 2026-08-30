@@ -150,6 +150,10 @@ cold and warm caches over ten repetitions, permutes entity-ref order and
 equivalent SQL aliases/equalities, and permits only documented observation
 timestamps to differ.
 
+The [current product and experiment architecture](docs/current-architecture.md)
+shows how the two-tool runtime, the separate database MCP, and the paired formal
+evaluation fit together without expanding JoinLint's validation scope.
+
 See the [benchmarking guide](docs/benchmarking.md) for the separation between
 deterministic capability gates and formal Agent product-effect evidence. In the
 completed 20-pair opaque-relationship stress experiment, control completed

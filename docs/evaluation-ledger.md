@@ -7,6 +7,10 @@ failures. Detailed result files remain authoritative. Raw private traces stay
 ignored; this file records only sanitized outcomes, run identities, and root
 causes.
 
+See the [current product and experiment architecture](current-architecture.md)
+for the execution path from the two-tool MCP through paired scoring, strict
+verification, and durable sanitized evidence.
+
 ## Classification rule
 
 - **Experiment outcome**: the harness completed and the result may be positive,

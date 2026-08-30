@@ -4,6 +4,54 @@ Command failures and integration errors.
 
 ---
 
+## [ERR-20260830-009] markdown_backticks_in_shell_validation
+
+**Logged**: 2026-08-30T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: docs
+
+### Summary
+
+A documentation-validation command placed Markdown fence backticks inside a
+double-quoted shell command, so zsh treated them as command substitution before
+the intended checks ran.
+
+### Error
+
+```text
+zsh: parse error near `|'
+zsh: parse error in command substitution
+```
+
+### Context
+
+- The failure occurred before the architecture document or test suite was
+  evaluated.
+- The Markdown content itself was unchanged.
+
+### Suggested Fix
+
+Keep literal Markdown fences out of double-quoted shell arguments. Use a
+single-quoted search pattern or inspect the file with a command that does not
+interpret backticks.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: `docs/current-architecture.md`
+- Pattern-Key: shell.markdown_backtick_substitution
+- Recurrence-Count: 1
+- Last-Seen: 2026-08-30
+
+### Resolution
+
+- **Resolved**: 2026-08-30T00:00:00+08:00
+- **Notes**: Replaced the unsafe validation invocation with fixed, quoted
+  searches before retrying the document checks.
+
+---
+
 ## [ERR-20260830-008] artifact_scan_cascaded_missing_root
 
 **Logged**: 2026-08-30T00:00:00+08:00
@@ -655,7 +703,7 @@ only in the formal workflow image or a separate remote preflight environment.
 ## [ERR-20260829-001] campaign_ledger_python_alias
 
 **Logged**: 2026-08-29T00:00:00+08:00
-**Priority**: low
+**Priority**: medium
 **Status**: resolved
 **Area**: infra
 
@@ -681,11 +729,16 @@ Use `.venv/bin/python` for repository Python commands in this local workspace.
 
 - Reproducible: yes
 - Related Files: `benchmarks/formal_eval/campaign_ledger.py`
+- Pattern-Key: local.python_alias_missing
+- Recurrence-Count: 2
+- Last-Seen: 2026-08-30
 
 ### Resolution
 
 - **Resolved**: 2026-08-29T00:00:00+08:00
-- **Notes**: Switched the retry to the repository virtual environment.
+- **Notes**: Switched both retries to the repository virtual environment. The
+  second recurrence occurred during architecture-document validation on
+  2026-08-30.
 
 ---
 
