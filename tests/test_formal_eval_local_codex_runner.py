@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -205,8 +206,9 @@ def test_trace_requires_exactly_one_successful_submit() -> None:
 
 
 def test_prepare_run_and_resume_without_real_model_calls(
-    frozen_tasks: Path, tmp_path: Path
+    frozen_tasks: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(runner, "PYTHON_EXECUTABLE", Path(sys.executable).resolve())
     fake = FakeCommands()
     output = tmp_path / "results"
 
