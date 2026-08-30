@@ -49,7 +49,7 @@ more important, not less.
 | `eval.formal.itt_abort` | 1 effect attempt | One isolated infrastructure zero incorrectly aborted the entire formal stage | Effect stages retain isolated failures in the intention-to-treat denominator; incomplete/systemic batches still stop |
 | `eval.freeze.random_staging_path` | 1 freeze comparison | A temporary staging path leaked into the source-manifest digest | Full bundle is built twice and must match byte for byte |
 | `eval.artifact_scan.missing_root` | repeated secondary errors | `always()` scanners ran even when an upstream failure produced no artifact directory | Scans now require a matching artifact tree before execution |
-| `local.inspect_ai_import_hang` | 5 local attempts | Inspect AI's macOS display import stalled | Mitigated by excluding the three integration imports locally and requiring full Linux CI; root cause remains open |
+| `local.inspect_ai_import_hang` | 6 local attempts | A local venv mixed `eval` and `remote`; Inspect scanned installed remote extension entry points before the first mock task | Resolved by using a clean `dev,eval` environment. The full local suite completed with 735 passed, 3 skipped in 20.31 seconds |
 | `eval.workflow_disabled` | expected | Paid workflows are intentionally disabled outside approved runs | Classify as an admission block with zero spend, not an experiment failure |
 
 Low-impact browser/Phoenix control issues, local Python selection, shell quoting,
@@ -85,4 +85,3 @@ Combined: 33 `.eval` files; local tree SHA-256
 - Expected authorization/policy denials can still appear red in GitHub. They
   are safe but visually noisy; changing their conclusion semantics must not
   weaken the fail-closed boundary.
-- The Inspect AI macOS import hang is mitigated, not fixed.

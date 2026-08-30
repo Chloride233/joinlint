@@ -20,7 +20,19 @@ are not conflated.
 
 ## Free deterministic smoke
 
-After installing `.[dev,eval]`, run:
+Use a clean local evaluation environment that does not contain the `remote`
+extra. Inspect loads installed extension entry points at evaluation startup;
+mixing `inspect-sandboxes` and `inspect-swe` into the local mock environment
+adds remote initialization work and made macOS tests appear hung. For example:
+
+```bash
+python -m venv .venv-eval
+. .venv-eval/bin/activate
+python -m pip install -e '.[dev,eval]'
+```
+
+The `remote` extra belongs in the formal workflow image or a separate remote
+preflight environment. After installing the local environment, run:
 
 ```bash
 python -m benchmarks.formal_eval.cli fake-model \

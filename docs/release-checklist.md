@@ -19,7 +19,9 @@
   and label Stage 1 as a Developer Preview.
 - Verify generated artifacts and `.joinlint/state/` are not staged, while config, model, and baseline are reviewable.
 - Install the downstream evaluation environment with
-  `python -m pip install -e '.[dev,eval]'` outside normal CI.
+  `python -m pip install -e '.[dev,eval]'` outside normal CI. Use a clean
+  environment without the `remote` extra; remote-host dependencies belong in
+  their workflow image or a separate preflight environment.
 - Run `python -m pytest tests/test_agent_join_selection.py tests/test_agent_join_scorers.py tests/test_agent_join_arm_isolation.py tests/test_agent_join_reporting.py -q`
   and verify the summary contains no skips.
 - Run `python -m benchmarks.agent_join.joinlint_eval dry-run --work-dir benchmarks/agent_join/.work --log-dir benchmarks/agent_join/logs/dry-run`
@@ -32,7 +34,8 @@
 - Review `docs/evaluation-ledger.md`; map every failed prerequisite or run to an
   existing `Pattern-Key`, and do not retry a recurring root cause until its
   deterministic guard passes.
-- Install `.[dev,eval]` and run `python -m pytest tests/test_formal_eval_*.py -q`
+- Install `.[dev,eval]` in a clean environment without `remote`, then run
+  `python -m pytest tests/test_formal_eval_*.py -q`
   with no failures.
 - Run `python -m benchmarks.formal_eval.cli fake-model --output /tmp/joinlint-formal-smoke`
   and verify both Markdown and machine-readable JSON reports are rebuildable.

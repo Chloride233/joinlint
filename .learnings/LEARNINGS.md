@@ -6,6 +6,49 @@ Corrections, insights, and knowledge gaps captured during development.
 
 ---
 
+## [LRN-20260830-003] best_practice
+
+**Logged**: 2026-08-30T00:00:00+08:00
+**Priority**: high
+**Status**: promoted
+**Area**: tests
+
+### Summary
+
+Keep local mock evaluation and remote-host execution dependencies in separate
+virtual environments.
+
+### Details
+
+Inspect loads installed extension entry points at evaluation startup. Mixing
+the `remote` extra into the local `dev,eval` environment caused macOS to load
+unused sandbox and provider packages before a mock task, making a six-second
+test appear hung for roughly 70 seconds. A clean `dev,eval` environment ran the
+full suite in about 20 seconds without disabling Inspect tests.
+
+### Suggested Action
+
+Use `dev,eval` for local smoke and diagnostic work. Install `remote` only in the
+formal workflow image or a separate environment.
+
+### Metadata
+
+- Source: simplify-and-harden
+- Related Files: `pyproject.toml`, `AGENTS.md`, `benchmarks/formal_eval/README.md`
+- Tags: inspect, environment, evaluation, macOS
+- Pattern-Key: eval.separate_local_and_remote_dependencies
+- Recurrence-Count: 6
+- First-Seen: 2026-08-29
+- Last-Seen: 2026-08-30
+
+### Resolution
+
+- **Promoted**: 2026-08-30T00:00:00+08:00
+- **Notes**: The environment boundary is documented in project rules,
+  benchmarking guidance, and the release checklist.
+
+---
+
 ## [LRN-20260830-002] best_practice
 
 **Logged**: 2026-08-30T00:00:00+08:00

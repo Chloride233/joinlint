@@ -610,40 +610,45 @@ Enable only `formal-pilot-canary.yml`, confirm its active state, and retry the i
 **Area**: tests
 
 ### Summary
-The combined local test command stalled while importing `inspect_ai` on macOS.
+The combined local test command appeared to stall before the first Inspect
+mock evaluation on macOS.
 
 ### Error
 
 ```text
-KeyboardInterrupt while importing inspect_ai._display.textual
+KeyboardInterrupt while Inspect was loading installed extension/provider modules
 ```
 
 ### Context
 
-- Forty tests passed before the import stopped making progress.
-- The sandbox also denied process-list inspection, so the test was interrupted through its existing execution session.
-- The three known local-only Inspect integration tests are exercised by Linux GitHub CI.
+- The first attribution to the Textual display import was incorrect: a complete
+  traceback placed the delay in Inspect startup and provider initialization.
+- The old `.venv` contained both local `eval` and workflow-only `remote` extras.
+  Inspect scans installed `inspect_ai` entry points before the first task, which
+  loaded `inspect-sandboxes`, `inspect-swe`, and their provider dependencies.
+- A clean `dev,eval` environment reduced each representative Inspect path from
+  about 70 seconds to about 6.6 seconds.
 
 ### Suggested Fix
 
-Deselect the three Inspect import tests for local verification and require the full GitHub CI suite before paid dispatch.
+Keep local mock evaluation in a clean `dev,eval` environment. Install `remote`
+only in the formal workflow image or a separate remote preflight environment.
 
 ### Metadata
 
 - Reproducible: yes
 - Related Files: `tests/test_agent_join_arm_isolation.py`,
   `tests/test_formal_eval_guidance_diagnostic.py`,
-  `tests/test_formal_eval_inspect_smoke.py`, `tests/test_formal_eval_pilot.py`
+  `tests/test_formal_eval_inspect_smoke.py`, `pyproject.toml`
 - Pattern-Key: local.inspect_ai_import_hang
-- Recurrence-Count: 5
-- Last-Seen: 2026-08-29
+- Recurrence-Count: 6
+- Last-Seen: 2026-08-30
 
 ### Resolution
 
-- **Resolved**: 2026-08-29T00:00:00+08:00
-- **Notes**: The remaining local suite passed with the Inspect imports
-  deselected; full Linux CI is required. This mitigates the workflow, but the
-  underlying macOS import hang remains unresolved.
+- **Resolved**: 2026-08-30T00:00:00+08:00
+- **Notes**: A clean `dev,eval` environment ran the full local suite without
+  deselection: 735 passed, 3 skipped in 20.31 seconds.
 
 ---
 

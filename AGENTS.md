@@ -9,6 +9,9 @@ claims that a supported join proves business meaning.
 ## Run and verify
 
 - Install development dependencies with `python -m pip install -e '.[dev]'`.
+- Use a separate local evaluation environment with `.[dev,eval]` only. Keep
+  `remote` dependencies in the workflow image or another environment; do not
+  add them to the local mock-evaluation environment.
 - Run tests with `python -m pytest -q`.
 - Run lint with `python -m ruff check src tests benchmarks scripts`.
 - Start the current STDIO server with
