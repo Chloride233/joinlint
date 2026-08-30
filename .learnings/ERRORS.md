@@ -4,6 +4,53 @@ Command failures and integration errors.
 
 ---
 
+## [ERR-20260830-010] github_mermaid_iframe_locator_deadline
+
+**Logged**: 2026-08-30T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: docs
+
+### Summary
+
+Immediately after reloading the GitHub Markdown preview, a direct locator
+evaluation of the rendered Mermaid iframe exceeded the browser's short selector
+deadline even though both frames were already present.
+
+### Error
+
+```text
+Timed out evaluating selector article iframe >> nth=0
+```
+
+### Context
+
+- The preview had already reported two Mermaid output frames and both expected
+  section headings.
+- Repeating the same locator evaluation was not useful.
+
+### Suggested Fix
+
+After a GitHub Markdown reload, collect frame rectangles with one read-only
+page evaluation, scroll the target frame into view, and then capture the visible
+page instead of retrying the short locator deadline.
+
+### Metadata
+
+- Reproducible: no
+- Related Files: `docs/current-architecture.md`
+- Pattern-Key: browser.github_mermaid_iframe_deadline
+- Recurrence-Count: 1
+- Last-Seen: 2026-08-30
+
+### Resolution
+
+- **Resolved**: 2026-08-30T00:00:00+08:00
+- **Notes**: Both diagrams rendered and were visually inspected after using a
+  single page-level rectangle read and normal browser scrolling.
+
+---
+
 ## [ERR-20260830-009] markdown_backticks_in_shell_validation
 
 **Logged**: 2026-08-30T00:00:00+08:00
