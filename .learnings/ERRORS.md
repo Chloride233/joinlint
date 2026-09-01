@@ -4,6 +4,136 @@ Command failures and integration errors.
 
 ---
 
+## [ERR-20260901-003] inspect_mcp_tool_schema_flake
+
+**Logged**: 2026-09-01T14:47:40+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: tests
+
+### Summary
+
+One full-suite run exposed the historical `get_data_model` tool while the
+Stage 1 Inspect smoke expected the current two-tool MCP contract.
+
+### Error
+
+```text
+ValueError: Description not provided for tool function 'get_data_model'
+```
+
+### Context
+
+- The same full suite passed immediately before this observation.
+- The focused smoke test and the immediately preceding test sequence both
+  passed afterward.
+- No current runtime file changed in this work.
+
+### Suggested Fix
+
+If this recurs, reproduce the cross-test server lifecycle and add an isolation
+guard before retrying the full suite. Do not classify it as an experiment
+outcome or a Stage 1 product regression without that evidence.
+
+### Metadata
+
+- Reproducible: no
+- Related Files: `benchmarks/formal_eval/inspect_smoke.py`,
+  `benchmarks/agent_join/joinlint_eval.py`
+- Pattern-Key: tests.inspect_mcp_tool_schema_cross_run
+- Recurrence-Count: 1
+- Last-Seen: 2026-09-01
+
+---
+
+## [ERR-20260901-002] sandbox_process_inventory_denied
+
+**Logged**: 2026-09-01T14:47:40+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+The workspace sandbox denied a read-only process inventory used to diagnose a
+transient Inspect failure.
+
+### Error
+
+```text
+zsh: operation not permitted: ps
+```
+
+### Context
+
+- Process inventory was optional and not required to verify the changed code.
+- Focused tests provided the needed diagnostic evidence.
+
+### Suggested Fix
+
+Prefer focused test isolation in this sandbox. Request broader process access
+only when process state is necessary to complete the task.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: none
+- Pattern-Key: sandbox.process_inventory_denied
+- Recurrence-Count: 1
+- Last-Seen: 2026-09-01
+
+### Resolution
+
+- **Resolved**: 2026-09-01T14:47:40+08:00
+- **Notes**: Continued with repository-level diagnostics.
+
+---
+
+## [ERR-20260901-001] firecrawl_dns_unavailable
+
+**Logged**: 2026-09-01T11:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+
+Firecrawl search could not start because the configured API hostname did not
+resolve; repeated retries would not produce research evidence.
+
+### Error
+
+```text
+getaddrinfo ENOTFOUND api.firecrawl.dev
+```
+
+### Context
+
+- The failure happened before any NL2SQL literature result was returned.
+- The task could continue through read-only searches of official publisher and
+  project sources.
+
+### Suggested Fix
+
+Treat this DNS error as a stop-and-pivot signal. Use official ACL Anthology,
+OpenReview, VLDB, AAAI, and arXiv sources instead of retrying Firecrawl.
+
+### Metadata
+
+- Reproducible: yes
+- Related Files: none
+- Pattern-Key: web.firecrawl_dns_unavailable
+- Recurrence-Count: 1
+- Last-Seen: 2026-09-01
+
+### Resolution
+
+- **Resolved**: 2026-09-01T11:00:00+08:00
+- **Notes**: Switched to official primary-source search and continued the
+  literature workflow.
+
+---
+
 ## [ERR-20260830-010] github_mermaid_iframe_locator_deadline
 
 **Logged**: 2026-08-30T00:00:00+08:00
