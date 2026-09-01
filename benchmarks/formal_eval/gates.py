@@ -79,6 +79,22 @@ class EffectEstimate(StrictModel):
     interval: Interval
 
 
+class AnswerabilityMetrics(StrictModel):
+    no_safe_path_rows: int
+    safe_abstentions: int
+    unsafe_submissions: int
+    safe_abstention_rate: float
+    unsafe_submission_rate: float
+
+
+class ReliabilityMetrics(StrictModel):
+    repetitions_required: int
+    strict_completion_cells: dict[str, int]
+    total_cells: dict[str, int]
+    strict_completion_rates: dict[str, float]
+    answerability_by_condition: dict[str, AnswerabilityMetrics]
+
+
 class AgentGateReport(StrictModel):
     paired_unit_count: int
     database_count: int
@@ -91,6 +107,7 @@ class AgentGateReport(StrictModel):
     cell_completion_effects: dict[str, float]
     stratified_completion_effects: dict[str, float]
     treatment_rates: dict[str, float]
+    reliability: ReliabilityMetrics
     funnel: dict[str, int]
     failure_counts: dict[str, int]
     database_completion_effects: dict[str, float]
@@ -514,6 +531,10 @@ def agent_product_gate(
         "bypass": _bool_rate(behavior_treatment, lambda row: row.bypassed),
         "tool_error": _bool_rate(behavior_treatment, lambda row: row.tool_error),
     }
+    reliability = _reliability_metrics(
+        formal_rows,
+        repetitions_required=min_repetitions,
+    )
     failed: list[str] = []
     if not sample_shape_passed:
         failed.append("SAMPLE_SHAPE")
@@ -602,6 +623,7 @@ def agent_product_gate(
         cell_completion_effects=cell_effects,
         stratified_completion_effects=dict(sorted(strata.items())),
         treatment_rates=treatment_rates,
+        reliability=reliability,
         funnel=funnel,
         failure_counts=failure_counts,
         database_completion_effects=database_effects,
@@ -621,6 +643,70 @@ def agent_product_gate(
         blind_review_agreement=blind_review_agreement,
         publication_allowed=not failed,
         failed_publication_gates=tuple(failed),
+    )
+
+
+def _reliability_metrics(
+    rows: Sequence[AgentResultRow],
+    *,
+    repetitions_required: int,
+) -> ReliabilityMetrics:
+    grouped: dict[tuple[str, str, str, str, str], list[AgentResultRow]] = defaultdict(list)
+    for row in rows:
+        grouped[
+            (
+                row.condition,
+                row.model_id,
+                row.host,
+                row.database_id,
+                row.task_id,
+            )
+        ].append(row)
+
+    strict_completion_cells: dict[str, int] = {}
+    total_cells: dict[str, int] = {}
+    strict_completion_rates: dict[str, float] = {}
+    answerability_by_condition: dict[str, AnswerabilityMetrics] = {}
+    for condition in ("control", "treatment"):
+        cells = [
+            cell_rows
+            for key, cell_rows in grouped.items()
+            if key[0] == condition
+        ]
+        strict = sum(
+            len({row.repetition for row in cell_rows}) >= repetitions_required
+            and all(row.join_correct_task_completion for row in cell_rows)
+            for cell_rows in cells
+        )
+        strict_completion_cells[condition] = strict
+        total_cells[condition] = len(cells)
+        strict_completion_rates[condition] = strict / len(cells) if cells else 0.0
+
+        no_safe_path = [
+            row
+            for row in rows
+            if row.condition == condition and not row.oracle_has_safe_path
+        ]
+        safe_abstentions = sum(row.safe_abstention for row in no_safe_path)
+        unsafe_submissions = sum(row.submitted_sql for row in no_safe_path)
+        answerability_by_condition[condition] = AnswerabilityMetrics(
+            no_safe_path_rows=len(no_safe_path),
+            safe_abstentions=safe_abstentions,
+            unsafe_submissions=unsafe_submissions,
+            safe_abstention_rate=(
+                safe_abstentions / len(no_safe_path) if no_safe_path else 0.0
+            ),
+            unsafe_submission_rate=(
+                unsafe_submissions / len(no_safe_path) if no_safe_path else 0.0
+            ),
+        )
+
+    return ReliabilityMetrics(
+        repetitions_required=repetitions_required,
+        strict_completion_cells=strict_completion_cells,
+        total_cells=total_cells,
+        strict_completion_rates=strict_completion_rates,
+        answerability_by_condition=answerability_by_condition,
     )
 
 

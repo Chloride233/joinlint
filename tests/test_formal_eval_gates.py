@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from benchmarks.formal_eval.contracts import (
+    AgentResultRow,
     RelationshipResultRow,
     SQLValidationResultRow,
 )
@@ -49,6 +50,67 @@ def test_fake_rows_pass_all_formal_gates() -> None:
     assert agent.publication_allowed
     assert agent.completion_effect.point == pytest.approx(0.4)
     assert agent.funnel["validation_called"] == 708
+    assert agent.reliability.repetitions_required == 3
+    assert agent.reliability.strict_completion_rates == pytest.approx(
+        {"control": 0.6, "treatment": 1.0}
+    )
+    assert agent.reliability.strict_completion_cells == {
+        "control": 144,
+        "treatment": 240,
+    }
+    assert agent.reliability.total_cells == {"control": 240, "treatment": 240}
+    assert agent.reliability.answerability_by_condition[
+        "control"
+    ].safe_abstention_rate == 0.0
+    assert agent.reliability.answerability_by_condition[
+        "control"
+    ].unsafe_submission_rate == 1.0
+    assert agent.reliability.answerability_by_condition[
+        "treatment"
+    ].safe_abstention_rate == 1.0
+    assert agent.reliability.answerability_by_condition[
+        "treatment"
+    ].unsafe_submission_rate == 0.0
+
+
+def test_strict_reliability_requires_every_repetition_to_succeed() -> None:
+    preregistration = fake_preregistration()
+    rows = fake_agent_rows()
+    run_plan, _, review = fake_agent_artifacts()
+    reviewed_ids = {decision.sample_id for decision in review.decisions}
+    index = next(
+        index
+        for index, row in enumerate(rows)
+        if row.corpus == "natural"
+        and row.condition == "treatment"
+        and row.oracle_has_safe_path
+        and row.sample_id not in reviewed_ids
+    )
+    payload = rows[index].model_dump(mode="python")
+    payload.update(
+        join_graph_correct=False,
+        evaluator_validation_passed=False,
+        join_correct_task_completion=False,
+        dangerous_sql_submitted=True,
+        execution_correct=False,
+        failure_code="WRONG_PLAN",
+    )
+    rows[index] = AgentResultRow.model_validate(payload)
+
+    agent = agent_product_gate(
+        rows,
+        review,
+        run_plan=run_plan,
+        agent_results_sha256=review.formal_results_sha256,
+        thresholds=preregistration.thresholds,
+        bootstrap_draws=100,
+        seed=preregistration.seed,
+    )
+
+    assert agent.reliability.strict_completion_cells["treatment"] == 239
+    assert agent.reliability.strict_completion_rates["treatment"] == pytest.approx(
+        239 / 240
+    )
 
 
 def test_relationship_gate_separately_blocks_adversarial_false_promotion() -> None:

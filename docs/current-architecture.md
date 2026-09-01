@@ -1,6 +1,6 @@
 # Current product and experiment architecture
 
-Status: reconciled on 2026-08-30 against the current Stage 1 Developer Preview
+Status: reconciled on 2026-09-01 against the current Stage 1 Developer Preview
 contract and the evaluation ledger. This page describes the current branch; it
 does not turn Developer Preview behavior or bounded experiment results into a
 general release claim.
@@ -63,7 +63,7 @@ flowchart TB
 
     TRACE["Trace and mechanism scorer<br/>plan call / grounding / SQL validation / protocol"]
     ITT["Paired intention-to-treat rows<br/>isolated infrastructure failures remain zeros"]
-    STATS["Join-Correct Task Completion<br/>exact two-sided McNemar test"]
+    STATS["Paired effect and repetition reliability<br/>McNemar / strict 3-of-3 / refusal safety"]
     VERIFY["Independent strict verifier<br/>inventory, digests, run identity"]
     PUBLIC["Durable sanitized evidence<br/>result docs + Draft Release + public ledger"]
     RAW["Private raw traces<br/>runner-ephemeral or ignored local preservation"]
@@ -82,6 +82,10 @@ flowchart TB
     POSITIVE --> LIMIT["No general natural-language SQL,<br/>business-semantic, discovery,<br/>or entity-selection claim"]
     COUNTER --> LIMIT
 ```
+
+The formal report exposes strict all-repetition completion and, for tasks with
+no safe path, safe-abstention and unsafe-submission rates. These are diagnostic
+measurements, not new publication gates or broader product claims.
 
 The experiment treatment reuses the current MCP implementation rather than a
 special evaluation-only product. The most important boundary is upstream:

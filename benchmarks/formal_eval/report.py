@@ -33,7 +33,7 @@ class ReportProvenance(StrictModel):
 
 
 class FormalEvaluationReport(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     evaluation_id: str
     evidence_class: Literal["formal", "synthetic_non_evidentiary"]
     provenance: ReportProvenance
@@ -119,6 +119,22 @@ def render_markdown(report: FormalEvaluationReport) -> str:
         f"- `{condition}`: {_render_mapping(values)}"
         for condition, values in sorted(agent.resource_usage.items())
     )
+    strict_completion_lines = "\n".join(
+        f"- Strict completion `{condition}`: "
+        f"{agent.reliability.strict_completion_cells[condition]}/"
+        f"{agent.reliability.total_cells[condition]} "
+        f"({agent.reliability.strict_completion_rates[condition]:.4f})"
+        for condition in ("control", "treatment")
+    )
+    answerability_lines = "\n".join(
+        f"- No-safe-path `{condition}`: {metrics.no_safe_path_rows} rows; "
+        f"safe abstentions {metrics.safe_abstentions} "
+        f"({metrics.safe_abstention_rate:.4f}); unsafe submissions "
+        f"{metrics.unsafe_submissions} ({metrics.unsafe_submission_rate:.4f})"
+        for condition, metrics in sorted(
+            agent.reliability.answerability_by_condition.items()
+        )
+    )
     return f"""# JoinLint Formal Evaluation
 
 > Join correctness is not proof of metric meaning or complete answer correctness.
@@ -202,6 +218,13 @@ def render_markdown(report: FormalEvaluationReport) -> str:
 - Dangerous submission reduction: {agent.dangerous_submission_reduction.point:.4f}
 - Execution effect: {agent.execution_effect.point:.4f}
 - Blind review: {agent.blind_reviewed_runs}/{agent.blind_review_required} required, agreement {agent.blind_review_agreement:.4f}
+
+### Reliability and refusal diagnostics
+
+- Required repetitions per cell: {agent.reliability.repetitions_required}
+{strict_completion_lines}
+{answerability_lines}
+- Reporting only: these diagnostics do not add a publication gate.
 
 ### Model and host cells
 
