@@ -34,6 +34,7 @@ def export_agent_rows(
     run_plan: RunPlanV2,
     phase: Literal["all", "confirmatory", "diagnostic"] = "all",
     summary_output: Path | None = None,
+    allow_incomplete_run_plan: bool = False,
 ) -> AgentResultBundle:
     from inspect_ai.log import list_eval_logs, read_eval_log
 
@@ -68,7 +69,11 @@ def export_agent_rows(
         or (phase == "confirmatory" and run.confirmatory)
         or (phase == "diagnostic" and not run.confirmatory)
     }
-    if set(sample_ids) != expected_ids:
+    actual_ids = set(sample_ids)
+    if (
+        actual_ids != expected_ids
+        and not (allow_incomplete_run_plan and actual_ids < expected_ids)
+    ):
         raise ValueError("formal logs do not match the frozen run plan")
     run_plan_sha256 = digest_value(run_plan.model_dump(mode="json"))
     bundle = AgentResultBundle(
@@ -120,6 +125,7 @@ def _row(
 ) -> AgentResultRow:
     metadata = sample.metadata
     condition = str(metadata["condition"])
+    corpus = str(metadata.get("corpus", "natural"))
     host = str(metadata["host"])
     model_id = log.eval.model
     repetition = max(0, sample.epoch - 1)
@@ -150,12 +156,13 @@ def _row(
         bool(trace.get("blocking_compliant")) if blocking_applicable else None
     )
     usage = list(sample.model_usage.values())
-    input_tokens = sum(value.input_tokens for value in usage)
+    uncached_input_tokens = sum(value.input_tokens for value in usage)
     input_cache_read_tokens = sum(value.input_tokens_cache_read or 0 for value in usage)
     input_cache_write_tokens = sum(value.input_tokens_cache_write or 0 for value in usage)
+    input_tokens = (
+        uncached_input_tokens + input_cache_read_tokens + input_cache_write_tokens
+    )
     output_tokens = sum(value.output_tokens for value in usage)
-    if input_cache_read_tokens > input_tokens:
-        raise ValueError("Inspect cache-read usage exceeds total input usage")
     pricing = model_pricing.get(model_id)
     if pricing is None:
         raise ValueError(f"missing frozen pricing for returned model identity: {model_id}")
@@ -171,7 +178,7 @@ def _row(
         sample_id=sample_id_for(
             task_id=str(metadata["task_id"]),
             database_id=str(metadata["database_id"]),
-            corpus="natural" if condition in {"control", "treatment"} else "semantic_join_failure",
+            corpus=corpus,
             condition=condition,
             model_id=model_id,
             host=host,
@@ -179,7 +186,7 @@ def _row(
         ),
         task_id=str(metadata["task_id"]),
         database_id=str(metadata["database_id"]),
-        corpus="natural" if condition in {"control", "treatment"} else "semantic_join_failure",
+        corpus=corpus,
         condition=condition,  # type: ignore[arg-type]
         model_id=model_id,
         host=host,  # type: ignore[arg-type]
@@ -211,6 +218,14 @@ def _row(
             bool(trace.get("final_sql_validated")) if mcp_condition else None
         ),
         mcp_grounded=bool(trace.get("mcp_grounded")) if mcp_condition else None,
+        protocol_compliant=(
+            bool(trace.get("protocol_compliant")) if mcp_condition else None
+        ),
+        protocol_violation=(
+            trace.get("protocol_violation")
+            if mcp_condition and isinstance(trace.get("protocol_violation"), str)
+            else None
+        ),
         blocking_applicable=blocking_applicable,
         blocking_compliant=blocking_compliant,
         bypassed=bool(trace.get("bypassed")) if mcp_condition else None,
@@ -247,6 +262,8 @@ def _runtime_failure_code(error: object) -> FailureCode | None:
     if error is None:
         return None
     text = str(error).lower()
+    if "token limit" in text or "message limit" in text or "turn limit" in text:
+        return "MODEL_LIMIT"
     if "timeout" in text or "time limit" in text:
         return "MODEL_TIMEOUT"
     return "INFRASTRUCTURE_FAILURE"

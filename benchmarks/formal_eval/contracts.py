@@ -64,20 +64,40 @@ FailureCode = Literal[
     "WRONG_PLAN",
     "SQL_NOT_GROUNDED",
     "VALIDATION_NOT_CALLED",
+    "FINAL_SQL_NOT_VALIDATED",
     "VALIDATION_BLOCKED",
     "AGENT_BYPASS",
     "SQL_PARSE_FAILED",
     "EXECUTION_FAILED",
     "MODEL_TIMEOUT",
+    "MODEL_LIMIT",
     "MCP_TOOL_ERROR",
     "GROUND_TRUTH_AMBIGUOUS",
     "INFRASTRUCTURE_FAILURE",
+]
+ProtocolViolation = Literal[
+    "PLAN_AFTER_VALIDATION",
+    "PLAN_RETRY_LIMIT",
+    "PLAN_RETRY_NOT_ALLOWED",
+    "PLAN_RETRY_NOT_CHANGED",
+    "VALIDATION_BEFORE_PLAN_RESULT",
+    "VALIDATION_RETRY_LIMIT",
+    "VALIDATION_RETRY_NOT_ALLOWED",
+    "VALIDATION_RETRY_NOT_CHANGED",
+]
+SubmissionGuardDecision = Literal[
+    "accepted_validated_sql",
+    "rejected_unvalidated_sql",
+    "accepted_abstention",
+    "not_observed",
 ]
 Edge = tuple[str, str]
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, strict=True, allow_inf_nan=False
+    )
 
 
 def _validate_identifier(value: str) -> str:
@@ -218,6 +238,52 @@ class PreregistrationV2(StrictModel):
         return self
 
 
+class QueryOutputField(StrictModel):
+    entity: str
+    column: str
+    alias: str
+
+    @field_validator("entity", "column", "alias")
+    @classmethod
+    def validate_identifiers(cls, value: str) -> str:
+        return _validate_identifier(value)
+
+
+class QueryContract(StrictModel):
+    schema_version: Literal[1] = 1
+    required_entities: tuple[str, ...]
+    output_fields: tuple[QueryOutputField, ...]
+    row_grain_entity: str
+
+    @field_validator("required_entities")
+    @classmethod
+    def validate_required_entities(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not 2 <= len(value) <= 8 or len(set(value)) != len(value):
+            raise ValueError("query contract requires 2 to 8 unique entities")
+        for entity in value:
+            _validate_identifier(entity)
+        return value
+
+    @field_validator("row_grain_entity")
+    @classmethod
+    def validate_row_grain(cls, value: str) -> str:
+        return _validate_identifier(value)
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> QueryContract:
+        required = set(self.required_entities)
+        if self.row_grain_entity not in required:
+            raise ValueError("query contract row grain must be a required entity")
+        if not self.output_fields:
+            raise ValueError("query contract requires at least one output field")
+        if any(field.entity not in required for field in self.output_fields):
+            raise ValueError("query contract output entities must be required")
+        aliases = [field.alias for field in self.output_fields]
+        if len(set(aliases)) != len(aliases):
+            raise ValueError("query contract output aliases must be unique")
+        return self
+
+
 class SealedAgentTask(StrictModel):
     task_id: str
     database_id: str
@@ -230,6 +296,10 @@ class SealedAgentTask(StrictModel):
     expected_entities: tuple[str, ...]
     allowed_graphs: tuple[tuple[Edge, ...], ...]
     oracle_has_safe_path: bool
+    query_contract: QueryContract | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("task_id", "database_id")
     @classmethod
@@ -249,6 +319,12 @@ class SealedAgentTask(StrictModel):
             raise ValueError("expected entities must be unique")
         if self.oracle_has_safe_path != bool(self.allowed_graphs):
             raise ValueError("oracle path state must agree with allowed graphs")
+        if self.query_contract is not None:
+            if set(self.query_contract.required_entities) != set(self.expected_entities):
+                raise ValueError("query contract entity set must match expected entities")
+            for field in self.query_contract.output_fields:
+                if field.column not in self.schema_map.get(field.entity, {}):
+                    raise ValueError("query contract output field must exist in schema")
         return self
 
 
@@ -498,6 +574,8 @@ class AgentResultRow(StrictModel):
     complete_entity_planning: bool | None
     final_sql_validated: bool | None
     mcp_grounded: bool | None
+    protocol_compliant: bool | None
+    protocol_violation: ProtocolViolation | None
     blocking_applicable: bool | None
     blocking_compliant: bool | None
     bypassed: bool | None
@@ -529,6 +607,8 @@ class AgentResultRow(StrictModel):
             self.complete_entity_planning,
             self.final_sql_validated,
             self.mcp_grounded,
+            self.protocol_compliant,
+            self.protocol_violation,
             self.blocking_applicable,
             self.blocking_compliant,
             self.bypassed,
@@ -543,6 +623,7 @@ class AgentResultRow(StrictModel):
             self.complete_entity_planning,
             self.final_sql_validated,
             self.mcp_grounded,
+            self.protocol_compliant,
             self.blocking_applicable,
             self.bypassed,
             self.tool_error,
@@ -553,6 +634,8 @@ class AgentResultRow(StrictModel):
             self.blocking_applicable == (self.blocking_compliant is None)
         ):
             raise ValueError("blocking compliance must be present exactly when applicable")
+        if self.protocol_violation is not None and self.protocol_compliant:
+            raise ValueError("protocol violations require protocol noncompliance")
         if self.safe_abstention and (
             self.oracle_has_safe_path
             or self.submitted_sql
@@ -587,7 +670,7 @@ class AgentResultRow(StrictModel):
 
 
 class AgentResultBundle(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     lineage_id: str
     run_plan_sha256: str
     rows: tuple[AgentResultRow, ...]

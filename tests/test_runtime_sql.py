@@ -140,6 +140,39 @@ def test_self_join_uses_instances_and_matches_proof_modulo_aliases(tmp_path: Pat
         snapshot.close()
 
 
+def test_eight_instance_self_join_is_deterministic_without_factorial_alias_cost(
+    tmp_path: Path,
+) -> None:
+    snapshot, catalog, _ = runtime(tmp_path)
+    try:
+        first_aliases = [f"n{index}" for index in range(8)]
+        second_aliases = [f"renamed_{7 - index}" for index in range(8)]
+
+        def self_join_sql(aliases: list[str]) -> str:
+            return "SELECT * FROM customers " + aliases[0] + " " + " ".join(
+                f"JOIN customers {aliases[index]} "
+                f"ON {aliases[index - 1]}.manager_id = {aliases[index]}.id"
+                for index in range(1, len(aliases))
+            )
+
+        first = normalize_sql_graph(
+            self_join_sql(first_aliases),
+            catalog,
+            catalog.source_id,
+        )
+        second = normalize_sql_graph(
+            self_join_sql(second_aliases),
+            catalog,
+            catalog.source_id,
+        )
+
+        assert first == second
+        assert len(first.entity_refs) == 8
+        assert len(first.edges) == 7
+    finally:
+        snapshot.close()
+
+
 def test_proof_graph_mismatch_blocks_sql(tmp_path: Path) -> None:
     snapshot, catalog, graph = runtime(tmp_path)
     try:

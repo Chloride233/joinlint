@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from contextlib import ExitStack, contextmanager
+import hashlib
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from threading import RLock
 from typing import Iterator
 
 from joinlint.config import load_config
+from joinlint.contracts import canonical_json
 from joinlint.errors import JoinLintError
 from joinlint.mcp_contracts import (
     GetJoinPlanRequest,
@@ -14,6 +17,7 @@ from joinlint.mcp_contracts import (
     SQLValidationData,
     ValidateSQLRequest,
     ValidateSQLResponse,
+    mcp_finding,
     not_validated_scope,
     validated_scope,
 )
@@ -31,6 +35,8 @@ from joinlint.runtime.domain import (
     SourceIdentity,
 )
 from joinlint.runtime.evidence import (
+    EvidenceDeadline,
+    ExactStatistics,
     build_authorized_graph,
     relationship_definitions,
     verify_relationship,
@@ -38,11 +44,17 @@ from joinlint.runtime.evidence import (
 from joinlint.runtime.planner import plan_join, proof_lifecycle
 from joinlint.runtime.sources import (
     SQLiteSnapshot,
+    SQLiteSourceMonitor,
     extract_sqlite_catalog,
     locate_sqlite_sources,
     snapshot_sqlite,
 )
-from joinlint.runtime.sql import SQLValidationError, normalize_sql_graph, validate_sql_graph
+from joinlint.runtime.sql import (
+    SQLValidationError,
+    normalize_parsed_sql,
+    parse_sql,
+    validate_sql_graph,
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +63,19 @@ class RuntimeContext:
     snapshot: SQLiteSnapshot
     catalog: SourceCatalog
     graph: tuple[AuthorizedRelationship, ...]
+
+
+@dataclass
+class RuntimeContextLease:
+    context: RuntimeContext
+    monitor: SQLiteSourceMonitor
+    legacy_token: bytes
+
+    def close(self) -> None:
+        try:
+            self.context.snapshot.close()
+        finally:
+            self.monitor.close()
 
 
 class RuntimeService:
@@ -67,6 +92,13 @@ class RuntimeService:
         self.explicit_sources = explicit_sources
         self.auto = auto and not explicit_sources
         self.cache = cache or RuntimeCache()
+        self._context_lock = RLock()
+        self._leases: dict[str, RuntimeContextLease] = {}
+
+    def close(self) -> None:
+        with self._context_lock:
+            for source_id in tuple(self._leases):
+                self._discard_lease(source_id)
 
     def get_join_plan(self, request: GetJoinPlanRequest) -> GetJoinPlanResponse:
         with self._contexts() as contexts:
@@ -103,6 +135,7 @@ class RuntimeService:
         if request.dialect != "sqlite":
             raise JoinLintError("UNSUPPORTED_DIALECT", "only SQLite is supported", 2)
         proof = self._proof(request.plan_id)
+        statement = parse_sql(request.sql)
         with self._contexts() as contexts:
             if proof is not None:
                 context = self._context_for_source(contexts, proof.source_id)
@@ -115,27 +148,44 @@ class RuntimeService:
                     available_evidence_ids=(edge.evidence.evidence_id for edge in context.graph),
                 )
                 if lifecycle.status == "stale":
-                    raise JoinLintError("PROOF_STALE", "proof must be replanned", 3)
+                    raise JoinLintError(
+                        "PROOF_STALE",
+                        "proof must be replanned",
+                        3,
+                        affected_refs=tuple(item.ref for item in proof.entity_refs),
+                        freshness_reason=lifecycle.reason,
+                    )
                 if lifecycle.status == "unverifiable":
-                    raise JoinLintError("PROOF_UNVERIFIABLE", "proof evidence is unavailable", 3)
+                    raise JoinLintError(
+                        "PROOF_UNVERIFIABLE",
+                        "proof evidence is unavailable",
+                        3,
+                        affected_refs=tuple(item.ref for item in proof.entity_refs),
+                        freshness_reason=lifecycle.reason,
+                    )
                 if (
                     request.expected_grain_ref is not None
-                    and request.expected_grain_ref not in {item.ref for item in proof.entity_refs}
+                    and request.expected_grain_ref != proof.expected_grain_ref
                 ):
                     raise JoinLintError(
                         "INVALID_ARGUMENT",
-                        "expected_grain_ref is not present in proof",
+                        "expected_grain_ref does not match proof",
                         2,
+                        affected_refs=(request.expected_grain_ref,),
                     )
-                graph = normalize_sql_graph(request.sql, context.catalog, context.identity.source_id)
+                graph = normalize_parsed_sql(
+                    statement,
+                    context.catalog,
+                    context.identity.source_id,
+                )
                 return self._validation_response(
                     graph,
                     context.graph,
                     context.catalog.entities,
                     proof=proof,
-                    expected_grain_ref=request.expected_grain_ref,
+                    expected_grain_ref=proof.expected_grain_ref,
                 )
-            context, graph = self._normalize_without_proof(contexts, request)
+            context, graph = self._normalize_without_proof(contexts, request, statement)
             return self._validation_response(
                 graph,
                 context.graph,
@@ -165,8 +215,29 @@ class RuntimeService:
             entity_definitions=entity_definitions,
         )
         proof_bound = proof is not None
+        proof_refs = tuple(item.ref for item in proof.entity_refs) if proof is not None else ()
+        requested_grain = expected_grain_ref or (
+            proof.expected_grain_ref if proof is not None else None
+        )
+        response_findings = tuple(
+            mcp_finding(
+                "validate_sql",
+                finding,
+                affected_refs=(
+                    (requested_grain,)
+                    if finding.code == "GRAIN_INCOMPATIBLE" and requested_grain is not None
+                    else proof_refs
+                ),
+                blocking_relationship_ids=(
+                    outcome.matched_relationship_ids
+                    if finding.code == "GRAIN_INCOMPATIBLE"
+                    else ()
+                ),
+            )
+            for finding in outcome.findings
+        )
         return ValidateSQLResponse(
-            status="findings" if outcome.findings else "ok",
+            status="findings" if response_findings else "ok",
             data=SQLValidationData(
                 normalized_join_graph=outcome.graph,
                 matched_relationship_ids=tuple(sorted(outcome.matched_relationship_ids)),
@@ -176,7 +247,7 @@ class RuntimeService:
                 not_validated_scope=not_validated_scope(proof_bound=proof_bound),
                 execution_count=0,
             ),
-            findings=outcome.findings,
+            findings=response_findings,
         )
 
     def _proof(self, plan_id: str | None) -> JoinProof | None:
@@ -192,39 +263,141 @@ class RuntimeService:
 
     @contextmanager
     def _contexts(self) -> Iterator[tuple[RuntimeContext, ...]]:
-        identities = locate_sqlite_sources(
-            self.root,
-            self.explicit_sources,
-            auto=self.auto,
-        )
-        legacy_model, curated_by_locator = self._legacy_inputs()
-        with ExitStack() as stack:
+        with self._context_lock:
+            identities = locate_sqlite_sources(
+                self.root,
+                self.explicit_sources,
+                auto=self.auto,
+            )
+            legacy_model, curated_by_locator = self._legacy_inputs()
+            legacy_token = self._legacy_token(legacy_model, curated_by_locator)
+            active_source_ids = {identity.source_id for identity in identities}
+            for source_id in tuple(self._leases):
+                if source_id not in active_source_ids:
+                    self._discard_lease(source_id)
             contexts: list[RuntimeContext] = []
             for identity in identities:
-                snapshot = stack.enter_context(snapshot_sqlite(self.root, identity))
-                catalog = extract_sqlite_catalog(snapshot)
-                seeds = relationship_definitions(
-                    catalog,
-                    legacy_model,
-                    curated_source_ids=curated_by_locator.get(identity.relative_locator, ()),
-                )
-                evidence = tuple(self._evidence(snapshot, catalog, seed) for seed in seeds)
-                graph = build_authorized_graph(
-                    seeds,
-                    evidence,
-                    snapshot.document.snapshot_id,
-                )
-                contexts.append(
-                    RuntimeContext(
-                        identity=identity,
-                        snapshot=snapshot,
-                        catalog=catalog,
-                        graph=graph,
+                lease = self._leases.get(identity.source_id)
+                if (
+                    lease is None
+                    or lease.context.identity != identity
+                    or lease.legacy_token != legacy_token
+                    or not lease.monitor.is_current()
+                ):
+                    self._discard_lease(identity.source_id)
+                    lease = self._build_context_lease(
+                        identity,
+                        legacy_model,
+                        curated_by_locator.get(identity.relative_locator, ()),
+                        legacy_token,
                     )
-                )
+                    self._leases[identity.source_id] = lease
+                contexts.append(lease.context)
             yield tuple(contexts)
+            for context in contexts:
+                lease = self._leases.get(context.identity.source_id)
+                if lease is None or not lease.monitor.is_current():
+                    self._discard_lease(context.identity.source_id)
+                    raise JoinLintError(
+                        "SOURCE_CHANGED_DURING_SCAN",
+                        "source changed during runtime validation",
+                        3,
+                    )
 
-    def _evidence(self, snapshot: SQLiteSnapshot, catalog: SourceCatalog, seed):  # type: ignore[no-untyped-def]
+    def _build_context_lease(
+        self,
+        identity: SourceIdentity,
+        legacy_model: ModelV1 | None,
+        curated_source_ids: tuple[str, ...],
+        legacy_token: bytes,
+    ) -> RuntimeContextLease:
+        monitor = SQLiteSourceMonitor.open(self.root, identity)
+        snapshot: SQLiteSnapshot | None = None
+        try:
+            snapshot = snapshot_sqlite(self.root, identity)
+            if not monitor.is_current():
+                raise JoinLintError(
+                    "SOURCE_CHANGED_DURING_SCAN",
+                    "source changed during runtime snapshot",
+                    3,
+                )
+            catalog = extract_sqlite_catalog(snapshot)
+            seeds = relationship_definitions(
+                catalog,
+                legacy_model,
+                curated_source_ids=curated_source_ids,
+            )
+            deadline = EvidenceDeadline.after()
+            statistics = ExactStatistics()
+            evidence = tuple(
+                self._evidence(
+                    snapshot,
+                    catalog,
+                    seed,
+                    deadline=deadline,
+                    statistics=statistics,
+                )
+                for seed in seeds
+            )
+            graph = build_authorized_graph(
+                seeds,
+                evidence,
+                snapshot.document.snapshot_id,
+            )
+            if not monitor.is_current():
+                raise JoinLintError(
+                    "SOURCE_CHANGED_DURING_SCAN",
+                    "source changed during evidence validation",
+                    3,
+                )
+            return RuntimeContextLease(
+                context=RuntimeContext(
+                    identity=identity,
+                    snapshot=snapshot,
+                    catalog=catalog,
+                    graph=graph,
+                ),
+                monitor=monitor,
+                legacy_token=legacy_token,
+            )
+        except BaseException:
+            if snapshot is not None:
+                snapshot.close()
+            monitor.close()
+            raise
+
+    def _discard_lease(self, source_id: str) -> None:
+        lease = self._leases.pop(source_id, None)
+        if lease is not None:
+            lease.close()
+
+    @staticmethod
+    def _legacy_token(
+        legacy_model: ModelV1 | None,
+        curated_by_locator: dict[str, tuple[str, ...]],
+    ) -> bytes:
+        return hashlib.sha256(
+            canonical_json(
+                {
+                    "model": (
+                        legacy_model.model_dump(mode="json", by_alias=True)
+                        if legacy_model is not None
+                        else None
+                    ),
+                    "curated_by_locator": curated_by_locator,
+                }
+            )
+        ).digest()
+
+    def _evidence(
+        self,
+        snapshot: SQLiteSnapshot,
+        catalog: SourceCatalog,
+        seed,
+        *,
+        deadline: EvidenceDeadline,
+        statistics: ExactStatistics,
+    ):  # type: ignore[no-untyped-def]
         selector = self.cache.evidence_selector(
             seed.definition.relationship_id,
             snapshot.document.snapshot_id,
@@ -248,7 +421,13 @@ class RuntimeService:
             )
             if cached is not None:
                 return cached
-            record = verify_relationship(snapshot, catalog, seed)
+            record = verify_relationship(
+                snapshot,
+                catalog,
+                seed,
+                deadline=deadline,
+                statistics=statistics,
+            )
             self.cache.store_evidence(record)
             return record
 
@@ -268,9 +447,19 @@ class RuntimeService:
             else:
                 matches.append((context, tuple(resolved)))
         if not matches:
-            raise JoinLintError("ENTITY_NOT_FOUND", "requested entities were not found", 3)
+            raise JoinLintError(
+                "ENTITY_NOT_FOUND",
+                "requested entities were not found",
+                3,
+                affected_refs=tuple(item.ref for item in requested),
+            )
         if len(matches) > 1:
-            raise JoinLintError("SOURCE_AMBIGUOUS", "requested entities match multiple sources", 3)
+            raise JoinLintError(
+                "SOURCE_AMBIGUOUS",
+                "requested entities match multiple sources",
+                3,
+                affected_refs=tuple(item.ref for item in requested),
+            )
         return matches[0]
 
     @staticmethod
@@ -298,11 +487,16 @@ class RuntimeService:
         self,
         contexts: tuple[RuntimeContext, ...],
         request: ValidateSQLRequest,
+        statement: object,
     ):
+        from sqlglot import exp
+
+        if not isinstance(statement, exp.Select):
+            raise TypeError("parsed SELECT is required")
         if request.source_id is not None:
             context = self._context_for_source(contexts, request.source_id)
-            return context, normalize_sql_graph(
-                request.sql,
+            return context, normalize_parsed_sql(
+                statement,
                 context.catalog,
                 context.identity.source_id,
             )
@@ -310,8 +504,8 @@ class RuntimeService:
         unknown_error: SQLValidationError | None = None
         for context in contexts:
             try:
-                graph = normalize_sql_graph(
-                    request.sql,
+                graph = normalize_parsed_sql(
+                    statement,
                     context.catalog,
                     context.identity.source_id,
                 )

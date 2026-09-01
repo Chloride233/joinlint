@@ -4,6 +4,7 @@ import hashlib
 import os
 import sqlite3
 import stat
+import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable
@@ -24,7 +25,7 @@ from joinlint.runtime.domain import (
     relationship_id_for,
 )
 from joinlint.snapshots import Deadline, SourceSnapshot as LegacySnapshot
-from joinlint.snapshots import _snapshot_sqlite
+from joinlint.snapshots import _identity_tuple, _snapshot_sqlite, _sqlite_uri
 
 
 _CONVENTIONAL_DIRECTORIES = ("data", "datasets")
@@ -54,6 +55,77 @@ class SQLiteSnapshot:
 
     def close(self) -> None:
         self._legacy.close()
+
+
+@dataclass
+class SQLiteSourceMonitor:
+    root: Path
+    identity: SourceIdentity
+    connection: sqlite3.Connection
+    parent_descriptor: int
+    file_identity: tuple[int, int, int, int]
+    data_version: int
+    _lock: threading.RLock
+
+    @classmethod
+    def open(cls, root: Path, identity: SourceIdentity) -> SQLiteSourceMonitor:
+        parent_descriptor = -1
+        connection: sqlite3.Connection | None = None
+        try:
+            with SafeProject(root) as boundary:
+                parent_descriptor, leaf, entry_stat = boundary.open_parent_relative(
+                    PurePosixPath(identity.relative_locator)
+                )
+                uri = _sqlite_uri(parent_descriptor, leaf)
+                connection = sqlite3.connect(uri, uri=True, check_same_thread=False)
+            connection.execute("PRAGMA query_only = ON")
+            data_version = _data_version(connection)
+            return cls(
+                root=root,
+                identity=identity,
+                connection=connection,
+                parent_descriptor=parent_descriptor,
+                file_identity=_identity_tuple(entry_stat),
+                data_version=data_version,
+                _lock=threading.RLock(),
+            )
+        except BaseException:
+            if connection is not None:
+                connection.close()
+            if parent_descriptor != -1:
+                os.close(parent_descriptor)
+            raise
+
+    def is_current(self) -> bool:
+        with self._lock:
+            try:
+                with SafeProject(self.root) as boundary:
+                    descriptor, _leaf, entry_stat = boundary.open_parent_relative(
+                        PurePosixPath(self.identity.relative_locator)
+                    )
+                    os.close(descriptor)
+                return (
+                    _identity_tuple(entry_stat) == self.file_identity
+                    and _data_version(self.connection) == self.data_version
+                )
+            except (OSError, sqlite3.Error, JoinLintError):
+                return False
+
+    def close(self) -> None:
+        with self._lock:
+            try:
+                self.connection.close()
+            finally:
+                if self.parent_descriptor != -1:
+                    os.close(self.parent_descriptor)
+                    self.parent_descriptor = -1
+
+
+def _data_version(connection: sqlite3.Connection) -> int:
+    row = connection.execute("PRAGMA data_version").fetchone()
+    if row is None:
+        raise sqlite3.OperationalError("SQLite data_version is unavailable")
+    return int(row[0])
 
 
 def locate_sqlite_sources(

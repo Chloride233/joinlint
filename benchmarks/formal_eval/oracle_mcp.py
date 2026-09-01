@@ -12,6 +12,7 @@ from benchmarks.agent_join.contracts import Edge
 from benchmarks.agent_join.sql_edges import canonical_edge, extract_join_edges
 from benchmarks.formal_eval.contracts import StrictModel
 from joinlint.contracts import canonical_json
+from joinlint.mcp_contracts import MCPCommand, recovery_guidance
 
 
 class OracleDocument(StrictModel):
@@ -85,7 +86,7 @@ def plan_oracle(
                 "freshness_checked_at": "1970-01-01T00:00:00Z",
             }
             return {
-                "schema_version": 2,
+                "schema_version": 3,
                 "command": "get_join_plan",
                 "status": "ok",
                 "data": {
@@ -131,7 +132,7 @@ def validate_oracle_sql(
         ],
     }
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "command": "validate_sql",
         "status": "ok" if safe else "findings",
         "data": {
@@ -158,6 +159,10 @@ def validate_oracle_sql(
                     "code": "UNSUPPORTED_JOIN_EDGE",
                     "severity": "blocking",
                     "message": "UNSUPPORTED_JOIN_EDGE",
+                    "guidance": recovery_guidance(
+                        "validate_sql",
+                        "UNSUPPORTED_JOIN_EDGE"
+                    ).model_dump(mode="json"),
                 }
             ]
         ),
@@ -229,12 +234,16 @@ def _proof_edge(edge: Edge, refs: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def _error(command: str, code: str, *, inconclusive: bool) -> dict[str, Any]:
+def _error(command: MCPCommand, code: str, *, inconclusive: bool) -> dict[str, Any]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "command": command,
         "status": "inconclusive" if inconclusive else "error",
         "data": None,
         "findings": [],
-        "error": {"code": code, "message": code},
+        "error": {
+            "code": code,
+            "message": code,
+            "guidance": recovery_guidance(command, code).model_dump(mode="json"),
+        },
     }

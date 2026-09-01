@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm_paid:
-        description: Confirm the approved one-task Modal and DeepSeek canary spend
+        description: Confirm the approved readiness or one-task canary spend
         required: true
         default: false
         type: boolean
@@ -28,76 +28,371 @@ on:
         required: true
         default: pilot-input.tar.gz
         type: string
+      readiness_only:
+        description: Run both Modal host-context checks without DeepSeek
+        required: true
+        default: false
+        type: boolean
+      calibration:
+        description: Run the sealed eight-sample four-cell calibration
+        required: true
+        default: false
+        type: boolean
+      campaign_budget_cny:
+        description: Approved cumulative investigation budget in CNY
+        required: true
+        default: ""
+        type: string
+      campaign_spend_before_cny:
+        description: Cumulative investigation spend before this run in CNY
+        required: true
+        default: ""
+        type: string
 
 permissions:
   contents: write
 
 jobs:
-  canary:
+  readiness:
+    if: inputs.readiness_only == true && inputs.calibration != true
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
+    concurrency:
+      group: joinlint-formal-paid-v1
+      cancel-in-progress: false
     environment: formal-evaluation
     steps:
-      - name: Require the exact approved paid canary
-        if: inputs.confirm_paid != true || inputs.budget_cny != '2.25'
+      - name: Block paid evaluation pending atomic campaign reservation
         run: exit 1
-      - uses: actions/checkout@v4
+      - name: Require the exact approved no-model diagnostic
+        if: >-
+          github.run_attempt != 1 ||
+          inputs.confirm_paid != true || inputs.budget_cny != '2.10'
+        run: exit 1
+      - name: Require cumulative campaign budget for readiness
+        env:
+          CAMPAIGN_BUDGET_CNY: ${{ inputs.campaign_budget_cny }}
+          CAMPAIGN_SPEND_BEFORE_CNY: ${{ inputs.campaign_spend_before_cny }}
+          CAMPAIGN_COST_UPPER_CNY: "2.10"
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from decimal import Decimal
+
+          values = [
+              os.environ["CAMPAIGN_BUDGET_CNY"],
+              os.environ["CAMPAIGN_SPEND_BEFORE_CNY"],
+              os.environ["CAMPAIGN_COST_UPPER_CNY"],
+          ]
+          canonical = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?\Z")
+          if not all(canonical.fullmatch(value) for value in values):
+              sys.exit("campaign amounts must be canonical decimal strings")
+          budget, spent, upper = map(Decimal, values)
+          if budget <= 0 or spent < 0 or upper < 0 or spent + upper > budget:
+              sys.exit("readiness could exceed the approved cumulative campaign budget")
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.pilot_commit }}
-      - name: Record checked-out pilot commit
-        id: pilot_commit
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record checked-out commit
+        id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -e '.[dev,eval,remote]'
+      - name: Run no-model lifecycle and Modal compatibility tests
+        run: >-
+          python -m pytest -q
+          tests/test_formal_eval_lifecycle.py
+          tests/test_formal_eval_lifecycle_inspect.py
+          tests/test_formal_eval_modal_readiness.py
+          tests/test_formal_eval_modal_compat.py
+      - name: Run no-model Codex host-context sample
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: >-
+          inspect eval
+          benchmarks/formal_eval/inspect_task.py@formal_host_context_eval
+          --model mockllm/model
+          --log-dir modal-readiness-logs/codex
+          --max-retries 0
+          --max-sandboxes 1
+          --display none
+          --no-fail-on-error
+          --score-on-error
+          -T database="$(pwd)/tests/fixtures/chinook/chinook.sqlite"
+          -T host=codex
+          -T agent_version=0.144.1
+          -T dockerfile="$(pwd)/Dockerfile.formal-pilot"
+          -T readiness_time_limit=60
+          -T evaluation_time_limit=30
+          -T sandbox_timeout=120
+      - name: Run no-model Claude host-context sample
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: >-
+          inspect eval
+          benchmarks/formal_eval/inspect_task.py@formal_host_context_eval
+          --model mockllm/model
+          --log-dir modal-readiness-logs/claude-code
+          --max-retries 0
+          --max-sandboxes 1
+          --display none
+          --no-fail-on-error
+          --score-on-error
+          -T database="$(pwd)/tests/fixtures/chinook/chinook.sqlite"
+          -T host=claude_code
+          -T agent_version=2.1.212
+          -T dockerfile="$(pwd)/Dockerfile.formal-pilot"
+          -T readiness_time_limit=60
+          -T evaluation_time_limit=30
+          -T sandbox_timeout=120
+      - name: Verify zero provider tokens and both host-context attestations
+        run: >-
+          python -m benchmarks.formal_eval.modal_readiness
+          --log-dir modal-readiness-logs
+          --output modal-readiness-artifacts
+          --workflow-run-id "${{ github.run_id }}"
+          --joinlint-commit "${{ steps.commit.outputs.sha }}"
+      - name: Checkout pinned public artifact verifier
+        id: public_artifact_verifier
+        if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 573896c33bc18f559ee16d7f676c0e41c2e49021
+          path: .workflow-verifier
+          persist-credentials: false
+      - name: Scan sanitized readiness artifacts
+        id: scan_readiness_sanitized
+        if: >-
+          always() &&
+          hashFiles('modal-readiness-artifacts/**') != '' &&
+          steps.public_artifact_verifier.outcome == 'success'
+        working-directory: .workflow-verifier
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-verifier/src:${{ github.workspace }}/.workflow-verifier
+        run: >-
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile modal-readiness
+          --root "$GITHUB_WORKSPACE/modal-readiness-artifacts"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.scan_readiness_sanitized.outcome == 'success'
+        with:
+          name: joinlint-formal-modal-readiness-sanitized
+          path: modal-readiness-artifacts
+          if-no-files-found: error
+          retention-days: 90
+
+  canary:
+    if: inputs.readiness_only != true || inputs.calibration == true
+    runs-on: ubuntu-latest
+    concurrency:
+      group: joinlint-formal-paid-v1
+      cancel-in-progress: false
+    environment: formal-evaluation
+    steps:
+      - name: Block unapproved one-task canary
+        if: inputs.calibration != true
+        run: exit 1
+      - name: Require the exact approved paid diagnostic
+        if: >-
+          github.run_attempt != 1 ||
+          inputs.confirm_paid != true ||
+          inputs.calibration != true ||
+          inputs.readiness_only == true ||
+          inputs.budget_cny != '4'
+        run: exit 1
+      - name: Require cumulative campaign budget for canary
+        if: inputs.calibration != true
+        env:
+          CAMPAIGN_BUDGET_CNY: ${{ inputs.campaign_budget_cny }}
+          CAMPAIGN_SPEND_BEFORE_CNY: ${{ inputs.campaign_spend_before_cny }}
+          CAMPAIGN_COST_UPPER_CNY: "2.25"
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from decimal import Decimal
+
+          values = [
+              os.environ["CAMPAIGN_BUDGET_CNY"],
+              os.environ["CAMPAIGN_SPEND_BEFORE_CNY"],
+              os.environ["CAMPAIGN_COST_UPPER_CNY"],
+          ]
+          canonical = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?\Z")
+          if not all(canonical.fullmatch(value) for value in values):
+              sys.exit("campaign amounts must be canonical decimal strings")
+          budget, spent, upper = map(Decimal, values)
+          if budget <= 0 or spent < 0 or upper < 0 or spent + upper > budget:
+              sys.exit("canary could exceed the approved cumulative campaign budget")
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .workflow-control
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .workflow-control/pyproject.toml
+      - name: Install workflow-owned admission code
+        run: python -m pip install -e './.workflow-control[dev,eval,remote]'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.pilot_commit }}
+          path: evaluated-checkout
+          persist-credentials: false
+      - name: Record checked-out pilot commit
+        id: pilot_commit
+        working-directory: evaluated-checkout
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Restore private frozen pilot inputs
         env:
           GH_TOKEN: ${{ github.token }}
           PILOT_RELEASE_TAG: ${{ inputs.pilot_release_tag }}
           PILOT_RELEASE_ASSET: ${{ inputs.pilot_release_asset }}
         run: |
-          mkdir -p pilot-release benchmarks/formal_eval/sealed/pilot-v1
+          mkdir -p pilot-release frozen-pilot-input
           gh release download "$PILOT_RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "$PILOT_RELEASE_ASSET" \
             --dir pilot-release
           tar -xzf "pilot-release/$PILOT_RELEASE_ASSET" \
-            -C benchmarks/formal_eval/sealed/pilot-v1 \
+            -C frozen-pilot-input \
             --no-same-owner --no-same-permissions
-      - name: Verify frozen pilot input
+      - name: Verify frozen pilot input with workflow-owned code
+        working-directory: .workflow-control
         run: >-
           python -m benchmarks.formal_eval.pilot verify
-          --root benchmarks/formal_eval/sealed/pilot-v1
+          --root "$GITHUB_WORKSPACE/frozen-pilot-input"
           --current-commit "${{ steps.pilot_commit.outputs.sha }}"
+      - name: Reserve calibration budget
+        id: campaign_reservation
+        working-directory: .workflow-control
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m benchmarks.formal_eval.campaign_reservation
+          reserve
+          --mode calibration
+          --campaign-id joinlint-safety-effect-2026-08-v3
+          --ledger-branch joinlint-campaign-ledger-ambiguity-v1
+          --genesis-commit c3a748b999059cfefe6eeb6eeccc1cfbf998db1d
+          --receipt "$GITHUB_WORKSPACE/campaign-reservation.json"
+      - name: Install evaluated pilot code
+        run: python -m pip install -e './evaluated-checkout[dev,eval,remote]'
+      - name: Run no-model lifecycle gate
+        working-directory: evaluated-checkout
+        run: python -m pytest -q tests/test_formal_eval_lifecycle*.py
       - name: Run one-task canary
+        if: inputs.calibration != true
+        working-directory: evaluated-checkout
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_BASE_URL: https://api.deepseek.com
+          CAMPAIGN_BUDGET_CNY: ${{ inputs.campaign_budget_cny }}
+          CAMPAIGN_SPEND_BEFORE_CNY: ${{ inputs.campaign_spend_before_cny }}
         run: >-
           python -m benchmarks.formal_eval.pilot_canary
           run
-          --root benchmarks/formal_eval/sealed/pilot-v1
-          --log-dir pilot-canary-logs
-          --output pilot-canary-artifacts
+          --root "$GITHUB_WORKSPACE/frozen-pilot-input"
+          --log-dir "$GITHUB_WORKSPACE/pilot-canary-logs"
+          --output "$GITHUB_WORKSPACE/pilot-canary-artifacts"
           --workflow-run-id "${{ github.run_id }}"
-      - name: Scan sanitized canary artifacts
-        if: always()
+          --campaign-budget-cny "$CAMPAIGN_BUDGET_CNY"
+          --campaign-spend-before-cny "$CAMPAIGN_SPEND_BEFORE_CNY"
+      - name: Run sealed four-cell calibration
+        if: inputs.calibration == true
+        working-directory: evaluated-checkout
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: https://api.deepseek.com
+          CAMPAIGN_BUDGET_CNY: ${{ steps.campaign_reservation.outputs.campaign_budget_cny }}
+          CAMPAIGN_SPEND_BEFORE_CNY: ${{ steps.campaign_reservation.outputs.campaign_reserved_before_cny }}
+          PYTHONPATH: ${{ github.workspace }}/.workflow-control
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-canary-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
-      - uses: actions/upload-artifact@v4
+          python -P "$GITHUB_WORKSPACE/.workflow-control/benchmarks/formal_eval/pilot_calibration.py"
+          run
+          --root "$GITHUB_WORKSPACE/frozen-pilot-input"
+          --log-dir "$GITHUB_WORKSPACE/pilot-calibration-logs"
+          --output "$GITHUB_WORKSPACE/pilot-calibration-artifacts"
+          --workflow-run-id "${{ github.run_id }}"
+          --campaign-budget-cny "$CAMPAIGN_BUDGET_CNY"
+          --campaign-spend-before-cny "$CAMPAIGN_SPEND_BEFORE_CNY"
+      - name: Report sanitized calibration infrastructure failures
+        if: failure() && inputs.calibration == true
+        working-directory: evaluated-checkout
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-control
+        run: >-
+          python -P "$GITHUB_WORKSPACE/.workflow-control/benchmarks/formal_eval/pilot_calibration.py"
+          diagnose-infrastructure
+          --log-dir "$GITHUB_WORKSPACE/pilot-calibration-logs"
+      - name: Checkout pinned public artifact verifier
+        id: public_artifact_verifier
         if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 573896c33bc18f559ee16d7f676c0e41c2e49021
+          path: .workflow-verifier
+          persist-credentials: false
+      - name: Scan sanitized canary artifacts
+        id: scan_canary_sanitized
+        if: >-
+          always() && inputs.calibration != true &&
+          hashFiles('pilot-canary-artifacts/**') != '' &&
+          steps.public_artifact_verifier.outcome == 'success'
+        working-directory: .workflow-verifier
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-verifier/src:${{ github.workspace }}/.workflow-verifier
+        run: >-
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile pilot-canary
+          --root "$GITHUB_WORKSPACE/pilot-canary-artifacts"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: >-
+          always() && inputs.calibration != true &&
+          steps.scan_canary_sanitized.outcome == 'success'
         with:
           name: joinlint-formal-pilot-canary-sanitized
           path: pilot-canary-artifacts
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 90
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - name: Scan sanitized calibration artifacts
+        id: scan_calibration_sanitized
+        if: >-
+          always() && inputs.calibration == true &&
+          hashFiles('pilot-calibration-artifacts/**') != '' &&
+          steps.public_artifact_verifier.outcome == 'success'
+        working-directory: .workflow-verifier
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-verifier/src:${{ github.workspace }}/.workflow-verifier
+        run: >-
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile pilot-calibration
+          --root "$GITHUB_WORKSPACE/pilot-calibration-artifacts"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: >-
+          always() && inputs.calibration == true &&
+          steps.scan_calibration_sanitized.outcome == 'success'
         with:
-          name: joinlint-formal-pilot-canary-private-logs
-          path: pilot-canary-logs
-          if-no-files-found: warn
-          retention-days: 30
+          name: joinlint-formal-pilot-calibration-sanitized
+          path: pilot-calibration-artifacts
+          if-no-files-found: error
+          retention-days: 90

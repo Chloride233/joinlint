@@ -672,12 +672,14 @@ smallest host-specific layer needed to improve correct use.
 For every task that produces multi-table SQL:
 
 1. identify all intended entities from the user request and available schema;
-2. call `get_join_plan` once with the complete entity set;
+2. call `get_join_plan` once with the complete entity set, with at most one
+   guidance-authorized changed replan;
 3. use only predicates in the recommended plan;
 4. generate the SQL;
-5. call `validate_sql` with the exact final SQL;
-6. repair and revalidate after a non-blocking actionable finding;
-7. stop and explain when the result is inconclusive or blocking;
+5. call `validate_sql` with the exact final SQL and immutable proof-bound grain;
+6. make at most one changed SQL-only repair when guidance is retryable with
+   `next_action: revise_sql`, then revalidate with the same proof;
+7. stop and explain for every other inconclusive, error, or blocking result;
 8. execute only through a separately authorized database or pipeline tool.
 
 The Harness does not tell the agent that a tool call alone establishes safety.

@@ -6,17 +6,30 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from pydantic import Field
+
+from benchmarks.formal_eval.contracts import StrictModel
 from benchmarks.formal_eval.export import export_agent_rows
 from benchmarks.formal_eval.dispatch import REPOSITORY_ROOT, inspect_subprocess_environment
+from benchmarks.formal_eval.lifecycle import LIFECYCLE_STORE_KEY
 from benchmarks.formal_eval.pilot import (
     PilotBudgetCheckpoint,
     PilotRegistration,
     budget_envelope,
     pilot_budget_checkpoint,
     pilot_budget_report,
+    pilot_partition_for,
     verify_pilot_inputs,
 )
 from joinlint.contracts import canonical_json
+
+
+class PilotCampaignBudget(StrictModel):
+    campaign_budget_cny: float = Field(gt=0)
+    campaign_spend_before_cny: float = Field(ge=0)
+    pilot_cost_upper_cny: float = Field(ge=0)
+    campaign_total_upper_cny: float = Field(ge=0)
+    passed: bool
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--log-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--campaign-budget-cny", type=float, required=True)
+    parser.add_argument("--campaign-spend-before-cny", type=float, required=True)
     arguments = parser.parse_args(argv)
     registration, _, run_plan = verify_pilot_inputs(arguments.root)
     inspect = shutil.which("inspect")
@@ -39,6 +54,13 @@ def main(argv: list[str] | None = None) -> int:
     envelope = budget_envelope(registration)
     if envelope.total_upper_cny > registration.budget_cny:
         raise ValueError("pilot upper-bound cost exceeds the approved budget")
+    campaign_before = pilot_campaign_budget(
+        campaign_budget_cny=arguments.campaign_budget_cny,
+        campaign_spend_before_cny=arguments.campaign_spend_before_cny,
+        pilot_cost_upper_cny=envelope.total_upper_cny,
+    )
+    if not campaign_before.passed:
+        raise ValueError("pilot could exceed the approved cumulative campaign budget")
     arguments.output.mkdir(parents=True, exist_ok=True)
     for batch_index, command in enumerate(commands):
         before = pilot_budget_checkpoint(
@@ -54,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.run(command, check=True, env=inspect_subprocess_environment())
         require_batch_health(
             batch_log_dir,
-            expected_sample_count=registration.task_count,
+            expected_sample_count=registration.task_count // len(registration.hosts),
         )
         observed = observed_model_cost_cny(arguments.log_dir, registration)
         after = pilot_budget_checkpoint(
@@ -84,7 +106,31 @@ def main(argv: list[str] | None = None) -> int:
     (arguments.output / "budget.json").write_bytes(
         canonical_json(budget.model_dump(mode="json")) + b"\n"
     )
-    return 0 if budget.passed else 2
+    campaign = pilot_campaign_budget(
+        campaign_budget_cny=arguments.campaign_budget_cny,
+        campaign_spend_before_cny=arguments.campaign_spend_before_cny,
+        pilot_cost_upper_cny=budget.total_cost_upper_cny,
+    )
+    (arguments.output / "campaign-budget.json").write_bytes(
+        canonical_json(campaign.model_dump(mode="json")) + b"\n"
+    )
+    return 0 if budget.passed and campaign.passed else 2
+
+
+def pilot_campaign_budget(
+    *,
+    campaign_budget_cny: float,
+    campaign_spend_before_cny: float,
+    pilot_cost_upper_cny: float,
+) -> PilotCampaignBudget:
+    total = campaign_spend_before_cny + pilot_cost_upper_cny
+    return PilotCampaignBudget(
+        campaign_budget_cny=campaign_budget_cny,
+        campaign_spend_before_cny=campaign_spend_before_cny,
+        pilot_cost_upper_cny=pilot_cost_upper_cny,
+        campaign_total_upper_cny=total,
+        passed=total <= campaign_budget_cny,
+    )
 
 
 def _write_checkpoint(output: Path, checkpoint: PilotBudgetCheckpoint) -> None:
@@ -92,7 +138,12 @@ def _write_checkpoint(output: Path, checkpoint: PilotBudgetCheckpoint) -> None:
     (output / "budget-checkpoint.json").write_bytes(canonical_json(payload) + b"\n")
 
 
-def require_batch_health(log_dir: Path, *, expected_sample_count: int) -> None:
+def require_batch_health(
+    log_dir: Path,
+    *,
+    expected_sample_count: int,
+    allow_isolated_infrastructure_failures: bool = False,
+) -> None:
     from inspect_ai.log import list_eval_logs, read_eval_log
 
     samples = [
@@ -100,16 +151,30 @@ def require_batch_health(log_dir: Path, *, expected_sample_count: int) -> None:
         for info in list_eval_logs(str(log_dir), recursive=True)
         for sample in (read_eval_log(info.name, header_only=False).samples or [])
     ]
-    require_sample_batch_health(samples, expected_sample_count=expected_sample_count)
+    require_sample_batch_health(
+        samples,
+        expected_sample_count=expected_sample_count,
+        allow_isolated_infrastructure_failures=allow_isolated_infrastructure_failures,
+    )
 
 
 def require_sample_batch_health(
     samples: list[Any],
     *,
     expected_sample_count: int,
+    allow_isolated_infrastructure_failures: bool = False,
 ) -> None:
     if len(samples) != expected_sample_count:
         raise RuntimeError("pilot batch produced an incomplete sample set")
+    for sample in samples:
+        sample_store = getattr(sample, "store", None) or {}
+        lifecycle = sample_store.get(LIFECYCLE_STORE_KEY, {})
+        if (
+            not allow_isolated_infrastructure_failures
+            and isinstance(lifecycle, dict)
+            and lifecycle.get("infrastructure_status") == "failed"
+        ):
+            raise RuntimeError("pilot batch contains an infrastructure failure")
     if all(sample.error is not None and not sample.scores for sample in samples):
         raise RuntimeError("pilot batch has a systemic infrastructure failure")
 
@@ -141,8 +206,6 @@ def build_pilot_commands(
                         "1",
                         "--max-retries",
                         "0",
-                        "--time-limit",
-                        str(registration.time_limit_seconds),
                         "--max-sandboxes",
                         str(registration.max_sandboxes),
                         "--no-fail-on-error",
@@ -166,7 +229,13 @@ def build_pilot_commands(
                         "-T",
                         f"lineage_id={lineage_id}",
                         "-T",
+                        f"task_partition={pilot_partition_for(model.tier, host)}",
+                        "-T",
                         f"token_limit={registration.token_limit_per_run}",
+                        "-T",
+                        f"token_limit_type={registration.token_limit_type}",
+                        "-T",
+                        f"message_limit={registration.message_limit_per_run}",
                         "-T",
                         f"time_limit={registration.time_limit_seconds}",
                         "-T",
@@ -192,16 +261,18 @@ def observed_model_cost_cny(log_dir: Path, registration: PilotRegistration) -> f
                 model_pricing = pricing.get(model_id)
                 if model_pricing is None:
                     raise ValueError(f"unexpected returned model identity: {model_id}")
-                cache_read = usage.input_tokens_cache_read or 0
-                if cache_read > usage.input_tokens:
-                    raise ValueError("cache-read usage exceeds total input usage")
-                total += (
-                    cache_read * model_pricing.input_cache_hit_per_million_cny
-                    + (usage.input_tokens - cache_read)
-                    * model_pricing.input_cache_miss_per_million_cny
-                    + usage.output_tokens * model_pricing.output_per_million_cny
-                ) / 1_000_000
+                total += model_usage_cost_cny(usage, model_pricing)
     return total
+
+
+def model_usage_cost_cny(usage: Any, pricing: Any) -> float:
+    cache_read = usage.input_tokens_cache_read or 0
+    cache_write = usage.input_tokens_cache_write or 0
+    return (
+        cache_read * pricing.input_cache_hit_per_million_cny
+        + (usage.input_tokens + cache_write) * pricing.input_cache_miss_per_million_cny
+        + usage.output_tokens * pricing.output_per_million_cny
+    ) / 1_000_000
 
 
 if __name__ == "__main__":

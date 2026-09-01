@@ -17,7 +17,12 @@ import rfc8785
 from benchmarks.agent_join.execution import execute_readonly, execution_matches
 from benchmarks.agent_join.sql_edges import extract_join_edges
 from benchmarks.formal_eval.bird_dataset import _check_sqlite, _file_record
-from benchmarks.formal_eval.contracts import FormalManifestV2, FormalTask, SealedAgentTask
+from benchmarks.formal_eval.contracts import (
+    FormalManifestV2,
+    FormalTask,
+    QueryContract,
+    SealedAgentTask,
+)
 from benchmarks.formal_eval.manifest import semantic_fingerprint, verify_sealed_manifest
 
 
@@ -34,6 +39,7 @@ class TaskSpec:
     expected_entities: tuple[str, ...]
     trap_type: str
     fanout_type: Literal["none", "one_to_many", "many_to_many", "compound"]
+    query_contract: QueryContract | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,25 @@ class DatabaseSpec:
 
 
 def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]:
+    return build_semantic_failure_bundle(
+        sealed_root,
+        output,
+        dataset_release=DATASET_RELEASE,
+        database_specs=_database_specs(),
+        claim_boundary="safety_stress_only_not_natural_error_rate",
+    )
+
+
+def build_semantic_failure_bundle(
+    sealed_root: Path,
+    output: Path,
+    *,
+    dataset_release: str,
+    database_specs: tuple[DatabaseSpec, ...],
+    claim_boundary: str,
+    require_opaque_alternative_graphs: bool = False,
+    source_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     resolved_sealed = _real_directory(sealed_root, "sealed root")
     resolved_parent = _real_directory(output.parent, "diagnostic output parent")
     try:
@@ -62,7 +87,7 @@ def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]
     manifest_tasks: list[FormalTask] = []
     catalog: list[dict[str, Any]] = []
     try:
-        for database_spec in _database_specs():
+        for database_spec in database_specs:
             database_path = database_directory / f"{database_spec.database_id}.sqlite"
             _create_database(database_path, database_spec.schema_sql)
             schema_map, schema_text = _visible_schema(database_path)
@@ -77,6 +102,14 @@ def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]
                 )
                 if gold_edges != task_spec.allowed_graph or dangerous_edges == gold_edges:
                     raise ValueError(f"diagnostic graph contract mismatch: {task_id}")
+                if require_opaque_alternative_graphs:
+                    _require_opaque_alternative_graphs(
+                        task_id,
+                        schema_map,
+                        task_spec.expected_entities,
+                        gold_edges,
+                        dangerous_edges,
+                    )
                 gold_execution = execute_readonly(
                     database_path,
                     task_spec.gold_sql,
@@ -106,6 +139,7 @@ def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]
                     expected_entities=task_spec.expected_entities,
                     allowed_graphs=(gold_edges,),
                     oracle_has_safe_path=True,
+                    query_contract=task_spec.query_contract,
                 )
                 formal_task = FormalTask(
                     task_id=task_id,
@@ -141,12 +175,25 @@ def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]
                         "dangerous_sql": task_spec.dangerous_sql,
                         "dangerous_graph": dangerous_edges,
                         "dangerous_result_differs_from_gold": True,
+                        **(
+                            {
+                                "relationship_columns_opaque": True,
+                                "type_compatible_candidate_graph_count": 2,
+                            }
+                            if require_opaque_alternative_graphs
+                            else {}
+                        ),
+                        **(
+                            {"query_contract_present": True}
+                            if task_spec.query_contract is not None
+                            else {}
+                        ),
                     }
                 )
 
         sealed_tasks.sort(key=lambda task: task.task_id.encode("utf-8"))
         manifest = FormalManifestV2(
-            dataset_release=DATASET_RELEASE,
+            dataset_release=dataset_release,
             tasks=tuple(sorted(manifest_tasks, key=lambda task: task.task_id.encode("utf-8"))),
         )
         verify_sealed_manifest(manifest, sealed_tasks)
@@ -173,7 +220,7 @@ def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]
         report = {
             "schema_version": 1,
             "status": "candidate_diagnostic_not_formally_frozen",
-            "dataset_release": DATASET_RELEASE,
+            "dataset_release": dataset_release,
             "task_count": len(sealed_tasks),
             "database_count": len(database_records),
             "trap_counts": dict(sorted(Counter(row["trap_type"] for row in catalog).items())),
@@ -182,7 +229,8 @@ def build_semantic_failure_v1(sealed_root: Path, output: Path) -> dict[str, Any]
             "diagnostic_catalog": _file_record(catalog_path),
             "databases": database_records,
             "natural_error_rate_eligible": False,
-            "claim_boundary": "safety_stress_only_not_natural_error_rate",
+            "claim_boundary": claim_boundary,
+            **(source_metadata or {}),
         }
         _write_canonical(staging / "source-manifest.json", report)
         os.replace(staging, output)
@@ -208,6 +256,35 @@ def _create_database(path: Path, schema_sql: str) -> None:
     _check_sqlite(path)
     if path.with_name(path.name + "-wal").exists() or path.with_name(path.name + "-shm").exists():
         raise ValueError("diagnostic database creation left WAL state")
+
+
+def _require_opaque_alternative_graphs(
+    task_id: str,
+    schema: dict[str, dict[str, str]],
+    expected_entities: tuple[str, ...],
+    gold_edges: tuple[tuple[str, str], ...],
+    dangerous_edges: tuple[tuple[str, str], ...],
+) -> None:
+    if len(gold_edges) != len(dangerous_edges):
+        raise ValueError(f"opaque alternatives must preserve join depth: {task_id}")
+    expected = set(expected_entities)
+    for graph in (gold_edges, dangerous_edges):
+        graph_entities: set[str] = set()
+        for edge in graph:
+            endpoint_types: list[str] = []
+            for endpoint in edge:
+                table, column = endpoint.split(".", maxsplit=1)
+                graph_entities.add(table)
+                column_type = schema.get(table, {}).get(column)
+                if column_type is None:
+                    raise ValueError(f"opaque alternative references unknown column: {task_id}")
+                endpoint_types.append(column_type)
+                if column != "id" and not column.startswith("link_"):
+                    raise ValueError(f"relationship column leaks semantics: {task_id}")
+            if len(set(endpoint_types)) != 1:
+                raise ValueError(f"opaque alternative column types differ: {task_id}")
+        if graph_entities != expected:
+            raise ValueError(f"opaque alternative graph changes entity scope: {task_id}")
 
 
 def _visible_schema(path: Path) -> tuple[dict[str, dict[str, str]], str]:

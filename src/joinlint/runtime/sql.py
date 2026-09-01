@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import itertools
+import math
 from collections import defaultdict, deque
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import sqlglot
@@ -25,6 +28,13 @@ from joinlint.runtime.domain import (
 
 
 MAX_SQL_BYTES = 65_536
+MAX_AST_NODES = 2_048
+MAX_SCOPE_COUNT = 16
+MAX_TABLE_REFERENCES = 16
+MAX_ENTITY_INSTANCES = 8
+MAX_JOIN_EDGES = 8
+MAX_EQUALITY_PREDICATES = 32
+MAX_CANONICAL_MAPPINGS = 50_000
 
 
 class SQLValidationError(ValueError):
@@ -58,6 +68,10 @@ def normalize_sql_graph(
     catalog: SourceCatalog,
     source_id: str,
 ) -> NormalizedJoinGraph:
+    return normalize_parsed_sql(parse_sql(sql), catalog, source_id)
+
+
+def parse_sql(sql: str) -> exp.Select:
     if not sql or len(sql.encode("utf-8")) > MAX_SQL_BYTES:
         raise SQLValidationError("REQUEST_TOO_LARGE", blocking=False)
     try:
@@ -70,13 +84,22 @@ def normalize_sql_graph(
     if not isinstance(statement, exp.Select):
         raise SQLValidationError("UNSUPPORTED_SQL_STATEMENT", blocking=True)
     _validate_join_shapes(statement)
+    _validate_ast_budget(statement)
+    return statement
+
+
+def normalize_parsed_sql(
+    statement: exp.Select,
+    catalog: SourceCatalog,
+    source_id: str,
+) -> NormalizedJoinGraph:
     schema = {
         entity.physical_name: {column.name: column.physical_type for column in entity.columns}
         for entity in catalog.entities
     }
     try:
         qualified = qualify(
-            statement,
+            statement.copy(),
             dialect="sqlite",
             schema=schema,
             quote_identifiers=False,
@@ -85,6 +108,8 @@ def normalize_sql_graph(
     except SqlglotError as error:
         raise SQLValidationError("UNKNOWN_ENTITY", blocking=True) from error
     scopes = list(traverse_scope(qualified))
+    if len(scopes) > MAX_SCOPE_COUNT:
+        raise SQLValidationError("REQUEST_TOO_LARGE", blocking=False)
     scope_ids = {id(scope): index for index, scope in enumerate(scopes)}
     entities_by_table = {entity.physical_name.casefold(): entity for entity in catalog.entities}
     grouped: dict[tuple[str, str, str], list[tuple[str, str]]] = defaultdict(list)
@@ -153,7 +178,28 @@ def normalize_sql_graph(
             key=lambda item: tuple(value.encode("utf-8") for value in item[0]),
         )
     )
+    if len(refs) > MAX_ENTITY_INSTANCES or len(edges) > MAX_JOIN_EDGES:
+        raise SQLValidationError("REQUEST_TOO_LARGE", blocking=False)
     return _canonicalize_instances(source_id, tuple(refs.values()), edges)
+
+
+def _validate_ast_budget(statement: exp.Select) -> None:
+    node_count = 0
+    scope_count = 0
+    table_count = 0
+    equality_count = 0
+    for node in statement.walk():
+        node_count += 1
+        scope_count += isinstance(node, exp.Select)
+        table_count += isinstance(node, exp.Table)
+        equality_count += isinstance(node, exp.EQ)
+        if (
+            node_count > MAX_AST_NODES
+            or scope_count > MAX_SCOPE_COUNT
+            or table_count > MAX_TABLE_REFERENCES
+            or equality_count > MAX_EQUALITY_PREDICATES
+        ):
+            raise SQLValidationError("REQUEST_TOO_LARGE", blocking=False)
 
 
 def validate_sql_graph(
@@ -305,18 +351,28 @@ def _canonicalize_instances(
     refs_by_entity: dict[str, list[str]] = defaultdict(list)
     for item in entity_refs:
         refs_by_entity[item.entity].append(item.ref)
+    if len(entity_refs) > MAX_ENTITY_INSTANCES:
+        raise SQLValidationError("REQUEST_TOO_LARGE", blocking=False)
+    colors = _instance_colors(entity_refs, edges)
     choices: list[list[dict[str, str]]] = []
     next_index = 0
     for entity in sorted(refs_by_entity, key=lambda value: value.encode("utf-8")):
-        raw_refs = sorted(refs_by_entity[entity], key=lambda value: value.encode("utf-8"))
-        canonical_refs = [f"i{index}" for index in range(next_index, next_index + len(raw_refs))]
-        next_index += len(raw_refs)
-        choices.append(
-            [
-                dict(zip(permutation, canonical_refs, strict=True))
-                for permutation in itertools.permutations(raw_refs)
+        refs_by_color: dict[str, list[str]] = defaultdict(list)
+        for ref in refs_by_entity[entity]:
+            refs_by_color[colors[ref]].append(ref)
+        for color in sorted(refs_by_color, key=lambda value: value.encode("utf-8")):
+            raw_refs = sorted(refs_by_color[color], key=lambda value: value.encode("utf-8"))
+            canonical_refs = [
+                f"i{index}" for index in range(next_index, next_index + len(raw_refs))
             ]
-        )
+            next_index += len(raw_refs)
+            choices.append(
+                [
+                    dict(zip(permutation, canonical_refs, strict=True))
+                    for permutation in itertools.permutations(raw_refs)
+                ]
+            )
+    _check_mapping_budget(choices)
     best: NormalizedJoinGraph | None = None
     best_bytes: bytes | None = None
     for combination in itertools.product(*choices):
@@ -432,15 +488,50 @@ def _proof_mapping(
         proof_by_entity[item.entity].append(item.ref)
     if set(sql_by_entity) != set(proof_by_entity):
         return None
+    sql_colors = _relationship_colors(
+        graph.entity_refs,
+        (
+            (
+                item.relationship.definition.relationship_id,
+                item.child_ref,
+                item.parent_ref,
+            )
+            for item in matched
+        ),
+    )
+    proof_colors = _relationship_colors(
+        proof.entity_refs,
+        (
+            (
+                edge.relationship_id,
+                edge.from_ref if edge.traversal == "forward" else edge.to_ref,
+                edge.to_ref if edge.traversal == "forward" else edge.from_ref,
+            )
+            for edge in proof.edges
+        ),
+    )
     choices: list[list[dict[str, str]]] = []
     for entity in sorted(sql_by_entity, key=lambda value: value.encode("utf-8")):
-        sql_refs = sorted(sql_by_entity[entity], key=lambda value: value.encode("utf-8"))
-        proof_refs = sorted(proof_by_entity[entity], key=lambda value: value.encode("utf-8"))
-        if len(sql_refs) != len(proof_refs):
+        sql_by_color: dict[str, list[str]] = defaultdict(list)
+        proof_by_color: dict[str, list[str]] = defaultdict(list)
+        for ref in sql_by_entity[entity]:
+            sql_by_color[sql_colors[ref]].append(ref)
+        for ref in proof_by_entity[entity]:
+            proof_by_color[proof_colors[ref]].append(ref)
+        if set(sql_by_color) != set(proof_by_color):
             return None
-        choices.append(
-            [dict(zip(sql_refs, permutation, strict=True)) for permutation in itertools.permutations(proof_refs)]
-        )
+        for color in sorted(sql_by_color, key=lambda value: value.encode("utf-8")):
+            sql_refs = sorted(sql_by_color[color], key=lambda value: value.encode("utf-8"))
+            proof_refs = sorted(proof_by_color[color], key=lambda value: value.encode("utf-8"))
+            if len(sql_refs) != len(proof_refs):
+                return None
+            choices.append(
+                [
+                    dict(zip(sql_refs, permutation, strict=True))
+                    for permutation in itertools.permutations(proof_refs)
+                ]
+            )
+    _check_mapping_budget(choices)
     expected = sorted(
         (
             edge.relationship_id,
@@ -462,6 +553,81 @@ def _proof_mapping(
         if actual == expected:
             return mapping
     return None
+
+
+def _instance_colors(
+    entity_refs: tuple[EntityRef, ...],
+    edges: tuple[NormalizedJoinEdge, ...],
+) -> dict[str, str]:
+    incidents: dict[str, list[tuple[object, ...]]] = defaultdict(list)
+    for edge in edges:
+        left_pairs = tuple(edge.endpoint_pairs)
+        right_pairs = tuple((right, left) for left, right in edge.endpoint_pairs)
+        if edge.join_kind == "left":
+            left_role = "preserved"
+            right_role = "nullable"
+        else:
+            left_role = right_role = "inner"
+        incidents[edge.left_ref].append(
+            (edge.join_kind, left_role, left_pairs, edge.right_ref)
+        )
+        incidents[edge.right_ref].append(
+            (edge.join_kind, right_role, right_pairs, edge.left_ref)
+        )
+    return _refine_colors(entity_refs, incidents)
+
+
+def _relationship_colors(
+    entity_refs: tuple[EntityRef, ...],
+    relationships: Iterable[tuple[str, str, str]],
+) -> dict[str, str]:
+    incidents: dict[str, list[tuple[object, ...]]] = defaultdict(list)
+    for relationship_id, child_ref, parent_ref in relationships:
+        incidents[child_ref].append((relationship_id, "child", parent_ref))
+        incidents[parent_ref].append((relationship_id, "parent", child_ref))
+    return _refine_colors(entity_refs, incidents)
+
+
+def _refine_colors(
+    entity_refs: tuple[EntityRef, ...],
+    incidents: dict[str, list[tuple[object, ...]]],
+) -> dict[str, str]:
+    entities = {item.ref: item.entity for item in entity_refs}
+    colors = {
+        ref: hashlib.sha256(canonical_json({"entity": entity})).hexdigest()
+        for ref, entity in entities.items()
+    }
+    for _ in range(len(entity_refs)):
+        refined: dict[str, str] = {}
+        for ref, entity in entities.items():
+            neighborhood = []
+            for incident in incidents.get(ref, ()):
+                *label, neighbor = incident
+                neighborhood.append(
+                    {
+                        "label": label,
+                        "neighbor_color": colors[str(neighbor)],
+                    }
+                )
+            neighborhood.sort(key=canonical_json)
+            refined[ref] = hashlib.sha256(
+                canonical_json(
+                    {
+                        "entity": entity,
+                        "neighborhood": neighborhood,
+                    }
+                )
+            ).hexdigest()
+        if refined == colors:
+            break
+        colors = refined
+    return colors
+
+
+def _check_mapping_budget(choices: list[list[dict[str, str]]]) -> None:
+    mapping_count = math.prod(len(choice) for choice in choices)
+    if mapping_count > MAX_CANONICAL_MAPPINGS:
+        raise SQLValidationError("REQUEST_TOO_LARGE", blocking=False)
 
 
 def _expected_sql_ref(

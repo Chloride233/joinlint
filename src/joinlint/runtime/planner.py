@@ -29,6 +29,17 @@ class CandidateEdge:
     max_matches: int
 
 
+@dataclass(frozen=True)
+class TreeSearchResult:
+    safe_trees: tuple[tuple[CandidateEdge, ...], ...]
+    has_tree: bool
+    has_grain_compatible_tree: bool
+
+
+MAX_CANDIDATE_EDGES = 512
+MAX_TREE_EXPANSIONS = 50_000
+
+
 def plan_join(
     entity_refs: tuple[EntityRef, ...],
     start_ref: str,
@@ -52,17 +63,50 @@ def plan_join(
         refs[expected].entity,
         entity_definitions,
     ):
-        raise JoinLintError("NO_VERIFIED_PATH", "expected grain has no stable unique key", 3)
+        raise JoinLintError(
+            "GRAIN_UNPROVABLE",
+            "expected grain has no stable unique key",
+            3,
+            affected_refs=(expected,),
+        )
     source_ids = {relationship.definition.source_id for relationship in graph}
     if not source_ids:
-        raise JoinLintError("NO_VERIFIED_PATH", "no current authorized join proof exists", 3)
+        raise JoinLintError(
+            "NO_VERIFIED_PATH",
+            "no current authorized join proof exists",
+            3,
+            affected_refs=tuple(refs),
+        )
     if len(source_ids) != 1:
         raise JoinLintError("CROSS_SOURCE_UNSUPPORTED", "one source is required", 2)
     candidates = _candidate_edges(entity_refs, graph)
-    trees = _spanning_trees(refs, start_ref, max_depth, candidates, limit=4)
-    safe_trees = [tree for tree in trees if _tree_is_safe(expected, tree)]
+    search = _search_spanning_trees(
+        refs,
+        start_ref,
+        max_depth,
+        candidates,
+        expected,
+        safe_limit=4 if include_alternatives else 1,
+    )
+    safe_trees = search.safe_trees
+    if not safe_trees and not search.has_tree:
+        unconnected_refs = _unconnected_refs(refs, candidates)
+        if unconnected_refs:
+            raise JoinLintError(
+                "UNCONNECTED_ENTITY_REF",
+                "one or more entity references are disconnected from the dominant request component",
+                3,
+                affected_refs=unconnected_refs,
+            )
+        raise JoinLintError(
+            "NO_VERIFIED_PATH",
+            "no current authorized join proof exists",
+            3,
+            affected_refs=tuple(refs),
+        )
     if not safe_trees:
-        raise JoinLintError("NO_VERIFIED_PATH", "no current authorized join proof exists", 3)
+        code = "COMPOUND_FANOUT" if search.has_grain_compatible_tree else "GRAIN_INCOMPATIBLE"
+        raise JoinLintError(code, code, 3, affected_refs=(expected,))
     now = datetime.now(UTC).isoformat()
     snapshot_ids = {item.relationship.evidence.snapshot_id for item in safe_trees[0]}
     if len(snapshot_ids) != 1:
@@ -157,6 +201,7 @@ def _candidate_edges(
                             max_matches=relationship.evidence.measurements.max_parents_per_child,
                         )
                     )
+                    _check_candidate_budget(candidates)
                 if left.entity == parent_entity and right.entity == child_entity:
                     candidates.append(
                         CandidateEdge(
@@ -170,24 +215,42 @@ def _candidate_edges(
                             max_matches=relationship.evidence.measurements.max_children_per_parent,
                         )
                     )
+                    _check_candidate_budget(candidates)
     return tuple(sorted(candidates, key=_candidate_key))
 
 
-def _spanning_trees(
+def _search_spanning_trees(
     refs: dict[str, EntityRef],
     start_ref: str,
     max_depth: int,
     candidates: tuple[CandidateEdge, ...],
+    expected_grain_ref: str,
     *,
-    limit: int,
-) -> list[tuple[CandidateEdge, ...]]:
-    results: list[tuple[CandidateEdge, ...]] = []
+    safe_limit: int,
+) -> TreeSearchResult:
+    safe_trees: list[tuple[CandidateEdge, ...]] = []
+    has_tree = False
+    has_grain_compatible_tree = False
+    expansions = 0
 
     def grow(connected: set[str], depths: dict[str, int], edges: tuple[CandidateEdge, ...]) -> None:
-        if len(results) >= limit:
+        nonlocal expansions, has_tree, has_grain_compatible_tree
+        expansions += 1
+        if expansions > MAX_TREE_EXPANSIONS:
+            raise JoinLintError(
+                "RESOURCE_LIMIT_EXCEEDED",
+                "join planning exceeded its search budget",
+                3,
+                affected_refs=tuple(refs),
+            )
+        if len(safe_trees) >= safe_limit:
             return
         if len(connected) == len(refs):
-            results.append(edges)
+            has_tree = True
+            grain_is_compatible = grain_compatible(expected_grain_ref, edges)
+            has_grain_compatible_tree = has_grain_compatible_tree or grain_is_compatible
+            if grain_is_compatible and sum(edge.max_matches > 1 for edge in edges) <= 1:
+                safe_trees.append(edges)
             return
         options = [
             edge
@@ -204,12 +267,49 @@ def _spanning_trees(
             )
 
     grow({start_ref}, {start_ref: 0}, ())
-    return results
+    return TreeSearchResult(
+        safe_trees=tuple(safe_trees),
+        has_tree=has_tree,
+        has_grain_compatible_tree=has_grain_compatible_tree,
+    )
 
 
-def _tree_is_safe(expected_grain_ref: str, tree: tuple[CandidateEdge, ...]) -> bool:
-    fanout_edges = sum(edge.max_matches > 1 for edge in tree)
-    return fanout_edges <= 1 and grain_compatible(expected_grain_ref, tree)
+def _unconnected_refs(
+    refs: dict[str, EntityRef],
+    candidates: tuple[CandidateEdge, ...],
+) -> tuple[str, ...]:
+    adjacency = {ref: set() for ref in refs}
+    for edge in candidates:
+        adjacency[edge.from_ref].add(edge.to_ref)
+        adjacency[edge.to_ref].add(edge.from_ref)
+
+    components: list[tuple[str, ...]] = []
+    remaining = set(refs)
+    while remaining:
+        pending = [min(remaining, key=str.encode)]
+        component: set[str] = set()
+        while pending:
+            ref = pending.pop()
+            if ref in component:
+                continue
+            component.add(ref)
+            pending.extend(adjacency[ref] - component)
+        remaining -= component
+        components.append(tuple(sorted(component, key=str.encode)))
+
+    components.sort(key=lambda component: (-len(component), tuple(ref.encode() for ref in component)))
+    if len(components) < 2 or len(components[0]) == len(components[1]):
+        return ()
+    return tuple(sorted((ref for component in components[1:] for ref in component), key=str.encode))
+
+
+def _check_candidate_budget(candidates: list[CandidateEdge]) -> None:
+    if len(candidates) > MAX_CANDIDATE_EDGES:
+        raise JoinLintError(
+            "RESOURCE_LIMIT_EXCEEDED",
+            "join planning exceeded its candidate budget",
+            3,
+        )
 
 
 def _proof(

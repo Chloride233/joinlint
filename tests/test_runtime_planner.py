@@ -116,10 +116,14 @@ def test_parent_grain_is_rejected_when_one_to_many_join_duplicates_it() -> None:
     with pytest.raises(JoinLintError) as captured:
         plan_join(refs, "customers", "customers", 4, False, graph)
 
-    assert captured.value.code == "NO_VERIFIED_PATH"
+    assert captured.value.code == "GRAIN_INCOMPATIBLE"
 
 
-def test_compound_fanout_path_is_not_proved() -> None:
+def test_compound_fanout_path_is_not_proved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import joinlint.runtime.planner as planner
+
     graph = (
         authorized("a" * 64, "sales.orders", "sales.customers", max_children=3),
         authorized("c" * 64, "sales.items", "sales.orders", max_children=4),
@@ -129,11 +133,21 @@ def test_compound_fanout_path_is_not_proved() -> None:
         EntityRef(ref="orders", entity="sales.orders"),
         EntityRef(ref="items", entity="sales.items"),
     )
+    original = planner.grain_compatible
+    grain_checks = 0
+
+    def counted_grain_check(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal grain_checks
+        grain_checks += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(planner, "grain_compatible", counted_grain_check)
 
     with pytest.raises(JoinLintError) as captured:
         plan_join(refs, "customers", "items", 4, False, graph)
 
-    assert captured.value.code == "NO_VERIFIED_PATH"
+    assert captured.value.code == "COMPOUND_FANOUT"
+    assert grain_checks == 1
 
 
 def test_proof_lifecycle_is_current_stale_or_unverifiable() -> None:
@@ -188,6 +202,39 @@ def test_empty_graph_is_no_verified_path_not_cross_source() -> None:
     assert captured.value.code == "NO_VERIFIED_PATH"
 
 
+def test_planner_identifies_refs_disconnected_from_a_dominant_component() -> None:
+    graph = (authorized("a" * 64, "sales.orders", "sales.customers", max_children=2),)
+    refs = (
+        EntityRef(ref="orders", entity="sales.orders"),
+        EntityRef(ref="customers", entity="sales.customers"),
+        EntityRef(ref="orphan", entity="sales.orphan"),
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        plan_join(refs, "orphan", "orphan", 4, False, graph)
+
+    assert captured.value.code == "UNCONNECTED_ENTITY_REF"
+    assert captured.value.affected_refs == ("orphan",)
+
+
+def test_planner_keeps_equal_disconnected_components_inconclusive() -> None:
+    graph = (
+        authorized("a" * 64, "sales.orders", "sales.customers", max_children=2),
+        authorized("c" * 64, "sales.items", "sales.suppliers", max_children=2),
+    )
+    refs = (
+        EntityRef(ref="orders", entity="sales.orders"),
+        EntityRef(ref="customers", entity="sales.customers"),
+        EntityRef(ref="items", entity="sales.items"),
+        EntityRef(ref="suppliers", entity="sales.suppliers"),
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        plan_join(refs, "orders", "orders", 4, False, graph)
+
+    assert captured.value.code == "NO_VERIFIED_PATH"
+
+
 def test_expected_grain_requires_a_non_null_unique_key() -> None:
     graph = (authorized("a" * 64, "sales.orders", "sales.customers", max_children=2),)
     definitions = (
@@ -221,7 +268,43 @@ def test_expected_grain_requires_a_non_null_unique_key() -> None:
             entity_definitions=definitions,
         )
 
-    assert captured.value.code == "NO_VERIFIED_PATH"
+    assert captured.value.code == "GRAIN_UNPROVABLE"
+
+
+def test_unprovable_expected_grain_is_not_rescued_by_another_unique_entity() -> None:
+    graph = (authorized("a" * 64, "sales.orders", "sales.customers", max_children=2),)
+    definitions = (
+        EntityDefinition(
+            entity_id="sales.orders",
+            source_id="sales",
+            physical_name="orders",
+            columns=(ColumnDefinition(name="customer_id", physical_type="integer", nullable=True),),
+        ),
+        EntityDefinition(
+            entity_id="sales.customers",
+            source_id="sales",
+            physical_name="customers",
+            columns=(ColumnDefinition(name="id", physical_type="integer", nullable=False),),
+            primary_key=("id",),
+            unique_keys=(("id",),),
+        ),
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        plan_join(
+            (
+                EntityRef(ref="orders", entity="sales.orders"),
+                EntityRef(ref="customers", entity="sales.customers"),
+            ),
+            "orders",
+            "orders",
+            4,
+            False,
+            graph,
+            entity_definitions=definitions,
+        )
+
+    assert captured.value.code == "GRAIN_UNPROVABLE"
 
 
 def test_planner_preserves_composite_relationship_grouping() -> None:
@@ -291,3 +374,71 @@ def test_planner_returns_at_most_three_explicit_alternatives() -> None:
     proof = plan_join(refs, "orders", "orders", 4, True, graph)
 
     assert len(proof.alternatives) == 3
+
+
+def test_unsafe_early_candidates_do_not_hide_later_safe_proof() -> None:
+    graph = tuple(
+        authorized(
+            character * 64,
+            "sales.orders",
+            "sales.customers",
+            max_children=2 if character != "f" else 1,
+            child_columns=(f"customer_{character}",),
+        )
+        for character in ("a", "c", "d", "e", "f")
+    )
+    refs = (
+        EntityRef(ref="orders", entity="sales.orders"),
+        EntityRef(ref="customers", entity="sales.customers"),
+    )
+
+    proof = plan_join(refs, "orders", "customers", 4, False, graph)
+
+    assert proof.edges[0].relationship_id == "f" * 64
+
+
+def test_planner_search_budget_fails_closed_on_ambiguous_complete_graph() -> None:
+    graph = []
+    relationship_index = 1
+    for parent_index in range(7):
+        for child_index in range(parent_index + 1, 8):
+            graph.append(
+                authorized(
+                    f"{relationship_index:064x}",
+                    f"sales.e{child_index}",
+                    f"sales.e{parent_index}",
+                    max_children=2,
+                )
+            )
+            relationship_index += 1
+    refs = tuple(
+        EntityRef(ref=f"e{index}", entity=f"sales.e{index}")
+        for index in range(8)
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        plan_join(refs, "e0", "e0", 4, False, tuple(graph))
+
+    assert captured.value.code == "RESOURCE_LIMIT_EXCEEDED"
+
+
+def test_planner_candidate_budget_fails_closed_on_parallel_relationships() -> None:
+    graph = tuple(
+        authorized(
+            f"{index:064x}",
+            "sales.orders",
+            "sales.customers",
+            max_children=1,
+            child_columns=(f"customer_{index}",),
+        )
+        for index in range(1, 258)
+    )
+    refs = (
+        EntityRef(ref="orders", entity="sales.orders"),
+        EntityRef(ref="customers", entity="sales.customers"),
+    )
+
+    with pytest.raises(JoinLintError) as captured:
+        plan_join(refs, "orders", "orders", 4, False, graph)
+
+    assert captured.value.code == "RESOURCE_LIMIT_EXCEEDED"

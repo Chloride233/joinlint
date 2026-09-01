@@ -66,7 +66,8 @@ memorization is therefore an explicit limitation. Selection and oracle inputs
 are frozen, but human relationship review and all Agent runs remain pending as
 of 2026-07-25.
 
-Install the isolated evaluation dependencies and run the free gates:
+Install the isolated evaluation dependencies in a clean environment that does
+not also contain the `remote` extra, then run the free gates:
 
 ```bash
 python -m pip install -e '.[dev,eval]'
@@ -84,7 +85,9 @@ The focused pytest summary must contain no skips. The dry run uses Inspect's
 local mock model, starts the real STDIO MCP server, covers all four arms plus
 the zero-configuration and safety diagnostics, and makes no provider request.
 Normal CI installs only `dev`; it neither installs the evaluation extra nor
-calls DeepSeek. The paid 200-run batch requires a separately recorded approval
+calls DeepSeek. Remote-host dependencies belong in the workflow image or a
+separate environment because Inspect scans installed extensions at startup.
+The paid 200-run batch requires a separately recorded approval
 after the official Spider inputs, human relationship review, hashes, and all
 free gates are frozen.
 
@@ -109,6 +112,9 @@ python -m benchmarks.formal_eval.cli inspect-smoke \
   --output /tmp/joinlint-inspect-smoke
 ```
 
+Use the same clean `dev,eval` environment here; do not add the `remote` extra
+to the local mock-evaluation environment.
+
 The fake rows exercise all gates and the minimum 1,440-run confirmatory matrix,
 but must never be quoted as product evidence. The legacy Spider pilot remains
 read-only history and is not pooled with schema-v2 results.
@@ -123,9 +129,13 @@ protected `formal-evaluation` environment requires explicit approval, verifies
 the input lock and content-derived duplicate fingerprints, freezes one lineage,
 checks the pilot-derived power requirement against the exact run plan, and
 generates deterministic evidence from the raw locked suite. It runs the
-diagnostic canary before the confirmatory batch in Modal and uploads private
-Inspect logs separately from sanitized report inputs. Formal runs must not be
-launched from a developer machine.
+diagnostic canary before the confirmatory batch in Modal. Raw Inspect logs stay
+runner-ephemeral and are never uploaded. Formal evidentiary sanitized outputs
+are uploaded only after the separate, commit-pinned strict verifier accepts
+their exact inventory and content contract. Formal runs must not be launched
+from a developer machine. The separate checkout pins code origin, not process
+isolation from an adversarial target commit; paid execution remains blocked
+until that trust boundary is approved or moved to a clean verifier runner.
 
 Every deterministic bundle carries the raw-suite digest and fixed runner ID.
 Every Agent bundle must contain exactly the sample IDs in the frozen run plan.

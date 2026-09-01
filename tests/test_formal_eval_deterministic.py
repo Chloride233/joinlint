@@ -9,7 +9,7 @@ from benchmarks.formal_eval import deterministic
 
 def plan_response(provenance: str) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "command": "get_join_plan",
         "status": "ok",
         "data": {
@@ -61,7 +61,7 @@ def plan_response(provenance: str) -> dict[str, object]:
 
 def validation_response(left: str, right: str) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "command": "validate_sql",
         "status": "ok",
         "data": {

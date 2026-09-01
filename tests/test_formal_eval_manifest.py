@@ -222,6 +222,7 @@ def test_fake_model_cli_writes_rebuildable_reports(tmp_path: Path) -> None:
 
     report = json.loads((output / "formal-evaluation.json").read_text(encoding="utf-8"))
     assert report["evaluation_id"] == "synthetic-pipeline-smoke"
+    assert report["schema_version"] == 3
     assert report["provenance"]["model_identities"] == [
         "fake/high-capability-v1",
         "fake/cost-efficient-v1",
@@ -229,6 +230,16 @@ def test_fake_model_cli_writes_rebuildable_reports(tmp_path: Path) -> None:
     assert report["sql_validation"]["performance"]["cached_plan_p95_ms"] == 100
     assert report["evidence_class"] == "synthetic_non_evidentiary"
     assert report["public_quantitative_claim_allowed"] is False
+    assert report["agent_product"]["reliability"]["strict_completion_rates"] == {
+        "control": 0.6,
+        "treatment": 1.0,
+    }
+    assert report["agent_product"]["reliability"][
+        "answerability_by_condition"
+    ]["treatment"]["safe_abstention_rate"] == 1.0
     markdown = (output / "formal-evaluation.md").read_text(encoding="utf-8")
     assert "Join correctness is not proof" in markdown
     assert "SYNTHETIC_NON_EVIDENTIARY" in markdown
+    assert "Reliability and refusal diagnostics" in markdown
+    assert "Strict completion `control`: 144/240 (0.6000)" in markdown
+    assert "unsafe submissions 0 (0.0000)" in markdown

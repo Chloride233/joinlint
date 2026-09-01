@@ -9,7 +9,7 @@ import uuid
 from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import rfc8785
 from pydantic import Field, TypeAdapter, model_validator
@@ -36,6 +36,7 @@ from benchmarks.formal_eval.contracts import (
 from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.manifest import (
     load_document,
+    require_locked_inputs,
     semantic_fingerprint,
     verify_input_lock,
     verify_sealed_manifest,
@@ -43,15 +44,24 @@ from benchmarks.formal_eval.manifest import (
 from benchmarks.formal_eval.run_plan import RunPlanV2, RunSpec, sample_id_for
 
 
-PILOT_DATASET_RELEASE = "bird-train-2023-07-11-declared-fk-pilot-v1"
-PILOT_ALLOCATION = {"citeseer": 8, "genes": 4, "trains": 8}
-PILOT_DOMAINS = {"citeseer": "research", "genes": "biology", "trains": "transportation"}
+PILOT_DATASET_RELEASE = "bird-train-2023-07-11-declared-fk-pilot-v4"
+CONTRACT_SAFETY_DATASET_RELEASE = "semantic-join-contract-safety-pilot-v1"
+CONTRACT_AMBIGUITY_DATASET_RELEASE = "semantic-join-contract-ambiguity-pilot-v1"
+PILOT_ALLOCATION = {"citeseer": 9, "trains": 11}
+PILOT_DOMAINS = {"citeseer": "research", "trains": "transportation"}
+PILOT_GROUND_TRUTH_EXCLUSIONS = {
+    "bird-train-citeseer-04142": "question_requests_other_paper_but_gold_returns_source_paper_words",
+    "bird-train-citeseer-04143": "question_ambiguously_invokes_cites_table_but_gold_uses_content_only",
+    "bird-train-citeseer-04150": "question_requires_class_intersection_but_gold_uses_union",
+    "bird-train-trains-00698": "question_requests_west_but_gold_filters_east",
+}
 MODAL_CPU_USD_PER_CORE_SECOND = 0.00003942
 MODAL_MEMORY_USD_PER_GIB_SECOND = 0.00000667
+PILOT_ASSIGNMENT_DESIGN = "balanced_diagonal_crossover_v1"
 
 
 class PilotRegistration(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[3, 4, 5, 6, 7, 8]
     evaluation_id: str
     dataset_release: str
     seed: int = Field(ge=0)
@@ -60,18 +70,110 @@ class PilotRegistration(StrictModel):
     hosts: tuple[Literal["codex"], Literal["claude_code"]] = ("codex", "claude_code")
     host_versions: dict[Host, str]
     joinlint_commit: str
-    budget_cny: Literal[20.0] = 20.0
-    token_limit_per_run: Literal[20_000] = 20_000
+    budget_cny: Literal[20.0, 22.0] = 20.0
+    assignment_design: Literal["balanced_diagonal_crossover_v1"] = (
+        "balanced_diagonal_crossover_v1"
+    )
+    token_limit_per_run: Literal[35_000, 45_000] = 35_000
+    token_accounting_ceiling_per_run: int | None = None
+    token_limit_type: Literal["(input*0.5)+output"] = "(input*0.5)+output"
+    message_limit_per_run: Literal[20, 30] = 20
     time_limit_seconds: Literal[90] = 90
-    modal_sandbox_timeout_seconds: Literal[120] = 120
+    modal_sandbox_timeout_seconds: Literal[150, 170]
+    modal_image_builder_version: Literal["2025.06 Stable"] = "2025.06 Stable"
     max_sandboxes: Literal[2] = 2
     cpu_cores: Literal[0.5] = 0.5
     memory_mib: Literal[2048] = 2048
     usd_to_cny_upper: Literal[8.0] = 8.0
     modal_image_build_reserve_cny: Literal[2.0] = 2.0
 
+    @model_validator(mode="before")
+    @classmethod
+    def default_legacy_sandbox_timeout(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        value = {
+            **value,
+            **(
+                {
+                    "models": tuple(
+                        FrozenModel.model_validate_json(json.dumps(model))
+                        for model in value["models"]
+                    )
+                }
+                if isinstance(value.get("models"), list)
+                else {}
+            ),
+            **(
+                {"hosts": tuple(value["hosts"])}
+                if isinstance(value.get("hosts"), list)
+                else {}
+            ),
+        }
+        if (
+            value.get("schema_version") in (3, 4)
+            and "modal_sandbox_timeout_seconds" not in value
+        ):
+            return {**value, "modal_sandbox_timeout_seconds": 150}
+        if (
+            value.get("schema_version") in (5, 6, 7, 8)
+            and "modal_sandbox_timeout_seconds" not in value
+        ):
+            raise ValueError(
+                "current pilot registration must explicitly declare its sandbox timeout"
+            )
+        return value
+
     @model_validator(mode="after")
     def require_frozen_matrix_and_budget(self) -> PilotRegistration:
+        if self.schema_version == 8 and (
+            self.evaluation_id != "joinlint-semantic-contract-ambiguity-pilot-v1"
+            or self.dataset_release != CONTRACT_AMBIGUITY_DATASET_RELEASE
+            or self.token_limit_per_run != 45_000
+            or self.token_accounting_ceiling_per_run != 50_000
+            or self.message_limit_per_run != 30
+            or self.budget_cny != 22.0
+        ):
+            raise ValueError(
+                "contract ambiguity Pilot resource limits do not match schema version 8"
+            )
+        if self.schema_version == 7 and (
+            self.evaluation_id != "joinlint-semantic-contract-safety-pilot-v1"
+            or self.dataset_release != CONTRACT_SAFETY_DATASET_RELEASE
+            or self.token_limit_per_run != 45_000
+            or self.token_accounting_ceiling_per_run != 50_000
+            or self.message_limit_per_run != 30
+            or self.budget_cny != 22.0
+        ):
+            raise ValueError(
+                "contract safety Pilot resource limits do not match schema version 7"
+            )
+        if self.schema_version == 6 and (
+            self.evaluation_id != "joinlint-semantic-safety-pilot-v1"
+            or self.dataset_release != "semantic-join-safety-pilot-v1"
+            or self.token_limit_per_run != 45_000
+            or self.token_accounting_ceiling_per_run != 50_000
+            or self.message_limit_per_run != 30
+            or self.budget_cny != 22.0
+        ):
+            raise ValueError("safety Pilot resource limits do not match schema version 6")
+        if self.schema_version in (4, 5) and (
+            self.token_limit_per_run != 35_000
+            or self.token_accounting_ceiling_per_run != 45_000
+            or self.message_limit_per_run != 20
+            or self.budget_cny != 20.0
+        ):
+            raise ValueError("Pilot resource limits do not match its schema version")
+        if self.schema_version == 3 and self.token_accounting_ceiling_per_run is not None:
+            raise ValueError("legacy pilot registration cannot define an accounting ceiling")
+        if (
+            self.schema_version >= 5
+            and self.modal_sandbox_timeout_seconds != 170
+        ) or (
+            self.schema_version < 5
+            and self.modal_sandbox_timeout_seconds != 150
+        ):
+            raise ValueError("pilot sandbox timeout does not match its schema version")
         if {model.tier for model in self.models} != {"high_capability", "cost_efficient"}:
             raise ValueError("pilot requires one model from each tier")
         if len({model.id for model in self.models}) != 2:
@@ -120,10 +222,25 @@ class PilotBudgetCheckpoint(StrictModel):
     safe_to_continue: bool
 
 
+class PilotCalibrationSpec(StrictModel):
+    schema_version: Literal[2] = 2
+    task_ids: tuple[str, str]
+    selection_rule: Literal["highest_join_depth_distinct_database_then_task_id_v2"] = (
+        "highest_join_depth_distinct_database_then_task_id_v2"
+    )
+
+    @model_validator(mode="after")
+    def require_two_distinct_tasks(self) -> PilotCalibrationSpec:
+        if len(set(self.task_ids)) != 2:
+            raise ValueError("pilot calibration requires two distinct task IDs")
+        return self
+
+
 def frozen_pilot_registration(commit: str) -> PilotRegistration:
     observed_at = date(2026, 7, 26)
     return PilotRegistration(
-        evaluation_id="joinlint-deepseek-modal-pilot-v1",
+        schema_version=5,
+        evaluation_id="joinlint-deepseek-modal-pilot-v4",
         dataset_release=PILOT_DATASET_RELEASE,
         seed=20260727,
         models=(
@@ -156,12 +273,55 @@ def frozen_pilot_registration(commit: str) -> PilotRegistration:
         ),
         host_versions={"codex": "0.144.1", "claude_code": "2.1.212"},
         joinlint_commit=commit,
+        assignment_design=PILOT_ASSIGNMENT_DESIGN,
+        token_accounting_ceiling_per_run=45_000,
+        modal_sandbox_timeout_seconds=170,
+    )
+
+
+def frozen_safety_pilot_registration(commit: str) -> PilotRegistration:
+    values = frozen_pilot_registration(commit).model_dump(mode="json")
+    return PilotRegistration.model_validate(
+        {
+            **values,
+            "schema_version": 6,
+            "evaluation_id": "joinlint-semantic-safety-pilot-v1",
+            "dataset_release": "semantic-join-safety-pilot-v1",
+            "token_limit_per_run": 45_000,
+            "token_accounting_ceiling_per_run": 50_000,
+            "message_limit_per_run": 30,
+            "budget_cny": 22.0,
+        }
+    )
+
+
+def frozen_contract_safety_pilot_registration(commit: str) -> PilotRegistration:
+    values = frozen_safety_pilot_registration(commit).model_dump(mode="json")
+    return PilotRegistration.model_validate(
+        {
+            **values,
+            "schema_version": 7,
+            "evaluation_id": "joinlint-semantic-contract-safety-pilot-v1",
+            "dataset_release": CONTRACT_SAFETY_DATASET_RELEASE,
+        }
+    )
+
+
+def frozen_contract_ambiguity_pilot_registration(commit: str) -> PilotRegistration:
+    values = frozen_contract_safety_pilot_registration(commit).model_dump(mode="json")
+    return PilotRegistration.model_validate(
+        {
+            **values,
+            "schema_version": 8,
+            "evaluation_id": "joinlint-semantic-contract-ambiguity-pilot-v1",
+            "dataset_release": CONTRACT_AMBIGUITY_DATASET_RELEASE,
+        }
     )
 
 
 def budget_envelope(registration: PilotRegistration) -> PilotBudgetEnvelope:
     model_upper = sum(model_batch_upper_costs(registration))
-    runs_per_model = registration.task_count * len(registration.hosts) * 2
+    runs_per_model = registration.task_count * 2
     run_count = runs_per_model * len(registration.models)
     modal_usd = run_count * registration.modal_sandbox_timeout_seconds * (
         registration.cpu_cores * MODAL_CPU_USD_PER_CORE_SECOND
@@ -180,22 +340,27 @@ def budget_envelope(registration: PilotRegistration) -> PilotBudgetEnvelope:
 
 def model_batch_upper_costs(registration: PilotRegistration) -> tuple[float, ...]:
     costs: list[float] = []
+    tasks_per_batch = registration.task_count // len(registration.hosts)
     for model in registration.models:
-        rate = max(
-            model.pricing_cny.input_cache_hit_per_million_cny,
-            model.pricing_cny.input_cache_miss_per_million_cny,
+        weighted_unit_rate = max(
+            model.pricing_cny.input_cache_hit_per_million_cny / 0.5,
+            model.pricing_cny.input_cache_miss_per_million_cny / 0.5,
             model.pricing_cny.output_per_million_cny,
         )
         batch_cost = (
-            registration.task_count
-            * registration.token_limit_per_run
-            * rate
+            tasks_per_batch
+            * _token_accounting_ceiling(registration)
+            * weighted_unit_rate
             / 1_000_000
         )
         for _host in registration.hosts:
             for _condition in ("control", "treatment"):
                 costs.append(batch_cost)
     return tuple(costs)
+
+
+def _token_accounting_ceiling(registration: PilotRegistration) -> int:
+    return registration.token_accounting_ceiling_per_run or registration.token_limit_per_run
 
 
 def pilot_budget_checkpoint(
@@ -243,6 +408,7 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
         record["database_id"]: record for record in source_manifest["selected_databases"]
     }
     candidates: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    observed_ground_truth_exclusions: set[str] = set()
     for raw in raw_tasks:
         database_id = raw.get("db_id")
         if database_id not in PILOT_ALLOCATION:
@@ -253,8 +419,13 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
             "train",
             table_rows[database_id],
         )
+        if candidate is not None and candidate["task_id"] in PILOT_GROUND_TRUTH_EXCLUSIONS:
+            observed_ground_truth_exclusions.add(candidate["task_id"])
+            continue
         if candidate is not None and candidate["all_edges_declared_fk"]:
             candidates[database_id].append(candidate)
+    if observed_ground_truth_exclusions != set(PILOT_GROUND_TRUTH_EXCLUSIONS):
+        raise ValueError("pilot ground-truth exclusions do not match the frozen source")
 
     database_paths = {
         database_id: train_subset / selected_database_records[database_id]["path"]
@@ -268,13 +439,14 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
                 database_ids=(database_id,),
                 tasks_per_database=count,
                 database_paths={database_id: database_paths[database_id]},
+                require_grain_provable=True,
             )
         )
     selected.sort(key=lambda task: task["task_id"].encode("utf-8"))
     if len(selected) != 20 or dict(
         Counter(task["database_id"] for task in selected)
     ) != PILOT_ALLOCATION:
-        raise ValueError("pilot allocation is not the frozen 8/4/8 selection")
+        raise ValueError("pilot allocation is not the frozen 9/11 selection")
     near_pairs = Counter(
         (task["question_template_id"], task["sql_structure_id"]) for task in selected
     )
@@ -350,6 +522,7 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
         )
         sealed_tasks.sort(key=lambda task: task.task_id.encode("utf-8"))
         verify_sealed_manifest(manifest, sealed_tasks)
+        calibration = build_pilot_calibration_spec(manifest)
         registration = frozen_pilot_registration(commit)
         envelope = budget_envelope(registration)
 
@@ -358,6 +531,7 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
             [task.model_dump(mode="json", by_alias=True) for task in sealed_tasks],
         )
         _write_canonical(staging / "manifest.json", manifest.model_dump(mode="json"))
+        _write_canonical(staging / "calibration.json", calibration.model_dump(mode="json"))
         _write_canonical(staging / "registration.json", registration.model_dump(mode="json"))
         source = {
             "schema_version": 1,
@@ -366,6 +540,7 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
             "allocation": PILOT_ALLOCATION,
             "uses_joinlint_output": False,
             "relationship_scope": "declared_fk_only",
+            "ground_truth_exclusions": dict(sorted(PILOT_GROUND_TRUTH_EXCLUSIONS.items())),
             "databases": database_records,
         }
         _write_canonical(staging / "source-manifest.json", source)
@@ -398,22 +573,159 @@ def build_pilot_inputs(train_subset: Path, output: Path, *, commit: str) -> dict
         raise
 
 
+def build_safety_pilot_inputs(output: Path, *, commit: str) -> dict[str, Any]:
+    from benchmarks.formal_eval.semantic_failure import build_semantic_failure_v1
+
+    return _build_safety_pilot_inputs(
+        output,
+        commit=commit,
+        source_builder=build_semantic_failure_v1,
+        registration=frozen_safety_pilot_registration(commit),
+        dataset_release="semantic-join-safety-pilot-v1",
+        status="frozen_independent_safety_pilot",
+        claim_boundary="synthetic_join_safety_stress_only",
+    )
+
+
+def build_contract_safety_pilot_inputs(output: Path, *, commit: str) -> dict[str, Any]:
+    from benchmarks.formal_eval.semantic_contract_failure import (
+        build_semantic_contract_failure_v1,
+    )
+
+    return _build_safety_pilot_inputs(
+        output,
+        commit=commit,
+        source_builder=build_semantic_contract_failure_v1,
+        registration=frozen_contract_safety_pilot_registration(commit),
+        dataset_release=CONTRACT_SAFETY_DATASET_RELEASE,
+        status="frozen_independent_contract_safety_pilot",
+        claim_boundary="trusted_query_contract_join_safety_stress_only",
+    )
+
+
+def build_contract_ambiguity_pilot_inputs(output: Path, *, commit: str) -> dict[str, Any]:
+    from benchmarks.formal_eval.semantic_contract_ambiguity import (
+        build_semantic_contract_ambiguity_v1,
+    )
+
+    return _build_safety_pilot_inputs(
+        output,
+        commit=commit,
+        source_builder=build_semantic_contract_ambiguity_v1,
+        registration=frozen_contract_ambiguity_pilot_registration(commit),
+        dataset_release=CONTRACT_AMBIGUITY_DATASET_RELEASE,
+        status="frozen_independent_contract_ambiguity_pilot",
+        claim_boundary="trusted_query_contract_opaque_relationship_stress_only",
+    )
+
+
+def _build_safety_pilot_inputs(
+    output: Path,
+    *,
+    commit: str,
+    source_builder: Callable[[Path, Path], dict[str, Any]],
+    registration: PilotRegistration,
+    dataset_release: str,
+    status: str,
+    claim_boundary: str,
+) -> dict[str, Any]:
+
+    if output.exists() or output.is_symlink():
+        raise ValueError("safety Pilot output already exists")
+    parent = output.parent.resolve(strict=True)
+    source = parent / f".semantic-safety-source-{uuid.uuid4().hex}"
+    staging = parent / f".{output.name}.staging-{uuid.uuid4().hex}"
+    try:
+        source_report = source_builder(parent, source)
+        source_tasks = TypeAdapter(list[SealedAgentTask]).validate_json(
+            (source / "agent-tasks.json").read_bytes()
+        )
+        source_manifest = load_document(source / "manifest.json", FormalManifestV2)
+        tasks = tuple(
+            task.model_copy(update={"database_path": f"databases/{task.database_id}.sqlite"})
+            for task in source_tasks
+        )
+        manifest = source_manifest.model_copy(
+            update={
+                "dataset_release": dataset_release,
+                "tasks": tuple(
+                    task.model_copy(update={"split": "confirmatory"})
+                    for task in source_manifest.tasks
+                ),
+            }
+        )
+        verify_sealed_manifest(manifest, tasks)
+        if registration.joinlint_commit != commit:
+            raise ValueError("safety Pilot registration commit mismatch")
+        calibration = build_pilot_calibration_spec(manifest)
+
+        staging.mkdir()
+        shutil.copytree(source / "databases", staging / "databases")
+        _write_canonical(
+            staging / "agent-tasks.json",
+            [task.model_dump(mode="json", by_alias=True) for task in tasks],
+        )
+        _write_canonical(staging / "manifest.json", manifest.model_dump(mode="json"))
+        _write_canonical(staging / "calibration.json", calibration.model_dump(mode="json"))
+        _write_canonical(staging / "registration.json", registration.model_dump(mode="json"))
+        _write_canonical(
+            staging / "source-manifest.json",
+            {
+                **source_report,
+                "status": status,
+                "dataset_release": manifest.dataset_release,
+                "claim_boundary": claim_boundary,
+                "agent_tasks": _file_record(staging / "agent-tasks.json"),
+                "manifest": _file_record(staging / "manifest.json"),
+            },
+        )
+        lock = _input_lock(staging)
+        _write_canonical(staging / "input-lock.json", lock.model_dump(mode="json"))
+        lineage_id = digest_value(
+            {
+                "registration": registration.model_dump(mode="json"),
+                "manifest": manifest.model_dump(mode="json"),
+                "input_lock": lock.model_dump(mode="json"),
+            }
+        )
+        run_plan = build_pilot_run_plan(manifest, registration, lineage_id)
+        _write_canonical(staging / "run-plan.json", run_plan.model_dump(mode="json"))
+        report = {
+            "schema_version": 1,
+            "status": status,
+            "claim_boundary": claim_boundary,
+            "lineage_id": lineage_id,
+            "task_count": len(tasks),
+            "run_count": len(run_plan.runs),
+            "input_lock_sha256": digest_value(lock.model_dump(mode="json")),
+        }
+        _write_canonical(staging / "pilot-report.json", report)
+        os.replace(staging, output)
+        return report
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    finally:
+        shutil.rmtree(source, ignore_errors=True)
+
+
 def build_pilot_run_plan(
     manifest: FormalManifestV2,
     registration: PilotRegistration,
     lineage_id: str,
 ) -> RunPlanV2:
     runs: list[RunSpec] = []
-    for task in manifest.tasks:
-        for model in registration.models:
-            for host in registration.hosts:
+    for model in registration.models:
+        for host in registration.hosts:
+            partition = pilot_partition_for(model.tier, host)
+            for task in pilot_partition_tasks(manifest, partition):
                 for condition in ("control", "treatment"):
                     runs.append(
                         RunSpec(
                             sample_id=sample_id_for(
                                 task_id=task.task_id,
                                 database_id=task.database_id,
-                                corpus="natural",
+                                corpus=task.corpus,
                                 condition=condition,
                                 model_id=model.returned_id,
                                 host=host,
@@ -421,7 +733,7 @@ def build_pilot_run_plan(
                             ),
                             task_id=task.task_id,
                             database_id=task.database_id,
-                            corpus="natural",
+                            corpus=task.corpus,
                             condition=condition,
                             model_id=model.returned_id,
                             host=host,
@@ -430,14 +742,73 @@ def build_pilot_run_plan(
                         )
                     )
     runs.sort(key=lambda run: run.sample_id.encode("utf-8"))
-    if len(runs) != 160:
-        raise ValueError("pilot run plan must contain exactly 160 runs")
+    if len(runs) != 80:
+        raise ValueError("pilot run plan must contain exactly 80 runs")
+    run_counts = Counter(run.task_id for run in runs)
+    if set(run_counts.values()) != {4}:
+        raise ValueError("each pilot task must have four paired crossover runs")
     return RunPlanV2(
         evaluation_id=registration.evaluation_id,
         lineage_id=lineage_id,
         runs=tuple(runs),
         blind_review_sample_ids=(),
     )
+
+
+def pilot_partition_for(
+    model_tier: str,
+    host: Host,
+) -> Literal["even", "odd"]:
+    if model_tier not in {"high_capability", "cost_efficient"}:
+        raise ValueError("unsupported pilot model tier")
+    diagonal = (model_tier == "high_capability") == (host == "codex")
+    return "even" if diagonal else "odd"
+
+
+def pilot_partition_tasks(
+    manifest: FormalManifestV2,
+    partition: Literal["even", "odd"],
+) -> tuple[FormalTask, ...]:
+    ordered = sorted(
+        manifest.tasks,
+        key=lambda task: (task.database_id.encode("utf-8"), task.task_id.encode("utf-8")),
+    )
+    offset = 0 if partition == "even" else 1
+    selected = tuple(ordered[offset::2])
+    expected = (len(ordered) + (1 if partition == "even" else 0)) // 2
+    if len(selected) != expected:
+        raise ValueError("pilot crossover partition is not reproducible")
+    return selected
+
+
+def build_pilot_calibration_spec(manifest: FormalManifestV2) -> PilotCalibrationSpec:
+    ranked = sorted(
+        manifest.tasks,
+        key=lambda task: (-task.join_depth, task.task_id.encode("utf-8")),
+    )
+    selected: list[str] = []
+    selected_databases: set[str] = set()
+    for task in ranked:
+        if task.database_id in selected_databases:
+            continue
+        selected.append(task.task_id)
+        selected_databases.add(task.database_id)
+        if len(selected) == 2:
+            break
+    if len(selected) < 2:
+        raise ValueError("pilot calibration requires tasks from two distinct databases")
+    return PilotCalibrationSpec(task_ids=(selected[0], selected[1]))
+
+
+def load_pilot_calibration_spec(
+    root: Path,
+    manifest: FormalManifestV2,
+) -> PilotCalibrationSpec:
+    specification = load_document(root / "calibration.json", PilotCalibrationSpec)
+    expected = build_pilot_calibration_spec(manifest)
+    if specification != expected:
+        raise ValueError("pilot calibration task selection is not reproducible")
+    return specification
 
 
 def pilot_budget_report(
@@ -479,16 +850,52 @@ def _input_lock(root: Path) -> InputLockV2:
     return InputLockV2(files=files)
 
 
-def verify_pilot_inputs(root: Path) -> tuple[PilotRegistration, FormalManifestV2, RunPlanV2]:
+def _require_pilot_locked_inputs(
+    lock: InputLockV2,
+    root: Path,
+) -> None:
+    require_locked_inputs(
+        lock,
+        root,
+        [
+            root / "registration.json",
+            root / "manifest.json",
+            root / "calibration.json",
+            root / "agent-tasks.json",
+            root / "source-manifest.json",
+            root / "databases",
+        ],
+    )
+
+
+def _read_locked_bytes(lock: InputLockV2, root: Path, relative_name: str) -> bytes:
+    path = root / relative_name
+    require_locked_inputs(lock, root, [path])
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != lock.files[relative_name]:
+        raise ValueError(f"locked input hash mismatch: {relative_name}")
+    return raw
+
+
+def verify_pilot_input_bundle(
+    root: Path,
+) -> tuple[PilotRegistration, FormalManifestV2, RunPlanV2, InputLockV2]:
     registration = load_document(root / "registration.json", PilotRegistration)
     manifest = load_document(root / "manifest.json", FormalManifestV2)
     run_plan = load_document(root / "run-plan.json", RunPlanV2)
     lock = load_document(root / "input-lock.json", InputLockV2)
     verify_input_lock(lock, root)
+    _require_pilot_locked_inputs(lock, root)
     tasks = TypeAdapter(list[SealedAgentTask]).validate_json(
-        (root / "agent-tasks.json").read_bytes()
+        _read_locked_bytes(lock, root, "agent-tasks.json")
+    )
+    require_locked_inputs(
+        lock,
+        root,
+        [root / task.database_path for task in tasks],
     )
     verify_sealed_manifest(manifest, tasks)
+    load_pilot_calibration_spec(root, manifest)
     if manifest.dataset_release != registration.dataset_release:
         raise ValueError("pilot registration and manifest releases differ")
     expected_lineage = digest_value(
@@ -501,6 +908,11 @@ def verify_pilot_inputs(root: Path) -> tuple[PilotRegistration, FormalManifestV2
     expected_plan = build_pilot_run_plan(manifest, registration, expected_lineage)
     if run_plan != expected_plan:
         raise ValueError("pilot run plan is not reproducible")
+    return registration, manifest, run_plan, lock
+
+
+def verify_pilot_inputs(root: Path) -> tuple[PilotRegistration, FormalManifestV2, RunPlanV2]:
+    registration, manifest, run_plan, _ = verify_pilot_input_bundle(root)
     return registration, manifest, run_plan
 
 
@@ -515,6 +927,15 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--train-subset", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
     build.add_argument("--commit", required=True)
+    build_safety = commands.add_parser("build-safety")
+    build_safety.add_argument("--output", type=Path, required=True)
+    build_safety.add_argument("--commit", required=True)
+    build_contract_safety = commands.add_parser("build-contract-safety")
+    build_contract_safety.add_argument("--output", type=Path, required=True)
+    build_contract_safety.add_argument("--commit", required=True)
+    build_contract_ambiguity = commands.add_parser("build-contract-ambiguity")
+    build_contract_ambiguity.add_argument("--output", type=Path, required=True)
+    build_contract_ambiguity.add_argument("--commit", required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("--root", type=Path, required=True)
     verify.add_argument("--current-commit")
@@ -522,6 +943,24 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.command == "build":
         report = build_pilot_inputs(
             arguments.train_subset,
+            arguments.output,
+            commit=arguments.commit,
+        )
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    if arguments.command == "build-safety":
+        report = build_safety_pilot_inputs(arguments.output, commit=arguments.commit)
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    if arguments.command == "build-contract-safety":
+        report = build_contract_safety_pilot_inputs(
+            arguments.output,
+            commit=arguments.commit,
+        )
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    if arguments.command == "build-contract-ambiguity":
+        report = build_contract_ambiguity_pilot_inputs(
             arguments.output,
             commit=arguments.commit,
         )

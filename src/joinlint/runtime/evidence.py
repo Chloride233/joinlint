@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from time import monotonic
 
+from joinlint.config import DEFAULT_MAX_SCAN_SECONDS
+from joinlint.errors import JoinLintError
 from joinlint.model import ModelV1, entity_table_name
 from joinlint.runtime.domain import (
     POLICY_VERSION,
@@ -26,6 +30,58 @@ from joinlint.runtime.sources import SQLiteSnapshot
 
 
 RowExecutor = Callable[[str], tuple[object, ...]]
+
+
+@dataclass(frozen=True)
+class EvidenceDeadline:
+    expires_at: float
+
+    @classmethod
+    def after(cls, seconds: float = DEFAULT_MAX_SCAN_SECONDS) -> EvidenceDeadline:
+        return cls(expires_at=monotonic() + seconds)
+
+    def expired(self) -> bool:
+        return monotonic() >= self.expires_at
+
+    def check(self) -> None:
+        if self.expired():
+            raise JoinLintError(
+                "RESOURCE_LIMIT_EXCEEDED",
+                "evidence verification exceeded its resource budget",
+                3,
+            )
+
+
+@dataclass(frozen=True)
+class EndpointStatistics:
+    non_null_count: int
+    distinct_count: int
+    max_multiplicity: int
+
+
+@dataclass
+class ExactStatistics:
+    table_row_counts: dict[str, int] = field(default_factory=dict)
+    endpoint_statistics: dict[
+        tuple[str, tuple[str, ...]],
+        EndpointStatistics,
+    ] = field(default_factory=dict)
+
+    def table_row_count(self, entity_id: str, loader: Callable[[], int]) -> int:
+        if entity_id not in self.table_row_counts:
+            self.table_row_counts[entity_id] = loader()
+        return self.table_row_counts[entity_id]
+
+    def endpoint(
+        self,
+        entity_id: str,
+        columns: tuple[str, ...],
+        loader: Callable[[], EndpointStatistics],
+    ) -> EndpointStatistics:
+        key = (entity_id, columns)
+        if key not in self.endpoint_statistics:
+            self.endpoint_statistics[key] = loader()
+        return self.endpoint_statistics[key]
 
 
 def relationship_definitions(
@@ -78,23 +134,53 @@ def verify_relationship(
     seed: RelationshipSeed,
     *,
     query_observer: Callable[[str], None] | None = None,
+    deadline: EvidenceDeadline | None = None,
+    statistics: ExactStatistics | None = None,
 ) -> EvidenceRecord:
     entities = {entity.entity_id: entity for entity in catalog.entities}
     child_entity = entities[seed.definition.child.entity_id]
     parent_entity = entities[seed.definition.parent.entity_id]
     connection = sqlite3.connect(f"file:{snapshot.path}?mode=ro", uri=True)
     connection.execute("PRAGMA query_only = ON")
+    query_deadline = deadline or EvidenceDeadline.after()
+    connection.set_progress_handler(lambda: 1 if query_deadline.expired() else 0, 1_000)
 
     def query(statement: str) -> tuple[object, ...]:
+        query_deadline.check()
         if query_observer is not None:
             query_observer(statement)
-        row = connection.execute(statement).fetchone()
+        query_deadline.check()
+        try:
+            row = connection.execute(statement).fetchone()
+        except sqlite3.OperationalError as error:
+            if query_deadline.expired() or "interrupted" in str(error).casefold():
+                raise JoinLintError(
+                    "RESOURCE_LIMIT_EXCEEDED",
+                    "evidence verification exceeded its resource budget",
+                    3,
+                ) from error
+            raise JoinLintError(
+                "EVIDENCE_UNVERIFIABLE",
+                "evidence query could not complete",
+                3,
+            ) from error
+        query_deadline.check()
         if row is None:
-            raise ValueError("evidence query returned no row")
+            raise JoinLintError(
+                "EVIDENCE_UNVERIFIABLE",
+                "evidence query returned no result",
+                3,
+            )
         return row
 
     try:
-        measurements = _measure(query, child_entity, parent_entity, seed)
+        measurements = _measure(
+            query,
+            child_entity,
+            parent_entity,
+            seed,
+            statistics or ExactStatistics(),
+        )
     finally:
         connection.close()
     findings = _findings(measurements, seed.declared_cardinality)
@@ -171,6 +257,7 @@ def _measure(
     child_entity: EntityDefinition,
     parent_entity: EntityDefinition,
     seed: RelationshipSeed,
+    statistics: ExactStatistics,
 ) -> EvidenceMeasurements:
     child_table = _quote(child_entity.physical_name)
     parent_table = _quote(parent_entity.physical_name)
@@ -185,25 +272,35 @@ def _measure(
     child_group = ", ".join(f"c.{column}" for column in child_columns)
     parent_group = ", ".join(f"p.{column}" for column in parent_columns)
 
-    child_row_count = int(query(f"SELECT COUNT(*) FROM {child_table} AS c")[0])
-    parent_row_count = int(query(f"SELECT COUNT(*) FROM {parent_table} AS p")[0])
-    child_non_null_count = int(
-        query(f"SELECT COUNT(*) FROM {child_table} AS c WHERE {child_non_null}")[0]
+    child_row_count = statistics.table_row_count(
+        child_entity.entity_id,
+        lambda: int(query(f"SELECT COUNT(*) FROM {child_table} AS c")[0]),
     )
-    parent_non_null_count = int(
-        query(f"SELECT COUNT(*) FROM {parent_table} AS p WHERE {parent_non_null}")[0]
+    parent_row_count = statistics.table_row_count(
+        parent_entity.entity_id,
+        lambda: int(query(f"SELECT COUNT(*) FROM {parent_table} AS p")[0]),
     )
-    child_distinct_count = int(
-        query(
-            "SELECT COUNT(*) FROM (SELECT 1 FROM "
-            f"{child_table} AS c WHERE {child_non_null} GROUP BY {child_group})"
-        )[0]
+    child_statistics = statistics.endpoint(
+        child_entity.entity_id,
+        seed.definition.child.columns,
+        lambda: _endpoint_statistics(
+            query,
+            child_table,
+            "c",
+            child_non_null,
+            child_group,
+        ),
     )
-    parent_distinct_count = int(
-        query(
-            "SELECT COUNT(*) FROM (SELECT 1 FROM "
-            f"{parent_table} AS p WHERE {parent_non_null} GROUP BY {parent_group})"
-        )[0]
+    parent_statistics = statistics.endpoint(
+        parent_entity.entity_id,
+        seed.definition.parent.columns,
+        lambda: _endpoint_statistics(
+            query,
+            parent_table,
+            "p",
+            parent_non_null,
+            parent_group,
+        ),
     )
     inclusion_numerator = int(
         query(
@@ -211,18 +308,12 @@ def _measure(
             f"AND EXISTS (SELECT 1 FROM {parent_table} AS p WHERE {equality})"
         )[0]
     )
-    max_children = int(
-        query(
-            "SELECT COALESCE(MAX(n), 0) FROM (SELECT COUNT(*) AS n FROM "
-            f"{child_table} AS c WHERE {child_non_null} GROUP BY {child_group})"
-        )[0]
-    )
-    max_parents = int(
-        query(
-            "SELECT COALESCE(MAX(n), 0) FROM (SELECT COUNT(*) AS n FROM "
-            f"{parent_table} AS p WHERE {parent_non_null} GROUP BY {parent_group})"
-        )[0]
-    )
+    child_non_null_count = child_statistics.non_null_count
+    parent_non_null_count = parent_statistics.non_null_count
+    child_distinct_count = child_statistics.distinct_count
+    parent_distinct_count = parent_statistics.distinct_count
+    max_children = child_statistics.max_multiplicity
+    max_parents = parent_statistics.max_multiplicity
     observed = _cardinality(max_children, max_parents)
     return EvidenceMeasurements(
         child_row_count=child_row_count,
@@ -238,6 +329,25 @@ def _measure(
         observed_cardinality=observed,
         max_children_per_parent=max_children,
         max_parents_per_child=max_parents,
+    )
+
+
+def _endpoint_statistics(
+    query: RowExecutor,
+    table: str,
+    alias: str,
+    non_null: str,
+    group: str,
+) -> EndpointStatistics:
+    row = query(
+        "SELECT COALESCE(SUM(n), 0), COUNT(*), COALESCE(MAX(n), 0) "
+        "FROM (SELECT COUNT(*) AS n FROM "
+        f"{table} AS {alias} WHERE {non_null} GROUP BY {group})"
+    )
+    return EndpointStatistics(
+        non_null_count=int(row[0]),
+        distinct_count=int(row[1]),
+        max_multiplicity=int(row[2]),
     )
 
 

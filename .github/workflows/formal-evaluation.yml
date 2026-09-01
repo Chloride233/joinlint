@@ -13,12 +13,12 @@ on:
           - deterministic
           - formal
       sealed_artifact_run_id:
-        description: Run ID holding the private frozen-input artifact
+        description: Legacy frozen-input artifact run ID; paid path is disabled
         required: false
         default: ""
         type: string
       sealed_artifact_name:
-        description: Private frozen-input artifact name
+        description: Legacy frozen-input artifact name
         required: true
         default: joinlint-formal-inputs
         type: string
@@ -76,8 +76,10 @@ jobs:
   deterministic:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -91,18 +93,31 @@ jobs:
           python -m benchmarks.formal_eval.cli inspect-smoke
           --project tests/fixtures/chinook
           --output inspect-smoke
-      - uses: actions/upload-artifact@v4
+      - name: Run non-evidentiary MCP v3 guidance ablation smoke
+        run: >-
+          python -m benchmarks.formal_eval.cli guidance-smoke
+          --output guidance-smoke
+      - name: Scan sanitized smoke artifacts
+        id: scan_formal_smoke_sanitized
+        run: >-
+          python -c "from pathlib import Path; roots=('formal-smoke','inspect-smoke','guidance-smoke'); text='\n'.join(p.read_text(errors='ignore') for root in roots for p in Path(root).rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','ANTHROPIC_API_KEY','DEEPSEEK_API_KEY','MODAL_TOKEN_ID','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.scan_formal_smoke_sanitized.outcome == 'success'
         with:
           name: formal-evaluation-pipeline-smoke
           path: |
             formal-smoke
             inspect-smoke/inspect-smoke.json
+            guidance-smoke/guidance-diagnostic.json
           if-no-files-found: error
 
   formal:
     if: github.event_name == 'workflow_dispatch' && inputs.stage == 'formal'
     needs: deterministic
     runs-on: ubuntu-latest
+    concurrency:
+      group: joinlint-formal-paid-v1
+      cancel-in-progress: false
     environment: formal-evaluation
     env:
       PREREGISTRATION: ${{ inputs.preregistration }}
@@ -115,21 +130,25 @@ jobs:
       DETERMINISTIC_SUITE: ${{ inputs.deterministic_suite }}
       CURRENT_COMMIT: ${{ github.sha }}
     steps:
-      - name: Require explicit paid-run confirmation
-        if: inputs.confirm_paid != true
+      - name: Block legacy paid formal run pending atomic campaign reservation
         run: exit 1
-      - name: Require a private frozen-input artifact
+      - name: Require explicit paid-run confirmation
+        if: github.run_attempt != 1 || inputs.confirm_paid != true
+        run: exit 1
+      - name: Require a legacy frozen-input artifact
         if: inputs.sealed_artifact_run_id == ''
         run: exit 1
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Restore private frozen inputs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ inputs.sealed_artifact_name }}
           path: benchmarks/formal_eval/sealed
           github-token: ${{ github.token }}
           run-id: ${{ inputs.sealed_artifact_run_id }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -239,18 +258,31 @@ jobs:
           --agent-results formal-artifacts/agent-results.json
           --output formal-artifacts/report
           --require none
-      - name: Scan sanitized artifacts for forbidden raw fields and common secret prefixes
+      - name: Checkout pinned public artifact verifier
+        id: public_artifact_verifier
+        if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 573896c33bc18f559ee16d7f676c0e41c2e49021
+          path: .workflow-verifier
+          persist-credentials: false
+      - name: Scan sanitized formal evidence
+        id: scan_formal_sanitized
+        if: >-
+          always() &&
+          hashFiles('formal-artifacts/**') != '' &&
+          steps.public_artifact_verifier.outcome == 'success'
+        working-directory: .workflow-verifier
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-verifier/src:${{ github.workspace }}/.workflow-verifier
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('formal-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','ANTHROPIC_API_KEY','DEEPSEEK_API_KEY'); found=[value for value in forbidden if value in text]; assert not found, found"
-      - uses: actions/upload-artifact@v4
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile formal-evaluation
+          --root "$GITHUB_WORKSPACE/formal-artifacts"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.scan_formal_sanitized.outcome == 'success'
         with:
           name: formal-evaluation-sanitized
           path: formal-artifacts
           if-no-files-found: error
           retention-days: 90
-      - uses: actions/upload-artifact@v4
-        with:
-          name: formal-evaluation-private-inspect-logs
-          path: formal-logs
-          if-no-files-found: error
-          retention-days: 30

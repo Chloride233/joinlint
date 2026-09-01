@@ -5,12 +5,27 @@ from pydantic import ValidationError
 
 from benchmarks.agent_join.sql_edges import canonical_edge
 from benchmarks.formal_eval.trace import ToolEvent, ValidationResponse, assess_trace
+from benchmarks.formal_eval.validation_ledger import VALIDATION_LEDGER_WRITE_FAILED
+
+
+def _guidance(
+    next_action: str = "stop",
+    *,
+    retryable: bool = False,
+) -> dict[str, object]:
+    return {
+        "retryable": retryable,
+        "next_action": next_action,
+        "affected_refs": [],
+        "blocking_relationship_ids": [],
+        "freshness_reason": None,
+    }
 
 
 def _plan_result(*, columns: tuple[list[str], list[str]] | None = None) -> dict[str, object]:
     left, right = columns or (["customer_id"], ["id"])
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "command": "get_join_plan",
         "status": "ok",
         "data": {
@@ -63,11 +78,50 @@ def _plan_result(*, columns: tuple[list[str], list[str]] | None = None) -> dict[
     }
 
 
+def _unconnected_entity_ref_result() -> dict[str, object]:
+    return {
+        "schema_version": 3,
+        "command": "get_join_plan",
+        "status": "inconclusive",
+        "data": None,
+        "findings": [],
+        "error": {
+            "code": "UNCONNECTED_ENTITY_REF",
+            "message": "UNCONNECTED_ENTITY_REF",
+            "guidance": {
+                **_guidance("fix_entity_refs", retryable=True),
+                "affected_refs": ["orphan"],
+            },
+        },
+    }
+
+
+def _grain_incompatible_result() -> dict[str, object]:
+    return {
+        "schema_version": 3,
+        "command": "get_join_plan",
+        "status": "inconclusive",
+        "data": None,
+        "findings": [],
+        "error": {
+            "code": "GRAIN_INCOMPATIBLE",
+            "message": "GRAIN_INCOMPATIBLE",
+            "guidance": {
+                **_guidance("change_expected_grain", retryable=True),
+                "affected_refs": ["customers"],
+            },
+        },
+    }
+
+
 def _validation_result(
-    *, blocking: bool = False, edges: list[list[str]] | None = None
+    *,
+    blocking: bool = False,
+    retryable: bool = False,
+    edges: list[list[str]] | None = None,
 ) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "command": "validate_sql",
         "status": "findings" if blocking else "ok",
         "data": {
@@ -93,11 +147,36 @@ def _validation_result(
             "execution_count": 0,
         },
         "findings": (
-            [{"severity": "blocking", "code": "GRAIN_CHANGE", "message": "GRAIN_CHANGE"}]
+            [
+                {
+                    "severity": "blocking",
+                    "code": "GRAIN_INCOMPATIBLE",
+                    "message": "GRAIN_INCOMPATIBLE",
+                    "guidance": _guidance(
+                        "revise_sql" if retryable else "stop",
+                        retryable=retryable,
+                    ),
+                }
+            ]
             if blocking
             else []
         ),
         "error": None,
+    }
+
+
+def _ledger_write_failure_result() -> dict[str, object]:
+    return {
+        "schema_version": 3,
+        "command": "validate_sql",
+        "status": "error",
+        "data": None,
+        "findings": [],
+        "error": {
+            "code": VALIDATION_LEDGER_WRITE_FAILED,
+            "message": VALIDATION_LEDGER_WRITE_FAILED,
+            "guidance": _guidance(),
+        },
     }
 
 
@@ -147,6 +226,450 @@ def test_trace_requires_complete_plan_grounding_and_exact_final_validation() -> 
     assert result.mcp_grounded
     assert result.final_sql_validated
     assert result.failure_code is None
+
+
+def test_trace_distinguishes_final_sql_drift_from_missing_validation() -> None:
+    validated_sql = "SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id"
+    final_sql = validated_sql + " WHERE orders.id > 0"
+    events = [
+        ToolEvent(
+            kind="call",
+            call_id="plan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                ],
+                "start_ref": "orders",
+            },
+        ),
+        ToolEvent(kind="result", call_id="plan", tool="get_join_plan", result=_plan_result()),
+        ToolEvent(
+            kind="call",
+            call_id="validate",
+            tool="validate_sql",
+            arguments={"sql": validated_sql, "dialect": "sqlite", "plan_id": "1" * 64},
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="validate",
+            tool="validate_sql",
+            result=_validation_result(edges=[["customers.id", "orders.customer_id"]]),
+        ),
+    ]
+
+    result = assess_trace(
+        events,
+        expected_entities={"orders", "customers"},
+        final_sql=final_sql,
+        final_edges={canonical_edge("orders.customer_id", "customers.id")},
+        submitted_sql=True,
+    )
+
+    assert result.final_sql_validated is False
+    assert result.failure_code == "FINAL_SQL_NOT_VALIDATED"
+
+
+def test_trace_classifies_ledger_write_failure_as_evaluation_infrastructure() -> None:
+    sql = "SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id"
+    events = [
+        ToolEvent(
+            kind="call",
+            call_id="plan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                ],
+                "start_ref": "orders",
+            },
+        ),
+        ToolEvent(kind="result", call_id="plan", tool="get_join_plan", result=_plan_result()),
+        ToolEvent(
+            kind="call",
+            call_id="validate",
+            tool="validate_sql",
+            arguments={"sql": sql, "dialect": "sqlite", "plan_id": "1" * 64},
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="validate",
+            tool="validate_sql",
+            result=_ledger_write_failure_result(),
+        ),
+    ]
+
+    result = assess_trace(
+        events,
+        expected_entities={"orders", "customers"},
+        final_sql=sql,
+        final_edges={canonical_edge("orders.customer_id", "customers.id")},
+        submitted_sql=True,
+    )
+
+    assert result.failure_code == "INFRASTRUCTURE_FAILURE"
+    assert result.tool_error is False
+
+
+def test_trace_allows_a_grounded_replan_after_unconnected_entity_ref() -> None:
+    sql = "SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id"
+    events = [
+        ToolEvent(
+            kind="call",
+            call_id="first-plan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                    {"ref": "orphan", "entity": "orphan"},
+                ],
+                "start_ref": "orphan",
+            },
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="first-plan",
+            tool="get_join_plan",
+            result=_unconnected_entity_ref_result(),
+        ),
+        ToolEvent(
+            kind="call",
+            call_id="replan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                ],
+                "start_ref": "orders",
+            },
+        ),
+        ToolEvent(kind="result", call_id="replan", tool="get_join_plan", result=_plan_result()),
+        ToolEvent(
+            kind="call",
+            call_id="validate",
+            tool="validate_sql",
+            arguments={"sql": sql, "dialect": "sqlite", "plan_id": "1" * 64},
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="validate",
+            tool="validate_sql",
+            result=_validation_result(edges=[["customers.id", "orders.customer_id"]]),
+        ),
+    ]
+
+    result = assess_trace(
+        events,
+        expected_entities={"orders", "customers"},
+        final_sql=sql,
+        final_edges={canonical_edge("orders.customer_id", "customers.id")},
+        submitted_sql=True,
+    )
+
+    assert result.mcp_grounded
+    assert result.failure_code is None
+
+
+def test_trace_allows_a_grounded_replan_after_incompatible_grain() -> None:
+    sql = "SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id"
+    events = [
+        ToolEvent(
+            kind="call",
+            call_id="first-plan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                ],
+                "start_ref": "customers",
+                "expected_grain_ref": "customers",
+            },
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="first-plan",
+            tool="get_join_plan",
+            result=_grain_incompatible_result(),
+        ),
+        ToolEvent(
+            kind="call",
+            call_id="replan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                ],
+                "start_ref": "customers",
+                "expected_grain_ref": "orders",
+            },
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="replan",
+            tool="get_join_plan",
+            result=_plan_result(),
+        ),
+        ToolEvent(
+            kind="call",
+            call_id="validate",
+            tool="validate_sql",
+            arguments={"sql": sql, "dialect": "sqlite", "plan_id": "1" * 64},
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="validate",
+            tool="validate_sql",
+            result=_validation_result(edges=[["customers.id", "orders.customer_id"]]),
+        ),
+    ]
+
+    result = assess_trace(
+        events,
+        expected_entities={"orders", "customers"},
+        final_sql=sql,
+        final_edges={canonical_edge("orders.customer_id", "customers.id")},
+        submitted_sql=True,
+    )
+
+    assert result.mcp_grounded
+    assert result.failure_code is None
+
+
+def test_trace_rejects_an_unchanged_replan() -> None:
+    arguments = {
+        "entity_refs": [
+            {"ref": "orders", "entity": "orders"},
+            {"ref": "customers", "entity": "customers"},
+        ],
+        "start_ref": "customers",
+        "expected_grain_ref": "customers",
+    }
+    events = [
+        ToolEvent(
+            kind="call",
+            call_id="first-plan",
+            tool="get_join_plan",
+            arguments=arguments,
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="first-plan",
+            tool="get_join_plan",
+            result=_grain_incompatible_result(),
+        ),
+        ToolEvent(
+            kind="call",
+            call_id="replan",
+            tool="get_join_plan",
+            arguments=arguments,
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="replan",
+            tool="get_join_plan",
+            result=_grain_incompatible_result(),
+        ),
+    ]
+
+    result = assess_trace(
+        events,
+        expected_entities={"orders", "customers"},
+        final_sql="",
+        final_edges=set(),
+        submitted_sql=False,
+    )
+
+    assert not result.protocol_compliant
+    assert result.protocol_violation == "PLAN_RETRY_NOT_CHANGED"
+    assert result.failure_code == "AGENT_BYPASS"
+
+
+def test_trace_requires_the_usable_replan_to_keep_every_expected_entity() -> None:
+    first_result = _unconnected_entity_ref_result()
+    first_result["error"]["guidance"]["affected_refs"] = ["customers"]  # type: ignore[index]
+    replan_result = _plan_result()
+    proof = replan_result["data"]["proof"]  # type: ignore[index]
+    proof["entity_refs"] = [  # type: ignore[index]
+        {"ref": "orders", "entity": "orders"},
+        {"ref": "orphan", "entity": "orphan"},
+    ]
+    proof["edges"][0]["to_ref"] = "orphan"  # type: ignore[index]
+    proof["edges"][0]["parent"] = {"entity_id": "orphan", "columns": ["id"]}  # type: ignore[index]
+    proof["edges"][0]["predicates"] = ["orders.customer_id = orphan.id"]  # type: ignore[index]
+    events = [
+        ToolEvent(
+            kind="call",
+            call_id="first-plan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                    {"ref": "orphan", "entity": "orphan"},
+                ],
+                "start_ref": "orders",
+            },
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="first-plan",
+            tool="get_join_plan",
+            result=first_result,
+        ),
+        ToolEvent(
+            kind="call",
+            call_id="replan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "orphan", "entity": "orphan"},
+                ],
+                "start_ref": "orders",
+            },
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="replan",
+            tool="get_join_plan",
+            result=replan_result,
+        ),
+    ]
+
+    result = assess_trace(
+        events,
+        expected_entities={"orders", "customers"},
+        final_sql="",
+        final_edges=set(),
+        submitted_sql=False,
+    )
+
+    assert result.protocol_compliant
+    assert result.plan_usable
+    assert not result.complete_entity_planning
+    assert result.failure_code == "ENTITY_SET_INCOMPLETE"
+
+
+def test_trace_allows_one_changed_sql_only_validation_retry() -> None:
+    first_sql = "SELECT * FROM orders JOIN customers ON orders.id = customers.id"
+    final_sql = "SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id"
+    events = [
+        ToolEvent(
+            kind="call",
+            call_id="plan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                ],
+                "start_ref": "orders",
+            },
+        ),
+        ToolEvent(kind="result", call_id="plan", tool="get_join_plan", result=_plan_result()),
+        ToolEvent(
+            kind="call",
+            call_id="first-validation",
+            tool="validate_sql",
+            arguments={"sql": first_sql, "plan_id": "1" * 64},
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="first-validation",
+            tool="validate_sql",
+            result=_validation_result(blocking=True, retryable=True),
+        ),
+        ToolEvent(
+            kind="call",
+            call_id="final-validation",
+            tool="validate_sql",
+            arguments={"sql": final_sql, "plan_id": "1" * 64},
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="final-validation",
+            tool="validate_sql",
+            result=_validation_result(edges=[["customers.id", "orders.customer_id"]]),
+        ),
+    ]
+
+    result = assess_trace(
+        events,
+        expected_entities={"orders", "customers"},
+        final_sql=final_sql,
+        final_edges={canonical_edge("orders.customer_id", "customers.id")},
+        submitted_sql=True,
+    )
+
+    assert result.protocol_compliant
+    assert result.mcp_grounded
+    assert result.failure_code is None
+
+
+def test_trace_rejects_changing_grain_during_validation_retry() -> None:
+    first_sql = "SELECT * FROM orders JOIN customers ON orders.id = customers.id"
+    final_sql = "SELECT * FROM orders JOIN customers ON orders.customer_id = customers.id"
+    events = [
+        ToolEvent(
+            kind="call",
+            call_id="plan",
+            tool="get_join_plan",
+            arguments={
+                "entity_refs": [
+                    {"ref": "orders", "entity": "orders"},
+                    {"ref": "customers", "entity": "customers"},
+                ],
+                "start_ref": "orders",
+            },
+        ),
+        ToolEvent(kind="result", call_id="plan", tool="get_join_plan", result=_plan_result()),
+        ToolEvent(
+            kind="call",
+            call_id="first-validation",
+            tool="validate_sql",
+            arguments={"sql": first_sql, "plan_id": "1" * 64},
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="first-validation",
+            tool="validate_sql",
+            result=_validation_result(blocking=True, retryable=True),
+        ),
+        ToolEvent(
+            kind="call",
+            call_id="final-validation",
+            tool="validate_sql",
+            arguments={
+                "sql": final_sql,
+                "plan_id": "1" * 64,
+                "expected_grain_ref": "customers",
+            },
+        ),
+        ToolEvent(
+            kind="result",
+            call_id="final-validation",
+            tool="validate_sql",
+            result=_validation_result(edges=[["customers.id", "orders.customer_id"]]),
+        ),
+    ]
+
+    result = assess_trace(
+        events,
+        expected_entities={"orders", "customers"},
+        final_sql=final_sql,
+        final_edges={canonical_edge("orders.customer_id", "customers.id")},
+        submitted_sql=True,
+    )
+
+    assert result.protocol_violation == "VALIDATION_RETRY_NOT_CHANGED"
+    assert not result.mcp_grounded
+    assert result.failure_code == "AGENT_BYPASS"
 
 
 def test_validation_contract_requires_zero_execution_attestation() -> None:
@@ -249,7 +772,12 @@ def test_trace_rejects_blocking_or_non_current_plan_edges() -> None:
     plan = _plan_result()
     plan["status"] = "findings"
     plan["findings"] = [
-        {"severity": "blocking", "code": "UNSAFE_PLAN", "message": "UNSAFE_PLAN"}
+        {
+            "severity": "blocking",
+            "code": "UNSAFE_PLAN",
+            "message": "UNSAFE_PLAN",
+            "guidance": _guidance(),
+        }
     ]
     events = [
         ToolEvent(

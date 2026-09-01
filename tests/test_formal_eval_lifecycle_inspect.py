@@ -1,0 +1,1593 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+pytest.importorskip("inspect_ai")
+
+from inspect_ai.agent import AgentState, agent
+from inspect_ai.event import SampleLimitEvent
+from inspect_ai.model import (
+    ChatMessageAssistant,
+    ChatMessageTool,
+    GenerateConfig,
+    ModelOutput,
+    get_model,
+)
+from inspect_ai.scorer import Target
+from inspect_ai.solver import TaskState
+from inspect_ai.tool import ToolCall
+from inspect_ai.util import store
+from inspect_ai.util._store import init_subtask_store
+
+from benchmarks.formal_eval import inspect_task
+from benchmarks.formal_eval.lifecycle import (
+    LIFECYCLE_STORE_KEY,
+    LifecycleFailureReason,
+    allow_scoring,
+    complete_evaluation,
+    fail_evaluation,
+    infrastructure_prepared,
+    new_lifecycle,
+    parse_lifecycle,
+    readiness_failed,
+    readiness_passed,
+    scoring_eligibility,
+    start_evaluation,
+    write_lifecycle,
+)
+from benchmarks.formal_eval.validation_failure_marker import (
+    VALIDATION_FAILURE_MARKER_CLEAR,
+    VALIDATION_FAILURE_MARKER_FAILED,
+)
+
+
+def test_inspect_loader_can_import_the_formal_task_module() -> None:
+    from inspect_ai._util.module import load_module
+
+    module = load_module(
+        Path("benchmarks/formal_eval/inspect_task.py"),
+        lambda source: "@task" in source,
+    )
+
+    assert module is not None
+
+
+NOW = datetime(2026, 7, 27, tzinfo=timezone.utc)
+LEDGER_FAILURE_RESPONSE = (
+    '{"schema_version":3,"command":"validate_sql",'
+    '"status":"error","data":null,"findings":[],"error":{'
+    '"code":"EVALUATION_VALIDATION_LEDGER_WRITE_FAILED",'
+    '"message":"EVALUATION_VALIDATION_LEDGER_WRITE_FAILED",'
+    '"guidance":{"retryable":false,"next_action":"stop",'
+    '"affected_refs":[],"blocking_relationship_ids":[],'
+    '"freshness_reason":null}}}'
+)
+
+
+@pytest.mark.parametrize(
+    "scorer_factory",
+    [inspect_task.formal_join_scorer, inspect_task.formal_execution_scorer],
+)
+def test_semantic_scorers_do_not_parse_output_without_lifecycle_eligibility(
+    monkeypatch: pytest.MonkeyPatch,
+    scorer_factory: object,
+) -> None:
+    def forbidden_semantic_logic(*args: object, **kwargs: object) -> None:
+        raise AssertionError("semantic SQL logic must not run")
+
+    monkeypatch.setattr(
+        inspect_task, "_extract_submission_tool_call", forbidden_semantic_logic
+    )
+    state = _state(store={})
+
+    score = asyncio.run(scorer_factory()(state, Target("SELECT 1")))  # type: ignore[operator]
+
+    assert score.value == 0
+    assert score.metadata == {
+        "scoring_eligible": False,
+        "score_kind": "task_outcome",
+        "failure_code": "INFRASTRUCTURE_FAILURE",
+        "lifecycle_reason": LifecycleFailureReason.EVALUATION_NOT_STARTED,
+    }
+
+
+def test_infrastructure_failure_never_creates_normal_agent_result() -> None:
+    failed = readiness_failed(
+        new_lifecycle("claude_code", "2.1.212", now=NOW),
+        duration_seconds=3,
+        detail="host_binary_version_mismatch",
+        now=NOW,
+    )
+    state = _state(store={LIFECYCLE_STORE_KEY: failed.model_dump(mode="json")})
+
+    score = asyncio.run(inspect_task.formal_join_scorer()(state, Target("SELECT 1")))
+
+    assert score.value == 0
+    assert score.metadata["score_kind"] == "task_outcome"
+    assert "join_correct_task_completion" not in score.metadata
+
+
+def test_model_limit_score_keeps_the_treatment_tool_trace() -> None:
+    record = readiness_passed(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=0,
+        now=NOW,
+    )
+    record = start_evaluation(record, now=NOW)
+    record = fail_evaluation(
+        record,
+        reason=LifecycleFailureReason.MODEL_LIMIT,
+        duration_seconds=2,
+        now=NOW,
+    )
+    state = _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
+    state.metadata = {
+        "condition": "treatment",
+        "expected_entities": ["cars"],
+    }
+    state.messages = [
+        ChatMessageAssistant(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="plan-1",
+                    function="mcp__JoinLint__get_join_plan",
+                    arguments={
+                        "entity_refs": [{"ref": "cars", "entity": "cars"}],
+                        "start_ref": "cars",
+                        "expected_grain_ref": "cars",
+                    },
+                )
+            ],
+        ),
+        ChatMessageTool(
+            content=(
+                "Wall time: 0.005 seconds\nOutput:\n"
+                '{"schema_version":3,"command":"get_join_plan","status":"inconclusive",'
+                '"data":null,"findings":[],"error":{"code":"GRAIN_UNPROVABLE",'
+                '"message":"GRAIN_UNPROVABLE","guidance":{"retryable":false,'
+                '"next_action":"stop","affected_refs":["cars"]}}}'
+            ),
+            tool_call_id="plan-1",
+            function="mcp__JoinLint__get_join_plan",
+        ),
+    ]
+
+    score = asyncio.run(inspect_task.formal_join_scorer()(state, Target("SELECT 1")))
+
+    assert score.value == 0
+    assert score.metadata["failure_code"] == "MODEL_LIMIT"
+    trace = score.metadata["trace"]
+    assert trace["plan_called"] is True
+    assert trace["plan_usable"] is False
+    assert trace["failure_code"] == "PLAN_INCONCLUSIVE"
+
+
+def test_evaluation_wrapper_becomes_eligible_only_after_first_model_boundary() -> None:
+    state = _ready_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(_started_agent(), 1, 1)(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.scoring_eligible is True
+
+
+def test_agent_stopping_before_first_model_boundary_is_infrastructure_outcome() -> None:
+    state = _pending_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(_never_started_agent(), 1, 1)(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.EVALUATION_NOT_STARTED
+    assert record.evaluation_status == "not_started"
+    assert scoring_eligibility(record).failure_code == "INFRASTRUCTURE_FAILURE"
+
+
+def test_agent_does_not_start_after_infrastructure_exhausts_preparation_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    @agent
+    def should_not_start_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            nonlocal attempts
+            attempts += 1
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            return agent_state
+
+        return execute
+
+    record = infrastructure_prepared(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=0,
+        host_binary_sha256="a" * 64,
+        now=NOW,
+    )
+    monkeypatch.setattr(inspect_task, "elapsed_seconds_since", lambda started_at: 1)
+    state = _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            should_not_start_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    failed = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 0
+    assert failed.failure_reason == LifecycleFailureReason.EVALUATION_NOT_STARTED
+    assert failed.failure_detail == "agent_preparation_timeout"
+
+
+def test_host_context_drift_is_a_distinct_pre_model_readiness_failure() -> None:
+    state = _pending_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(_host_context_drift_agent(), 1, 1)(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.HOST_CONTEXT_DRIFT
+    assert record.evaluation_status == "not_started"
+    assert scoring_eligibility(record).failure_code == "INFRASTRUCTURE_FAILURE"
+
+
+def test_codex_retries_one_all_mcp_missing_startup_race_before_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    marker_sandbox = _MarkerSandbox(VALIDATION_FAILURE_MARKER_CLEAR)
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
+
+    @agent
+    def transient_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError(
+                    "codex bridge failed: host_tool_surface_mismatch:"
+                    "missing=execute_sql,get_join_plan,submit_sql,validate_sql;"
+                    "unexpected=-"
+                )
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            record = readiness_passed(record, duration_seconds=0, now=NOW)
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            return agent_state
+
+        return execute
+
+    state = _pending_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            transient_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 2
+    assert record.scoring_eligible is True
+    assert record.infrastructure_attempts == 2
+    assert record.infrastructure_retry_reason == (
+        "host_tool_surface_mismatch:"
+        "missing=execute_sql,get_join_plan,submit_sql,validate_sql;unexpected=-"
+    )
+
+
+def test_codex_control_retries_one_all_required_mcp_missing_startup_race() -> None:
+    attempts = 0
+
+    @agent
+    def transient_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError(
+                    "codex bridge failed: host_tool_surface_mismatch:"
+                    "missing=execute_sql,submit_sql;unexpected=-"
+                )
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            record = readiness_passed(record, duration_seconds=0, now=NOW)
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            return agent_state
+
+        return execute
+
+    state = _pending_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            transient_agent(),
+            1,
+            1,
+            host="codex",
+            condition="control",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 2
+    assert record.scoring_eligible is True
+    assert record.infrastructure_attempts == 2
+    assert record.infrastructure_retry_reason == (
+        "host_tool_surface_mismatch:missing=execute_sql,submit_sql;unexpected=-"
+    )
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "host_tool_surface_mismatch:missing=execute_sql;unexpected=-",
+        (
+            "host_tool_surface_mismatch:"
+            "missing=execute_sql,get_join_plan,submit_sql,validate_sql;"
+            "unexpected=shell"
+        ),
+    ],
+)
+def test_codex_does_not_retry_partial_or_unexpected_tool_surface_drift(
+    detail: str,
+) -> None:
+    attempts = 0
+
+    @agent
+    def drift_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            nonlocal attempts
+            del agent_state
+            attempts += 1
+            raise RuntimeError(detail)
+
+        return execute
+
+    state = _pending_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            drift_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 1
+    assert record.failure_reason == LifecycleFailureReason.HOST_CONTEXT_DRIFT
+    assert record.infrastructure_attempts == 1
+    assert record.infrastructure_retry_reason is None
+
+
+def test_codex_does_not_exceed_two_total_infrastructure_attempts() -> None:
+    attempts = 0
+    prepared_at = datetime.now(timezone.utc)
+
+    @agent
+    def missing_mcp_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            nonlocal attempts
+            del agent_state
+            attempts += 1
+            raise RuntimeError(
+                inspect_task._all_required_mcp_missing_detail("codex", "treatment")
+            )
+
+        return execute
+
+    record = infrastructure_prepared(
+        new_lifecycle("codex", "0.144.1", now=prepared_at),
+        duration_seconds=0,
+        host_binary_sha256="a" * 64,
+        infrastructure_attempts=2,
+        infrastructure_retry_reason="sandbox_tools_readiness_failed",
+        now=prepared_at,
+    )
+    state = _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            missing_mcp_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    failed = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 1
+    assert failed.infrastructure_attempts == 2
+    assert failed.infrastructure_retry_reason == "sandbox_tools_readiness_failed"
+
+
+def test_ledger_failure_cannot_be_overridden_by_a_drifted_submission() -> None:
+    @agent
+    def ledger_failure_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            agent_state.messages.extend(
+                [
+                    ChatMessageAssistant(
+                        content="",
+                        tool_calls=[
+                            ToolCall(
+                                id="validate-one",
+                                function="mcp__JoinLint__validate_sql",
+                                arguments={"sql": "SELECT 1", "plan_id": "a" * 64},
+                            )
+                        ],
+                    ),
+                    ChatMessageTool(
+                        content=LEDGER_FAILURE_RESPONSE,
+                        tool_call_id="validate-one",
+                        function="mcp__JoinLint__validate_sql",
+                    ),
+                    *_submission_messages("submit-one", "SELECT 1 ", ""),
+                ]
+            )
+            agent_state.messages[-1] = ChatMessageTool(
+                content=(
+                    '{"status":"error","code":"FINAL_SQL_NOT_VALIDATED",'
+                    '"guard_contract_version":1,'
+                    '"guard_decision":"rejected_unvalidated_sql"}'
+                ),
+                tool_call_id="submit-one",
+                function="mcp__EvaluationDatabase__submit_sql",
+            )
+            return agent_state
+
+        return execute
+
+    state = _ready_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            ledger_failure_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED
+    assert record.infrastructure_status == "failed"
+    assert record.scoring_eligible is False
+
+
+def test_ledger_failure_seen_by_provider_filter_precedes_later_timeout() -> None:
+    context_filter = inspect_task._host_context_filter("codex", "treatment")
+
+    @agent
+    def stalled_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            provider_messages = [
+                ChatMessageAssistant(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            id="validate-one",
+                            function="mcp__JoinLint__validate_sql",
+                            arguments={"sql": "SELECT 1", "plan_id": "a" * 64},
+                        )
+                    ],
+                ),
+                ChatMessageTool(
+                    content=LEDGER_FAILURE_RESPONSE,
+                    tool_call_id="validate-one",
+                    function="mcp__JoinLint__validate_sql",
+                ),
+            ]
+            await context_filter(
+                get_model("mockllm/model"),
+                provider_messages,
+                [
+                    SimpleNamespace(name=name)
+                    for name in (
+                        "execute_sql",
+                        "submit_sql",
+                        "get_join_plan",
+                        "validate_sql",
+                    )
+                ],
+                None,
+                GenerateConfig(),
+            )
+            assert agent_state.messages == []
+            await asyncio.sleep(1)
+            return agent_state
+
+        return execute
+
+    state = _ready_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            stalled_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED
+    assert record.infrastructure_status == "failed"
+
+
+def test_sidecar_ledger_failure_precedes_timeout_without_provider_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker_sandbox = _MarkerSandbox(VALIDATION_FAILURE_MARKER_FAILED)
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
+    state = _ready_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            _stalled_after_start_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.VALIDATION_LEDGER_WRITE_FAILED
+    assert record.infrastructure_status == "failed"
+    assert marker_sandbox.reads >= 1
+
+
+def test_clear_sidecar_preserves_model_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker_sandbox = _MarkerSandbox(VALIDATION_FAILURE_MARKER_CLEAR)
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
+    state = _ready_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            _stalled_after_start_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.MODEL_TIMEOUT
+    assert record.failure_detail == "evaluation_timeout"
+
+
+@pytest.mark.parametrize(
+    "marker_value",
+    [FileNotFoundError("marker missing"), b"malformed"],
+    ids=("missing", "malformed"),
+)
+def test_unavailable_sidecar_fails_closed_without_leaking_detail(
+    monkeypatch: pytest.MonkeyPatch,
+    marker_value: bytes | Exception,
+) -> None:
+    marker_sandbox = _MarkerSandbox(marker_value)
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
+    state = _ready_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            _stalled_after_start_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert (
+        record.failure_reason
+        == LifecycleFailureReason.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+    )
+    assert record.infrastructure_status == "failed"
+    assert record.failure_detail == inspect_task.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+    assert "marker missing" not in repr(record)
+
+
+def test_treatment_missing_sidecar_store_key_is_infrastructure_failure() -> None:
+    state = _ready_state()
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            _started_agent(),
+            1,
+            1,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert (
+        record.failure_reason
+        == LifecycleFailureReason.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+    )
+    assert record.infrastructure_status == "failed"
+    assert record.failure_detail == inspect_task.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+
+
+def test_sidecar_read_timeout_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker_sandbox = _SlowMarkerSandbox()
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
+    monkeypatch.setattr(
+        inspect_task,
+        "VALIDATION_FAILURE_MARKER_READ_TIMEOUT_SECONDS",
+        0.001,
+    )
+    state = _ready_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            _started_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert (
+        record.failure_reason
+        == LifecycleFailureReason.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+    )
+    assert record.infrastructure_status == "failed"
+    assert record.failure_detail == inspect_task.VALIDATION_FAILURE_MARKER_UNAVAILABLE
+    assert marker_sandbox.reads == 1
+
+
+def test_cancellation_cleanup_ledger_message_does_not_override_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker_sandbox = _MarkerSandbox(VALIDATION_FAILURE_MARKER_CLEAR)
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: marker_sandbox)
+
+    @agent
+    def stalled_agent():  # type: ignore[no-untyped-def]
+        async def execute(agent_state: AgentState) -> AgentState:
+            active_store = store()
+            record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+            write_lifecycle(active_store, start_evaluation(record, now=NOW))
+            try:
+                await asyncio.sleep(1)
+            finally:
+                agent_state.messages.append(
+                    ChatMessageTool(
+                        content=LEDGER_FAILURE_RESPONSE,
+                        tool_call_id="validate-one",
+                        function="mcp__JoinLint__validate_sql",
+                    )
+                )
+            return agent_state
+
+        return execute
+
+    state = _ready_state()
+    state.store.set(
+        inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY,
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+    )
+    init_subtask_store(state.store)
+
+    result = asyncio.run(
+        inspect_task.evaluation_lifecycle(
+            stalled_agent(),
+            1,
+            0.01,
+            host="codex",
+            condition="treatment",
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert record.failure_reason == LifecycleFailureReason.MODEL_TIMEOUT
+    assert record.failure_detail == "evaluation_timeout"
+    assert marker_sandbox.reads >= 1
+
+
+def test_product_validation_error_is_not_an_evaluation_infrastructure_failure() -> None:
+    product_error = ChatMessageTool(
+        content=LEDGER_FAILURE_RESPONSE.replace(
+            "EVALUATION_VALIDATION_LEDGER_WRITE_FAILED",
+            "UNCONNECTED_ENTITY_REF",
+        ),
+        tool_call_id="validate-one",
+        function="mcp__JoinLint__validate_sql",
+    )
+
+    assert inspect_task._validation_ledger_write_failed([product_error]) is False
+
+
+def test_readiness_forces_sandbox_tools_injection_before_agent_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class ReadySandbox:
+        async def exec(self, *args: object, **kwargs: object) -> SimpleNamespace:
+            calls.append(("exec", args, kwargs))
+            return SimpleNamespace(success=True)
+
+        async def exec_remote(self, command: list[str], *, stream: bool) -> SimpleNamespace:
+            calls.append(("exec_remote", tuple(command), stream))
+            return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: ReadySandbox())
+
+    asyncio.run(inspect_task._run_readiness_probes("codex"))
+
+    assert calls[-1] == ("exec_remote", ("true",), False)
+
+
+def test_treatment_readiness_arms_validation_failure_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes: list[tuple[str, bytes]] = []
+
+    class ReadySandbox:
+        async def write_file(self, path: str, content: bytes) -> None:
+            writes.append((path, content))
+
+    async def prepare(host: str, agent_version: str) -> str:
+        del host, agent_version
+        return "a" * 64
+
+    async def probe(host: str) -> None:
+        del host
+
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: ReadySandbox())
+    monkeypatch.setattr(inspect_task, "_prepare_host_binary", prepare)
+    monkeypatch.setattr(inspect_task, "_run_readiness_probes", probe)
+    state = _state(store={})
+
+    result = asyncio.run(
+        inspect_task.infrastructure_readiness(
+            "codex",
+            "0.144.1",
+            1,
+            validation_failure_marker_path=inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+        )(state, None)  # type: ignore[arg-type]
+    )
+
+    assert writes == [
+        (
+            inspect_task.VALIDATION_FAILURE_MARKER_PATH,
+            VALIDATION_FAILURE_MARKER_CLEAR,
+        )
+    ]
+    assert result.store.get(inspect_task.VALIDATION_FAILURE_MARKER_ARMED_STORE_KEY) == (
+        inspect_task.VALIDATION_FAILURE_MARKER_PATH
+    )
+
+
+def test_readiness_reports_sandbox_tools_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BrokenSandbox:
+        async def exec(self, *args: object, **kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(success=True)
+
+        async def exec_remote(self, command: list[str], *, stream: bool) -> SimpleNamespace:
+            return SimpleNamespace(success=False)
+
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: BrokenSandbox())
+
+    with pytest.raises(RuntimeError, match="sandbox_tools_readiness_failed"):
+        asyncio.run(inspect_task._run_readiness_probes("codex"))
+
+
+def test_infrastructure_readiness_retries_one_transient_pre_model_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    async def prepare(host: str, agent_version: str) -> str:
+        nonlocal attempts
+        del host, agent_version
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("sandbox_tools_readiness_failed")
+        return "a" * 64
+
+    async def probe(host: str) -> None:
+        del host
+
+    monkeypatch.setattr(inspect_task, "_prepare_host_binary", prepare)
+    monkeypatch.setattr(inspect_task, "_run_readiness_probes", probe)
+    state = _state(store={})
+
+    result = asyncio.run(
+        inspect_task.infrastructure_readiness("codex", "0.144.1", 1)(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 2
+    assert record.infrastructure_status == "pending"
+    assert record.infrastructure_attempts == 2
+    assert record.infrastructure_retry_reason == "sandbox_tools_readiness_failed"
+
+
+def test_infrastructure_retry_uses_only_the_remaining_preparation_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    observed_timeouts: list[float] = []
+    clock = iter((0.0, 0.0, 0.4, 0.8))
+
+    class CapturedDeadline:
+        def __init__(self, timeout: float) -> None:
+            observed_timeouts.append(timeout)
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+    async def prepare(host: str, agent_version: str) -> str:
+        nonlocal attempts
+        del host, agent_version
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("sandbox_tools_readiness_failed")
+        return "a" * 64
+
+    async def probe(host: str) -> None:
+        del host
+
+    monkeypatch.setattr(inspect_task, "perf_counter", lambda: next(clock))
+    monkeypatch.setattr(inspect_task, "fail_after", CapturedDeadline)
+    monkeypatch.setattr(inspect_task, "_prepare_host_binary", prepare)
+    monkeypatch.setattr(inspect_task, "_run_readiness_probes", probe)
+    state = _state(store={})
+
+    result = asyncio.run(
+        inspect_task.infrastructure_readiness("codex", "0.144.1", 1)(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 2
+    assert observed_timeouts == pytest.approx([1.0, 0.6])
+    assert record.infrastructure_preparation_duration_seconds == pytest.approx(0.8)
+
+
+def test_infrastructure_readiness_does_not_retry_a_frozen_image_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    async def prepare(host: str, agent_version: str) -> str:
+        nonlocal attempts
+        del host, agent_version
+        attempts += 1
+        raise RuntimeError("host_binary_version_mismatch")
+
+    monkeypatch.setattr(inspect_task, "_prepare_host_binary", prepare)
+    state = _state(store={})
+
+    result = asyncio.run(
+        inspect_task.infrastructure_readiness("codex", "0.144.1", 1)(state, None)  # type: ignore[arg-type]
+    )
+
+    record = parse_lifecycle(result.store.get(LIFECYCLE_STORE_KEY))
+    assert attempts == 1
+    assert record.infrastructure_status == "failed"
+    assert record.infrastructure_attempts == 1
+    assert record.infrastructure_retry_reason is None
+
+
+def test_readiness_probes_the_selected_host_bridge_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    class ReadySandbox:
+        async def exec(self, command: list[str], **kwargs: object) -> SimpleNamespace:
+            commands.append(command)
+            return SimpleNamespace(success=True)
+
+        async def exec_remote(self, command: list[str], *, stream: bool) -> SimpleNamespace:
+            return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(inspect_task, "sandbox", lambda: ReadySandbox())
+
+    asyncio.run(inspect_task._run_readiness_probes("claude_code"))
+
+    assert "import anthropic" in commands[0][2]
+
+
+def test_model_limit_after_first_request_is_not_infrastructure_failure() -> None:
+    record = readiness_passed(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=1,
+        now=NOW,
+    )
+    record = start_evaluation(record, now=NOW)
+    record = fail_evaluation(
+        record,
+        reason=LifecycleFailureReason.MODEL_LIMIT,
+        duration_seconds=2,
+        now=NOW,
+    )
+
+    eligibility = scoring_eligibility(record)
+
+    assert eligibility.failure_code == "MODEL_LIMIT"
+
+
+def test_native_sample_limit_usage_detects_generic_bridge_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exceeded = SimpleNamespace(limit=35_000, usage=52_973)
+    unused = SimpleNamespace(limit=None, usage=0)
+    monkeypatch.setattr(
+        inspect_task,
+        "sample_limits",
+        lambda: SimpleNamespace(token=exceeded, message=unused, turn=unused),
+    )
+
+    assert inspect_task._sample_model_limit_exceeded() is True
+
+
+def test_native_sample_limit_usage_skips_unsupported_message_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnsupportedMessageLimit:
+        limit = 12
+
+        @property
+        def usage(self) -> float:
+            raise NotImplementedError
+
+    below = SimpleNamespace(limit=35_000, usage=20_000)
+    unused = SimpleNamespace(limit=None, usage=0)
+    monkeypatch.setattr(
+        inspect_task,
+        "sample_limits",
+        lambda: SimpleNamespace(
+            token=below,
+            message=UnsupportedMessageLimit(),
+            turn=unused,
+        ),
+    )
+
+    assert inspect_task._sample_model_limit_exceeded() is False
+
+
+def test_native_sample_limit_event_detects_unsupported_message_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnsupportedMessageLimit:
+        limit = 20
+
+        @property
+        def usage(self) -> float:
+            raise NotImplementedError
+
+    below = SimpleNamespace(limit=35_000, usage=20_000)
+    unused = SimpleNamespace(limit=None, usage=0)
+    monkeypatch.setattr(
+        inspect_task,
+        "sample_limits",
+        lambda: SimpleNamespace(
+            token=below,
+            message=UnsupportedMessageLimit(),
+            turn=unused,
+        ),
+    )
+    event = SampleLimitEvent(
+        type="message",
+        limit=20,
+        message="Message limit reached. count: 20; limit: 20",
+    )
+    history = SimpleNamespace(recent_events=lambda count: [event])
+    monkeypatch.setattr(inspect_task, "transcript", lambda: SimpleNamespace(history=history))
+
+    assert inspect_task._sample_model_limit_exceeded() is True
+
+
+def test_formal_join_scorer_uses_successful_submission_tool_call() -> None:
+    state = _eligible_state()
+    state.metadata = {
+        "condition": "control",
+        "allowed_graphs": [[]],
+        "schema": {},
+        "oracle_has_safe_path": True,
+    }
+    state.messages = _submission_messages("submit-one", "SELECT 1", "")
+
+    score = asyncio.run(inspect_task.formal_join_scorer()(state, Target("SELECT 1")))
+
+    assert score.value == 1
+    assert score.metadata["join_correct_task_completion"] is True
+
+
+def test_formal_join_scorer_rejects_duplicate_submission_tool_calls() -> None:
+    state = _eligible_state()
+    state.metadata = {"condition": "control"}
+    state.messages = [
+        *_submission_messages("submit-one", "SELECT 1", ""),
+        *_submission_messages("submit-two", "SELECT 2", ""),
+    ]
+
+    score = asyncio.run(inspect_task.formal_join_scorer()(state, Target("SELECT 1")))
+
+    assert score.value == 0
+    assert score.metadata["failure_code"] == "SQL_PARSE_FAILED"
+
+
+def test_submission_guard_rejection_is_not_collapsed_into_a_parse_failure() -> None:
+    state = _eligible_state()
+    state.metadata = {
+        "condition": "treatment",
+        "allowed_graphs": [[]],
+        "schema": {},
+        "oracle_has_safe_path": True,
+        "expected_entities": [],
+        "database_path": "unused.sqlite",
+        "task_id": "guard-rejection",
+        "gold_sql": "SELECT 1",
+    }
+    state.messages = [
+        ChatMessageAssistant(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="submit-one",
+                    function="mcp__EvaluationDatabase__submit_sql",
+                    arguments={"sql": "SELECT 1", "warning": ""},
+                )
+            ],
+        ),
+        ChatMessageTool(
+            content=(
+                '{"status":"error","code":"FINAL_SQL_NOT_VALIDATED",'
+                '"guard_contract_version":1,'
+                '"guard_decision":"rejected_unvalidated_sql"}'
+            ),
+            tool_call_id="submit-one",
+            function="mcp__EvaluationDatabase__submit_sql",
+        ),
+    ]
+
+    join_score = asyncio.run(
+        inspect_task.formal_join_scorer()(state, Target("SELECT 1"))
+    )
+    execution_score = asyncio.run(
+        inspect_task.formal_execution_scorer()(state, Target("SELECT 1"))
+    )
+
+    assert join_score.value == 0
+    assert join_score.metadata["failure_code"] == "FINAL_SQL_NOT_VALIDATED"
+    assert join_score.metadata["submission_guard_contract_version"] == 1
+    assert (
+        join_score.metadata["submission_guard_decision"]
+        == "rejected_unvalidated_sql"
+    )
+    assert execution_score.metadata["error_code"] == "FINAL_SQL_NOT_VALIDATED"
+
+
+def test_sql_parse_failure_still_reports_treatment_tool_funnel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _eligible_state()
+    state.metadata = {"condition": "treatment", "expected_entities": ["cars", "trains"]}
+    monkeypatch.setattr(inspect_task, "_tool_events", lambda messages: [])
+    monkeypatch.setattr(
+        inspect_task,
+        "assess_trace",
+        lambda *args, **kwargs: SimpleNamespace(
+            model_dump=lambda mode: {"plan_called": True, "final_sql_validated": False}
+        ),
+    )
+
+    score = asyncio.run(inspect_task.formal_join_scorer()(state, Target("SELECT 1")))
+
+    assert score.metadata["failure_code"] == "SQL_PARSE_FAILED"
+    assert score.metadata["trace"]["plan_called"] is True
+
+
+def test_claude_namespaced_joinlint_tools_are_recognized() -> None:
+    assert inspect_task._tool_name("mcp__JoinLint__get_join_plan") == "get_join_plan"
+    assert inspect_task._tool_name("mcp__JoinLint__validate_sql") == "validate_sql"
+    assert inspect_task._tool_name("mcp__EvaluationDatabase__execute_sql") is None
+
+
+def test_codex_bridge_tool_result_envelope_is_parsed() -> None:
+    assert inspect_task._tool_result_payload(
+        'Wall time: 0.0065 seconds\nOutput:\n{"status":"ok"}'
+    ) == {"status": "ok"}
+
+
+def test_unrecognized_tool_result_envelope_is_not_parsed() -> None:
+    assert inspect_task._tool_result_payload('Output:\n{"status":"ok"}') is None
+
+
+def test_pilot_task_ids_accept_inspect_list_normalization() -> None:
+    assert inspect_task._normalized_pilot_task_ids("task-a,task-b") == (
+        "task-a",
+        "task-b",
+    )
+    assert inspect_task._normalized_pilot_task_ids(["task-a", "task-b"]) == (
+        "task-a",
+        "task-b",
+    )
+
+
+def test_treatment_harness_is_bounded_and_fail_closed() -> None:
+    assert "first tool call must be JoinLint get_join_plan" in inspect_task.HARNESS_PROMPT
+    assert "include every required_entities item exactly once" in inspect_task.HARNESS_PROMPT
+    assert "authoritative intent for both conditions" in inspect_task.BASE_PROMPT
+    assert "contains no join predicates" in inspect_task.BASE_PROMPT
+    assert "one changed replan" in inspect_task.HARNESS_PROMPT
+    assert "submit empty SQL" in inspect_task.HARNESS_PROMPT
+    assert "GRAIN_INCOMPATIBLE" in inspect_task.HARNESS_PROMPT
+    assert "UNCONNECTED_ENTITY_REF" in inspect_task.HARNESS_PROMPT
+    assert "one changed SQL-only revision" in inspect_task.HARNESS_PROMPT
+    assert "A status ok is never a retry signal" in inspect_task.HARNESS_PROMPT
+    assert "omit expected_grain_ref" in inspect_task.HARNESS_PROMPT
+    assert "Never plan after validation" in inspect_task.HARNESS_PROMPT
+    assert "execute_sql at most once" in inspect_task.HARNESS_PROMPT
+
+
+def test_host_context_profile_disables_unneeded_builtin_tools() -> None:
+    assert inspect_task.CODEX_CONTEXT_CONFIG_OVERRIDES == {
+        "features.apps": "false",
+        "features.computer_use": "false",
+        "features.default_mode_request_user_input": "false",
+        "features.image_generation": "false",
+        "features.multi_agent": "false",
+        "features.plugins": "false",
+        "features.shell_tool": "false",
+        "features.unified_exec": "false",
+        "features.workspace_dependencies": "false",
+    }
+    assert {"Bash", "Read", "Write", "Agent", "WebSearch"} <= set(
+        inspect_task.CLAUDE_DISALLOWED_BUILTIN_TOOLS
+    )
+
+
+def test_host_context_profile_accepts_only_required_mcp_and_bounded_codex_tools() -> None:
+    codex_tools = [
+        SimpleNamespace(name=name)
+        for name in (
+            "execute_sql",
+            "submit_sql",
+            "get_join_plan",
+            "validate_sql",
+            "update_plan",
+            "request_user_input",
+            "view_image",
+        )
+    ]
+    inspect_task._require_host_tool_surface("codex", "treatment", codex_tools)
+
+    claude_tools = [
+        SimpleNamespace(name=name)
+        for name in (
+            "mcp__EvaluationDatabase__execute_sql",
+            "mcp__EvaluationDatabase__submit_sql",
+            "mcp__JoinLint__get_join_plan",
+            "mcp__JoinLint__validate_sql",
+        )
+    ]
+    inspect_task._require_host_tool_surface("claude_code", "treatment", claude_tools)
+
+    with pytest.raises(RuntimeError, match="unexpected=exec_command"):
+        inspect_task._require_host_tool_surface(
+            "codex",
+            "treatment",
+            [*codex_tools, SimpleNamespace(name="exec_command")],
+        )
+    with pytest.raises(RuntimeError, match="missing=mcp__JoinLint__validate_sql"):
+        inspect_task._require_host_tool_surface(
+            "claude_code",
+            "treatment",
+            claude_tools[:-1],
+        )
+
+
+def test_host_context_probe_short_circuits_before_provider_model() -> None:
+    state = _pending_state()
+    init_subtask_store(state.store)
+    tools = [
+        SimpleNamespace(name=name)
+        for name in (
+            "execute_sql",
+            "submit_sql",
+            "get_join_plan",
+            "validate_sql",
+            "update_plan",
+        )
+    ]
+    context_filter = inspect_task._host_context_filter(
+        "codex",
+        "treatment",
+        short_circuit=True,
+    )
+
+    output = asyncio.run(
+        context_filter(
+            get_model("mockllm/model"),
+            [],
+            tools,
+            None,
+            GenerateConfig(),
+        )
+    )
+
+    assert output is not None
+    assert output.usage is None
+    assert output.completion == "Host context profile accepted."
+    observation = state.store.get(inspect_task.HOST_CONTEXT_STORE_KEY)
+    assert observation["tool_names"] == (
+        "execute_sql",
+        "get_join_plan",
+        "submit_sql",
+        "update_plan",
+        "validate_sql",
+    )
+    record = parse_lifecycle(state.store.get(LIFECYCLE_STORE_KEY))
+    assert record.evaluation_status == "started"
+    record = complete_evaluation(record, duration_seconds=1, now=NOW)
+    write_lifecycle(state.store, allow_scoring(record))
+    score = asyncio.run(inspect_task.formal_host_context_scorer()(state, Target("")))
+    assert score.value == 1
+    assert score.metadata["provider_short_circuited"] is True
+
+
+def test_claude_host_context_waits_once_for_mcp_before_scoring() -> None:
+    state = _pending_state(host="claude_code", agent_version="2.1.212")
+    init_subtask_store(state.store)
+    context_filter = inspect_task._host_context_filter(
+        "claude_code",
+        "treatment",
+        short_circuit=True,
+    )
+    pending_tools = [
+        SimpleNamespace(name=name)
+        for name in ("Glob", "Grep", "WaitForMcpServers")
+    ]
+
+    wait_output = asyncio.run(
+        context_filter(
+            get_model("mockllm/model"),
+            [],
+            pending_tools,
+            None,
+            GenerateConfig(),
+        )
+    )
+
+    assert wait_output is not None
+    assert wait_output.usage is None
+    assert wait_output.message.tool_calls == [
+        ToolCall(
+            id="joinlint-mcp-readiness-1",
+            function="WaitForMcpServers",
+            arguments={"servers": ["EvaluationDatabase", "JoinLint"]},
+        )
+    ]
+    assert parse_lifecycle(
+        state.store.get(LIFECYCLE_STORE_KEY)
+    ).evaluation_status == "not_started"
+
+    ready_tools = [
+        SimpleNamespace(name=name)
+        for name in (
+            "mcp__EvaluationDatabase__execute_sql",
+            "mcp__EvaluationDatabase__submit_sql",
+            "mcp__JoinLint__get_join_plan",
+            "mcp__JoinLint__validate_sql",
+        )
+    ]
+    ready_output = asyncio.run(
+        context_filter(
+            get_model("mockllm/model"),
+            [],
+            ready_tools,
+            None,
+            GenerateConfig(),
+        )
+    )
+
+    assert ready_output is not None
+    assert ready_output.completion == "Host context profile accepted."
+    observation = state.store.get(inspect_task.HOST_CONTEXT_STORE_KEY)
+    assert observation["mcp_readiness_handshake_performed"] is True
+    assert parse_lifecycle(
+        state.store.get(LIFECYCLE_STORE_KEY)
+    ).evaluation_status == "started"
+
+
+def test_claude_control_waits_only_for_its_configured_database_mcp() -> None:
+    state = _pending_state(host="claude_code", agent_version="2.1.212")
+    init_subtask_store(state.store)
+    context_filter = inspect_task._host_context_filter(
+        "claude_code",
+        "control",
+        short_circuit=True,
+    )
+    pending_tools = [
+        SimpleNamespace(name=name)
+        for name in ("Glob", "Grep", "WaitForMcpServers")
+    ]
+
+    wait_output = asyncio.run(
+        context_filter(
+            get_model("mockllm/model"),
+            [],
+            pending_tools,
+            None,
+            GenerateConfig(),
+        )
+    )
+
+    assert wait_output is not None
+    assert wait_output.message.tool_calls == [
+        ToolCall(
+            id="joinlint-mcp-readiness-1",
+            function="WaitForMcpServers",
+            arguments={"servers": ["EvaluationDatabase"]},
+        )
+    ]
+
+
+def test_claude_host_context_rejects_repeated_mcp_wait() -> None:
+    state = _pending_state(host="claude_code", agent_version="2.1.212")
+    init_subtask_store(state.store)
+    context_filter = inspect_task._host_context_filter(
+        "claude_code",
+        "treatment",
+    )
+    pending_tools = [SimpleNamespace(name="WaitForMcpServers")]
+
+    asyncio.run(
+        context_filter(
+            get_model("mockllm/model"),
+            [],
+            pending_tools,
+            None,
+            GenerateConfig(),
+        )
+    )
+    with pytest.raises(RuntimeError, match="host_mcp_readiness_handshake_repeated"):
+        asyncio.run(
+            context_filter(
+                get_model("mockllm/model"),
+                [],
+                pending_tools,
+                None,
+                GenerateConfig(),
+            )
+        )
+
+
+def test_solver_uses_pure_frozen_host_context_options() -> None:
+    codex = inspect_task._codex_host_options(strict_pilot=True)
+    claude = inspect_task._claude_host_options(strict_pilot=True)
+
+    assert codex == {
+        "web_search": "disabled",
+        "goals": False,
+        "config_overrides": inspect_task.CODEX_CONTEXT_CONFIG_OVERRIDES,
+        "retry_refusals": 0,
+    }
+    assert claude == {
+        "disallowed_tools": list(inspect_task.CLAUDE_DISALLOWED_BUILTIN_TOOLS),
+        "retry_refusals": 0,
+        "retry_uncaught_errors": 0,
+    }
+    assert {"Glob", "Grep"} <= set(inspect_task.CLAUDE_DISALLOWED_BUILTIN_TOOLS)
+
+
+def _state(*, store: dict[str, object]) -> TaskState:
+    return TaskState(
+        model="mockllm/model",
+        sample_id="lifecycle-test",
+        epoch=1,
+        input="question",
+        messages=[],
+        target=Target("SELECT 1"),
+        output=ModelOutput.from_content(model="mockllm/model", content="not-json"),
+        metadata={},
+        store=store,
+    )
+
+
+def _submission_messages(call_id: str, sql: str, warning: str) -> list[object]:
+    return [
+        ChatMessageAssistant(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id=call_id,
+                    function="mcp__EvaluationDatabase__submit_sql",
+                    arguments={"sql": sql, "warning": warning},
+                )
+            ],
+        ),
+        ChatMessageTool(
+            content='{"status":"ok"}',
+            tool_call_id=call_id,
+            function="mcp__EvaluationDatabase__submit_sql",
+        ),
+    ]
+
+
+def _pending_state(
+    host: str = "codex",
+    agent_version: str = "0.144.1",
+) -> TaskState:
+    prepared_at = datetime.now(timezone.utc)
+    record = infrastructure_prepared(
+        new_lifecycle(host, agent_version, now=prepared_at),  # type: ignore[arg-type]
+        duration_seconds=0,
+        host_binary_sha256="a" * 64,
+        now=prepared_at,
+    )
+    return _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
+
+
+def _ready_state() -> TaskState:
+    record = readiness_passed(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=0,
+        now=NOW,
+    )
+    return _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
+
+
+def _eligible_state() -> TaskState:
+    record = readiness_passed(
+        new_lifecycle("codex", "0.144.1", now=NOW),
+        duration_seconds=0,
+        now=NOW,
+    )
+    record = start_evaluation(record, now=NOW)
+    record = complete_evaluation(record, duration_seconds=1, now=NOW)
+    record = allow_scoring(record)
+    return _state(store={LIFECYCLE_STORE_KEY: record.model_dump(mode="json")})
+
+
+class _MarkerSandbox:
+    def __init__(self, value: bytes | Exception) -> None:
+        self.value = value
+        self.reads = 0
+
+    async def read_file(self, path: str, *, text: bool = True) -> bytes:
+        assert path == inspect_task.VALIDATION_FAILURE_MARKER_PATH
+        assert text is False
+        self.reads += 1
+        if isinstance(self.value, Exception):
+            raise self.value
+        return self.value
+
+
+class _SlowMarkerSandbox:
+    def __init__(self) -> None:
+        self.reads = 0
+
+    async def read_file(self, path: str, *, text: bool = True) -> bytes:
+        assert path == inspect_task.VALIDATION_FAILURE_MARKER_PATH
+        assert text is False
+        self.reads += 1
+        await asyncio.sleep(1)
+        return VALIDATION_FAILURE_MARKER_CLEAR
+
+
+@agent
+def _started_agent():  # type: ignore[no-untyped-def]
+    async def execute(agent_state: AgentState) -> AgentState:
+        active_store = store()
+        record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+        write_lifecycle(active_store, start_evaluation(record, now=NOW))
+        return agent_state
+
+    return execute
+
+
+@agent
+def _stalled_after_start_agent():  # type: ignore[no-untyped-def]
+    async def execute(agent_state: AgentState) -> AgentState:
+        active_store = store()
+        record = parse_lifecycle(active_store.get(LIFECYCLE_STORE_KEY))
+        write_lifecycle(active_store, start_evaluation(record, now=NOW))
+        await asyncio.sleep(1)
+        return agent_state
+
+    return execute
+
+
+@agent
+def _never_started_agent():  # type: ignore[no-untyped-def]
+    async def execute(agent_state: AgentState) -> AgentState:
+        return agent_state
+
+    return execute
+
+
+@agent
+def _host_context_drift_agent():  # type: ignore[no-untyped-def]
+    async def execute(agent_state: AgentState) -> AgentState:
+        del agent_state
+        raise inspect_task.HostContextDriftError("host_tool_surface_mismatch")
+
+    return execute

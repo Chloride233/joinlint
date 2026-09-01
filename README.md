@@ -78,18 +78,47 @@ the examples deliberately do not install or authorize one.
 
 ## MCP contract
 
+The response envelope is MCP schema v3. Join Proof objects remain immutable
+schema v2 objects, so this usability revision does not change relationship,
+evidence, or plan identity.
+
 `get_join_plan` accepts 2–8 request-local entity instances and returns at most
 four hops of current, exact, authorized physical relationships. If no safe
-path exists it returns `inconclusive`, never uncertain predicates.
+path exists it returns `inconclusive`, never uncertain predicates. It
+distinguishes a missing authorized path (`NO_VERIFIED_PATH`) from a request
+that contains references outside its dominant connected component
+(`UNCONNECTED_ENTITY_REF`), an unsafe requested grain
+(`GRAIN_INCOMPATIBLE`), and compound fan-out (`COMPOUND_FANOUT`) so an Agent
+can stop instead of retrying equivalent plans. `UNCONNECTED_ENTITY_REF` is
+retryable only after the Agent confirms the affected reference is not needed
+and sends one changed request; it never authorizes an unchanged retry.
+`GRAIN_INCOMPATIBLE` is corrective only: after checking the intended
+pre-aggregation row grain, an Agent may send one request changing only
+`expected_grain_ref`.
 
 `validate_sql` parses one SQLite `SELECT`/`WITH`, normalizes aliases, CTEs,
 subqueries, self joins, composite predicates, INNER/LEFT joins, and WHERE
 equalities, then checks the complete graph. A supplied stale proof returns
 `PROOF_STALE`; it is never silently downgraded to independent lint. Repair
-never rewrites SQL.
+never rewrites SQL. A proof-bound validation uses the immutable grain stored in
+the proof; an explicit different `expected_grain_ref` is rejected. A planning
+`GRAIN_INCOMPATIBLE` may therefore change the grain through one new plan, while
+a validation `GRAIN_INCOMPATIBLE` requires revising the SQL against the same
+proof.
 
 Every response carries explicit `validated_scope` and `not_validated_scope`.
 Every SQL validation attests `execution_count: 0`.
+
+Every non-OK error and blocking finding also carries bounded recovery guidance:
+
+- `retryable` means the tool may be called again only after applying
+  `next_action`; it never authorizes retrying an unchanged request;
+- `next_action` is one stable action such as `replan`, `fix_entity_refs`,
+  `revise_sql`, `specify_source`, `change_expected_grain`, `reduce_request`,
+  or `stop`;
+- `affected_refs` and `blocking_relationship_ids` contain only sanitized,
+  bounded identifiers;
+- `stop` means the Agent must not execute the SQL or retry the same operation.
 
 ## Manual governance CLI
 
@@ -121,10 +150,28 @@ cold and warm caches over ten repetitions, permutes entity-ref order and
 equivalent SQL aliases/equalities, and permits only documented observation
 timestamps to differ.
 
+The [current product and experiment architecture](docs/current-architecture.md)
+shows how the two-tool runtime, the separate database MCP, and the paired formal
+evaluation fit together without expanding JoinLint's validation scope.
+
 See the [benchmarking guide](docs/benchmarking.md) for the separation between
-deterministic capability gates and the still-pending formal Agent product
-effect study. No downstream improvement claim is made by this Developer
-Preview.
+deterministic capability gates and formal Agent product-effect evidence. In the
+completed 20-pair opaque-relationship stress experiment, control completed
+6/20 tasks and the JoinLint treatment completed 20/20 (absolute improvement
++0.70; exact two-sided McNemar p=0.0001220703125). This supports only the frozen
+synthetic stress scope; it does not estimate natural SQL error rates, prove
+business meaning, or show relationship discovery. See the
+[effect results](docs/opaque-relationship-effect-results.md).
+The [evaluation and failure ledger](docs/evaluation-ledger.md) keeps the full
+positive, negative, incomplete, and local experiment history together with the
+recurring CI and harness root causes; it is the starting point before any retry.
+
+The formal workflow also has a pinned infrastructure-resume mode. It accepts
+only the exact failed source run and server-reported artifact digest, preserves
+every completed intention-to-treat row, and runs only the missing sample IDs.
+The completed query-contract resume was capped at CNY 6.35 under the existing
+CNY 70 public campaign; it is not a second draw from the frozen corpus. The
+paid workflow was disabled after the completed run.
 
 ## License
 

@@ -79,6 +79,8 @@ def test_exported_row_drops_sealed_inputs_and_transcripts() -> None:
         "final_sql_validated": True,
         "validation_passed": True,
         "mcp_grounded": True,
+        "protocol_compliant": True,
+        "protocol_violation": None,
         "blocking_applicable": False,
         "blocking_compliant": None,
         "bypassed": False,
@@ -90,6 +92,7 @@ def test_exported_row_drops_sealed_inputs_and_transcripts() -> None:
         metadata={
             "task_id": "task-1",
             "database_id": "database-1",
+            "corpus": "semantic_join_failure",
             "condition": "treatment",
             "host": "codex",
             "oracle_has_safe_path": True,
@@ -149,10 +152,13 @@ def test_exported_row_drops_sealed_inputs_and_transcripts() -> None:
     serialized = json.dumps(payload)
 
     assert payload["join_correct_task_completion"] is True
-    assert payload["input_tokens"] == 120
+    assert payload["corpus"] == "semantic_join_failure"
+    assert payload["input_tokens"] == 150
     assert payload["input_cache_read_tokens"] == 20
     assert payload["input_cache_write_tokens"] == 10
-    assert payload["calculated_cost_cny"] == pytest.approx(0.0004805)
+    assert payload["calculated_cost_cny"] == pytest.approx(0.0005705)
+    assert payload["protocol_compliant"] is True
+    assert payload["protocol_violation"] is None
     assert "SECRET" not in serialized
     assert "gold_sql" not in payload
     assert "database_path" not in payload
@@ -183,6 +189,7 @@ def test_deepseek_pricing_uses_cache_hit_and_miss_rates() -> None:
 
 
 def test_export_distinguishes_model_timeout_from_infrastructure_failure() -> None:
+    assert _runtime_failure_code("token limit exceeded") == "MODEL_LIMIT"
     assert _runtime_failure_code("sample time limit exceeded") == "MODEL_TIMEOUT"
     assert _runtime_failure_code("sandbox vanished") == "INFRASTRUCTURE_FAILURE"
     assert _runtime_failure_code(None) is None
@@ -195,9 +202,28 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
 
     assert workflow["jobs"]["formal"]["environment"] == "formal-evaluation"
     assert workflow["jobs"]["formal"]["runs-on"] == "ubuntu-latest"
+    block = workflow["jobs"]["formal"]["steps"][0]
+    assert block["name"] == (
+        "Block legacy paid formal run pending atomic campaign reservation"
+    )
+    assert block["run"] == "exit 1"
+    paid_gate = next(
+        step
+        for step in workflow["jobs"]["formal"]["steps"]
+        if step.get("name") == "Require explicit paid-run confirmation"
+    )
+    assert "github.run_attempt != 1" in paid_gate["if"]
+    checkouts = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    ]
+    assert checkouts
+    assert all(step.get("with", {}).get("persist-credentials") == "false" for step in checkouts)
     assert "confirm_paid" in workflow["on"]["workflow_dispatch"]["inputs"]
     assert "sealed_artifact_run_id" in workflow["on"]["workflow_dispatch"]["inputs"]
-    assert "actions/download-artifact@v4" in text
+    assert "actions/download-artifact@" in text
     assert "diagnostic-canary" in text
     assert "--phase confirmatory" in text
     assert "DEEPSEEK_BASE_URL: https://api.deepseek.com" in text
@@ -209,6 +235,28 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
     ).read_text(encoding="utf-8")
     report_workflow = yaml.load(report_text, Loader=yaml.BaseLoader)
     assert report_workflow["jobs"]["report"]["runs-on"] == "ubuntu-latest"
+    report_steps = report_workflow["jobs"]["report"]["steps"]
+    assert report_steps[0]["name"] == (
+        "Block report generation pending trusted evidence verification"
+    )
+    assert report_steps[0]["run"] == "exit 1"
+    report_checkout = next(
+        step
+        for step in report_steps
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    )
+    assert report_checkout["with"]["persist-credentials"] == "false"
+    report_scan = next(
+        step for step in report_steps if step.get("name") == "Scan final public artifacts"
+    )
+    assert report_scan["id"] == "scan_final_report"
+    assert "benchmarks.formal_eval.public_artifacts" in report_scan["run"]
+    report_upload = next(
+        step
+        for step in report_steps
+        if (step.get("with") or {}).get("name") == "formal-evaluation-final-report"
+    )
+    assert "steps.scan_final_report.outcome == 'success'" in report_upload["if"]
     assert "--blind-review formal-review/blind-review.json" in report_text
     assert "--current-commit" in report_text
     for job in (workflow["jobs"]["formal"], report_workflow["jobs"]["report"]):
@@ -240,6 +288,47 @@ def test_remote_workflow_is_paid_gated_and_never_uses_a_local_runner() -> None:
         }
         for step in dispatch_steps.values()
     )
+    sanitized_scan = next(
+        step
+        for step in workflow["jobs"]["formal"]["steps"]
+        if step.get("name") == "Scan sanitized formal evidence"
+    )
+    sanitized_upload = next(
+        step
+        for step in workflow["jobs"]["formal"]["steps"]
+        if (step.get("with") or {}).get("name") == "formal-evaluation-sanitized"
+    )
+    assert sanitized_scan["id"] == "scan_formal_sanitized"
+    assert (
+        "steps.scan_formal_sanitized.outcome == 'success'"
+        in sanitized_upload["if"]
+    )
+
+
+def test_all_paid_jobs_share_one_non_cancelling_concurrency_group() -> None:
+    paid_jobs = (
+        (".github/workflows/formal-evaluation.yml", "formal"),
+        (".github/workflows/formal-pilot-canary.yml", "readiness"),
+        (".github/workflows/formal-pilot-canary.yml", "canary"),
+        (".github/workflows/formal-pilot.yml", "pilot"),
+        (".github/workflows/prepare-bird-subset.yml", "prepare"),
+    )
+
+    for workflow_path, job_name in paid_jobs:
+        workflow = yaml.load(
+            Path(workflow_path).read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        assert workflow["jobs"][job_name]["concurrency"] == {
+            "group": "joinlint-formal-paid-v1",
+            "cancel-in-progress": "false",
+        }
+
+    formal_workflow = yaml.load(
+        Path(".github/workflows/formal-evaluation.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert "concurrency" not in formal_workflow["jobs"]["deterministic"]
 
 
 def test_docker_context_excludes_all_sealed_and_raw_result_boundaries() -> None:

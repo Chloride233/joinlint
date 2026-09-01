@@ -19,7 +19,9 @@
   and label Stage 1 as a Developer Preview.
 - Verify generated artifacts and `.joinlint/state/` are not staged, while config, model, and baseline are reviewable.
 - Install the downstream evaluation environment with
-  `python -m pip install -e '.[dev,eval]'` outside normal CI.
+  `python -m pip install -e '.[dev,eval]'` outside normal CI. Use a clean
+  environment without the `remote` extra; remote-host dependencies belong in
+  their workflow image or a separate preflight environment.
 - Run `python -m pytest tests/test_agent_join_selection.py tests/test_agent_join_scorers.py tests/test_agent_join_arm_isolation.py tests/test_agent_join_reporting.py -q`
   and verify the summary contains no skips.
 - Run `python -m benchmarks.agent_join.joinlint_eval dry-run --work-dir benchmarks/agent_join/.work --log-dir benchmarks/agent_join/logs/dry-run`
@@ -29,7 +31,11 @@
 
 ## Completed-product formal evaluation v2
 
-- Install `.[dev,eval]` and run `python -m pytest tests/test_formal_eval_*.py -q`
+- Review `docs/evaluation-ledger.md`; map every failed prerequisite or run to an
+  existing `Pattern-Key`, and do not retry a recurring root cause until its
+  deterministic guard passes.
+- Install `.[dev,eval]` in a clean environment without `remote`, then run
+  `python -m pytest tests/test_formal_eval_*.py -q`
   with no failures.
 - Run `python -m benchmarks.formal_eval.cli fake-model --output /tmp/joinlint-formal-smoke`
   and verify both Markdown and machine-readable JSON reports are rebuildable.
@@ -42,8 +48,15 @@
   Code versions, JoinLint commit, Harness and policy versions, image digest,
   seed, sample size, and dataset release in schema-v2 preregistration. Disclose
   that this is one provider family with two tiers, not cross-family replication.
+- Verify the pinned host context profile exposes the required database and
+  JoinLint MCP tools while rejecting unapproved shell, file, web, sub-agent,
+  scheduling, and workspace tools before the first provider model call.
 - Verify the input lock covers every sealed corpus, SQL label, task payload,
   database, independent pilot row, and raw deterministic performance fixture.
+- Build `pilot-input.tar.gz` with
+  `python -m benchmarks.formal_eval.release_archive create`, upload it, download
+  it back, and run `release_archive verify` on the readback before dispatch.
+  Never use a hand-written macOS tar command for a frozen input asset.
 - Verify preflight reports at least 12 confirmatory databases, 60 natural tasks,
   20 diagnostic tasks, no ambiguous confirmatory truth, no exact duplicate, and
   no database variant crossing a split.
@@ -62,11 +75,25 @@
   `execution_count: 0`; missing or nonzero values must fail the SQL gate.
 - Run the protected `formal-evaluation` GitHub Actions workflow only after its
   explicit paid-run approval; do not use a local machine as a runner.
-- Verify the diagnostic canary completes before confirmatory dispatch and never
-  enters the confirmatory report.
+- Verify the diagnostic canary remains operational evidence only. Before a full
+  Pilot, require the bound four-cell calibration attestation with the exact
+  Pilot limits; neither diagnostic output enters the confirmatory report. Check
+  infrastructure, resource sufficiency, and scorer availability independently
+  from Harness/task success. Require parseable submission-guard evidence for all
+  eight treatment cells, fail authorization on any evaluation-ledger write failure,
+  and do not raise a frozen limit from a censored model-limit sample.
 - Verify sanitized exports reject unexpected returned model IDs, duplicate run
   identities, missing scorer artifacts, raw questions, schema text, gold SQL,
   database paths, transcripts, and common credential prefixes.
+- Verify formal evidentiary and paid sanitized uploads use the separate,
+  commit-pinned public-artifact verifier and reject unknown inventories,
+  symbolic links, special files, duplicate or non-finite JSON, non-canonical
+  bytes, schema drift, and JSON/Markdown disagreement.
+- Before re-enabling paid or report jobs, approve the evaluated commit as a
+  runner trust input or move validation to a clean runner; a separate checkout
+  alone is not adversarial process isolation.
+- Keep every remote GitHub Actions `uses:` dependency pinned to a reviewed full
+  commit SHA; release-version comments do not replace the immutable reference.
 - Blind-review the exact run-plan sample of at least 80 runs or 10 percent of
   all runs, whichever is larger. Require arm-removal attestation, per-output
   digests, reviewer digests, and at least 95 percent scorer agreement.

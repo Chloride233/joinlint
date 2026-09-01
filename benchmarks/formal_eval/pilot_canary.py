@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from benchmarks.formal_eval.contracts import InputLockV2, StrictModel
+from benchmarks.formal_eval.contracts import Host, InputLockV2, StrictModel
 from benchmarks.formal_eval.dispatch import inspect_subprocess_environment
 from benchmarks.formal_eval.lineage import digest_value
 from benchmarks.formal_eval.manifest import load_document
@@ -23,13 +23,21 @@ from benchmarks.formal_eval.pilot import (
 from benchmarks.formal_eval.pilot_dispatch import (
     build_pilot_commands,
     observed_model_cost_cny,
+    pilot_campaign_budget,
     require_batch_health,
 )
 from joinlint.contracts import canonical_json
 
 
 CANARY_BUDGET_CNY = 2.25
-REMOTE_DEPENDENCIES = ("inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
+CANARY_SANDBOX_TIMEOUT_SECONDS = 170
+CANARY_TOKEN_LIMIT = 60_000
+CANARY_TOKEN_LIMIT_TYPE = "(input*0.5)+output"
+# Inspect checks its stop line after a response. This ceiling therefore includes
+# one final 1M-token provider input at half weight plus the 4,096 output cap.
+CANARY_TOKEN_ACCOUNTING_CEILING = 504_096
+CANARY_HOST: Host = "claude_code"
+REMOTE_DEPENDENCIES = ("anthropic", "inspect-ai", "inspect-sandboxes", "inspect-swe", "modal")
 
 
 class PilotCanaryBudget(StrictModel):
@@ -44,7 +52,7 @@ class PilotCanaryReport(StrictModel):
     schema_version: Literal[1] = 1
     status: Literal["passed"] = "passed"
     model_id: str
-    host: Literal["codex"] = "codex"
+    host: Literal["claude_code"] = "claude_code"
     condition: Literal["treatment"] = "treatment"
     sample_count: Literal[1] = 1
     scorer_artifacts: tuple[str, ...]
@@ -62,12 +70,12 @@ class PilotCanaryReport(StrictModel):
 def canary_budget_envelope(registration: PilotRegistration) -> PilotCanaryBudget:
     model = _canary_model(registration)
     rate = max(
-        model.pricing_cny.input_cache_hit_per_million_cny,
-        model.pricing_cny.input_cache_miss_per_million_cny,
+        model.pricing_cny.input_cache_hit_per_million_cny / 0.5,
+        model.pricing_cny.input_cache_miss_per_million_cny / 0.5,
         model.pricing_cny.output_per_million_cny,
     )
-    model_upper = registration.token_limit_per_run * rate / 1_000_000
-    modal_usd = registration.modal_sandbox_timeout_seconds * (
+    model_upper = CANARY_TOKEN_ACCOUNTING_CEILING * rate / 1_000_000
+    modal_usd = CANARY_SANDBOX_TIMEOUT_SECONDS * (
         registration.cpu_cores * MODAL_CPU_USD_PER_CORE_SECOND
         + (registration.memory_mib / 1024) * MODAL_MEMORY_USD_PER_GIB_SECOND
     )
@@ -100,13 +108,21 @@ def build_canary_command(
             lineage_id=lineage_id,
         )
         if command[command.index("--model") + 1] == model.id
-        and "host=codex" in command
+        and f"host={CANARY_HOST}" in command
         and "condition=treatment" in command
     ]
     if len(matches) != 1:
         raise ValueError("pilot canary command is not uniquely defined")
     command = list(matches[0])
     command[3:3] = ["--limit", "1"]
+    token_limit_index = command.index(f"token_limit={registration.token_limit_per_run}")
+    command[token_limit_index] = f"token_limit={CANARY_TOKEN_LIMIT}"
+    token_type_index = command.index(f"token_limit_type={registration.token_limit_type}")
+    command[token_type_index] = f"token_limit_type={CANARY_TOKEN_LIMIT_TYPE}"
+    sandbox_timeout_index = command.index(
+        f"sandbox_timeout={registration.modal_sandbox_timeout_seconds}"
+    )
+    command[sandbox_timeout_index] = f"sandbox_timeout={CANARY_SANDBOX_TIMEOUT_SECONDS}"
     return command
 
 
@@ -116,11 +132,20 @@ def run_canary(
     output: Path,
     *,
     workflow_run_id: int,
+    campaign_budget_cny: float,
+    campaign_spend_before_cny: float,
 ) -> PilotCanaryReport:
     registration, _, run_plan = verify_pilot_inputs(root)
     envelope = canary_budget_envelope(registration)
     if envelope.total_upper_cny > CANARY_BUDGET_CNY:
         raise ValueError("pilot canary upper-bound cost exceeds the approved budget")
+    campaign = pilot_campaign_budget(
+        campaign_budget_cny=campaign_budget_cny,
+        campaign_spend_before_cny=campaign_spend_before_cny,
+        pilot_cost_upper_cny=CANARY_BUDGET_CNY,
+    )
+    if not campaign.passed:
+        raise ValueError("pilot canary could exceed the approved cumulative campaign budget")
     inspect = shutil.which("inspect")
     if inspect is None:
         raise ValueError("Inspect CLI is unavailable")
@@ -195,6 +220,10 @@ def require_canary_artifacts(
     scorer_artifacts = set(sample.scores or {})
     if not required_scorers.issubset(scorer_artifacts):
         raise RuntimeError("pilot canary scorer artifacts are incomplete")
+    join_score = sample.scores["formal_join_scorer"]
+    join_metadata = join_score.metadata if isinstance(join_score.metadata, dict) else {}
+    if join_metadata.get("scoring_eligible") is not True:
+        raise RuntimeError("pilot canary evaluation lifecycle was not scoring eligible")
     if log_model_id != expected_model_id:
         raise RuntimeError("pilot canary model identity does not match registration")
     usage_models = set(sample.model_usage)
@@ -219,6 +248,8 @@ def verify_canary_attestation_values(
 ) -> None:
     if report.workflow_run_id != expected_run_id or run_metadata.get("id") != expected_run_id:
         raise ValueError("canary attestation run ID mismatch")
+    if type(run_metadata.get("run_attempt")) is not int or run_metadata["run_attempt"] != 1:
+        raise ValueError("canary attestation run attempt mismatch")
     if run_metadata.get("name") != "formal-pilot-canary" or run_metadata.get("path") != (
         ".github/workflows/formal-pilot-canary.yml"
     ):
@@ -271,9 +302,9 @@ def _input_lock_sha256(root: Path) -> str:
 
 
 def _canary_model(registration: PilotRegistration):  # type: ignore[no-untyped-def]
-    models = [model for model in registration.models if model.tier == "high_capability"]
+    models = [model for model in registration.models if model.tier == "cost_efficient"]
     if len(models) != 1:
-        raise ValueError("pilot canary requires one high-capability model")
+        raise ValueError("pilot canary requires one cost-efficient model")
     return models[0]
 
 
@@ -285,6 +316,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--log-dir", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--workflow-run-id", type=int, required=True)
+    run.add_argument("--campaign-budget-cny", type=float, required=True)
+    run.add_argument("--campaign-spend-before-cny", type=float, required=True)
     verify = commands.add_parser("verify-attestation")
     verify.add_argument("--root", type=Path, required=True)
     verify.add_argument("--attestation", type=Path, required=True)
@@ -299,6 +332,8 @@ def main(argv: list[str] | None = None) -> int:
             arguments.log_dir,
             arguments.output,
             workflow_run_id=arguments.workflow_run_id,
+            campaign_budget_cny=arguments.campaign_budget_cny,
+            campaign_spend_before_cny=arguments.campaign_spend_before_cny,
         )
         print(report.model_dump_json())
         return 0

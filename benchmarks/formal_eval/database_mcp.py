@@ -7,8 +7,10 @@ from pathlib import Path
 from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
+from sqlglot import exp, parse_one
 
 from benchmarks.agent_join.sql_edges import validate_readonly_select
+from benchmarks.formal_eval.validation_ledger import ValidationLedger
 
 
 def execute_readonly_sql(
@@ -23,6 +25,17 @@ def execute_readonly_sql(
     validated = validate_readonly_select(sql)
     if validated.sql is None:
         return {"status": "error", "code": validated.error_code or "UNSAFE_SQL"}
+    statement = parse_one(validated.sql, read="sqlite")
+    system_tables = any(
+        table.name.lower().startswith("sqlite_")
+        for table in statement.find_all(exp.Table)
+    )
+    table_valued_pragmas = any(
+        function.name.lower().startswith("pragma_")
+        for function in statement.find_all(exp.Anonymous)
+    )
+    if system_tables or table_valued_pragmas:
+        return {"status": "error", "code": "SYSTEM_CATALOG_ACCESS_DENIED"}
     if database.is_symlink() or not database.is_file():
         return {"status": "error", "code": "DATABASE_UNAVAILABLE"}
     path = database.resolve(strict=True)
@@ -51,7 +64,40 @@ def execute_readonly_sql(
         connection.close()
 
 
-def create_database_server(database: Path) -> FastMCP:
+def submit_sql_payload(
+    sql: str,
+    warning: str,
+    *,
+    validation_ledger: ValidationLedger | None = None,
+) -> dict[str, str | int]:
+    del warning
+    if validation_ledger is None:
+        return {"status": "ok"}
+    if not sql:
+        return {
+            "status": "ok",
+            "guard_contract_version": 1,
+            "guard_decision": "accepted_abstention",
+        }
+    if not validation_ledger.matches(sql):
+        return {
+            "status": "error",
+            "code": "FINAL_SQL_NOT_VALIDATED",
+            "guard_contract_version": 1,
+            "guard_decision": "rejected_unvalidated_sql",
+        }
+    return {
+        "status": "ok",
+        "guard_contract_version": 1,
+        "guard_decision": "accepted_validated_sql",
+    }
+
+
+def create_database_server(
+    database: Path,
+    *,
+    validation_ledger: ValidationLedger | None = None,
+) -> FastMCP:
     mcp = FastMCP("EvaluationDatabase")
 
     @mcp.tool(name="execute_sql")
@@ -59,17 +105,29 @@ def create_database_server(database: Path) -> FastMCP:
         """Execute one bounded read-only SQLite SELECT for the evaluation task."""
         return execute_readonly_sql(database, sql)
 
+    @mcp.tool(name="submit_sql")
+    def submit_sql(sql: str, warning: str) -> dict[str, str | int]:
+        """Submit the final SQL and warning to the evaluator without executing it."""
+        return submit_sql_payload(sql, warning, validation_ledger=validation_ledger)
+
     return mcp
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--validation-ledger", type=Path)
     arguments = parser.parse_args(argv)
-    create_database_server(arguments.database).run(transport="stdio")
+    ledger = (
+        ValidationLedger(arguments.validation_ledger)
+        if arguments.validation_ledger is not None
+        else None
+    )
+    if ledger is not None:
+        ledger.reset()
+    create_database_server(arguments.database, validation_ledger=ledger).run(transport="stdio")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

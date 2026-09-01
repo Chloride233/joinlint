@@ -39,28 +39,31 @@ jobs:
     env:
       JOINLINT_COMMIT: ${{ inputs.joinlint_commit }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Block report generation pending trusted evidence verification
+        run: exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.joinlint_commit }}
-      - uses: actions/download-artifact@v4
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: formal-evaluation-sanitized
           path: formal-artifacts
           github-token: ${{ github.token }}
           run-id: ${{ inputs.formal_run_id }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ inputs.frozen_artifact_name }}
           path: benchmarks/formal_eval/sealed
           github-token: ${{ github.token }}
           run-id: ${{ inputs.frozen_inputs_run_id }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ inputs.review_artifact_name }}
           path: formal-review
           github-token: ${{ github.token }}
           run-id: ${{ inputs.review_run_id }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -92,10 +95,26 @@ jobs:
           --agent-results formal-artifacts/agent-results.json
           --output final-report
           --require none
+      - name: Checkout pinned public artifact verifier
+        id: public_artifact_verifier
+        if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 573896c33bc18f559ee16d7f676c0e41c2e49021
+          path: .workflow-verifier
+          persist-credentials: false
       - name: Scan final public artifacts
+        id: scan_final_report
+        if: steps.public_artifact_verifier.outcome == 'success'
+        working-directory: .workflow-verifier
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-verifier/src:${{ github.workspace }}/.workflow-verifier
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('final-report').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','ANTHROPIC_API_KEY'); found=[value for value in forbidden if value in text]; assert not found, found"
-      - uses: actions/upload-artifact@v4
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile formal-report
+          --root "$GITHUB_WORKSPACE/final-report"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.scan_final_report.outcome == 'success'
         with:
           name: formal-evaluation-final-report
           path: final-report

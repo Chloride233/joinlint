@@ -96,24 +96,45 @@ def extract_join_edges(
                 continue
             if id(left) not in scope_column_ids or id(right) not in scope_column_ids:
                 continue
-            left_table = _physical_table(scope, left)
-            right_table = _physical_table(scope, right)
-            if left_table is None or right_table is None or left_table == right_table:
+            left_column = _physical_column(scope, left)
+            right_column = _physical_column(scope, right)
+            if (
+                left_column is None
+                or right_column is None
+                or left_column[0] == right_column[0]
+            ):
                 continue
             edges.add(
                 canonical_edge(
-                    f"{left_table}.{left.name}",
-                    f"{right_table}.{right.name}",
+                    f"{left_column[0]}.{left_column[1]}",
+                    f"{right_column[0]}.{right_column[1]}",
                 )
             )
     return frozenset(edges)
 
 
-def _physical_table(scope: Scope, column: exp.Column) -> str | None:
+def _physical_column(
+    scope: Scope,
+    column: exp.Column,
+    *,
+    visited: frozenset[int] = frozenset(),
+) -> tuple[str, str] | None:
     source = scope.sources.get(column.table)
-    if not isinstance(source, exp.Table):
+    if isinstance(source, exp.Table):
+        return source.name, column.name
+    if not isinstance(source, Scope) or id(source) in visited:
         return None
-    return source.name
+    for projection in source.expression.selects:
+        if projection.alias_or_name != column.name:
+            continue
+        expression = projection.this if isinstance(projection, exp.Alias) else projection
+        if isinstance(expression, exp.Column):
+            return _physical_column(
+                source,
+                expression,
+                visited=visited | {id(scope)},
+            )
+    return None
 
 
 def score_join_graph(

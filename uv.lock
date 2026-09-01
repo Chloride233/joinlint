@@ -227,6 +227,25 @@ wheels = [
 ]
 
 [[package]]
+name = "anthropic"
+version = "0.120.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "docstring-parser" },
+    { name = "httpx" },
+    { name = "jiter" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d7/10/4ca013cb166f226bd89e0aeb0fcaff94f45ddf716d4925ce89475d3c587b/anthropic-0.120.2.tar.gz", hash = "sha256:9722efc10c27a30a69f5338ddacdb35bc6a64297a4e4ba729bf83af873d5fb3a", size = 1008421, upload-time = "2026-07-28T17:38:26.986Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/af/0f5db57b9397a0f3b7fc204cbef143401a7cadaf982330f97f1ce3d39f34/anthropic-0.120.2-py3-none-any.whl", hash = "sha256:0f0bc2b381dc0eb41c8d886b815d79c2041cd2374f83aed36f574b6dc9c579c1", size = 1022851, upload-time = "2026-07-28T17:38:25.466Z" },
+]
+
+[[package]]
 name = "anyio"
 version = "4.14.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1336,10 +1355,10 @@ dev = [
 ]
 eval = [
     { name = "inspect-ai" },
-    { name = "mcp" },
     { name = "openai" },
 ]
 remote = [
+    { name = "anthropic" },
     { name = "inspect-sandboxes" },
     { name = "inspect-swe" },
     { name = "modal" },
@@ -1347,12 +1366,12 @@ remote = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anthropic", marker = "extra == 'remote'", specifier = "==0.120.2" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.120" },
     { name = "inspect-ai", marker = "extra == 'eval'", specifier = "==0.3.249" },
     { name = "inspect-sandboxes", marker = "extra == 'remote'", specifier = "==0.4.0" },
     { name = "inspect-swe", marker = "extra == 'remote'", specifier = "==0.2.66" },
-    { name = "mcp", specifier = ">=1.0" },
-    { name = "mcp", marker = "extra == 'eval'", specifier = "==1.28.1" },
+    { name = "mcp", specifier = "==1.28.1" },
     { name = "modal", marker = "extra == 'remote'", specifier = "==1.5.3" },
     { name = "openai", marker = "extra == 'eval'", specifier = "==2.48.0" },
     { name = "pydantic", specifier = ">=2.10" },

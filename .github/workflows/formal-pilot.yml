@@ -11,12 +11,35 @@ on:
       budget_cny:
         description: Hard combined budget ceiling in CNY
         required: true
-        default: "20"
+        default: "7.4"
+        type: string
+      stage:
+        description: Frozen Pilot stage
+        required: true
+        default: flash_full_dataset_v1
+        type: choice
+        options:
+          - flash_full_dataset_v1
+          - semantic_join_safety_v1
+          - semantic_join_contract_safety_v1
+          - semantic_join_contract_ambiguity_v1
+          - semantic_join_contract_safety_resume_v1
+          - semantic_join_safety_confirmation_v1
+          - full
+      campaign_budget_cny:
+        description: Approved cumulative investigation budget in CNY
+        required: true
+        default: ""
+        type: string
+      campaign_spend_before_cny:
+        description: Cumulative investigation spend before this Pilot in CNY
+        required: true
+        default: ""
         type: string
       pilot_commit:
         description: Full JoinLint commit bound to the frozen pilot input
         required: true
-        default: 05da3fb4b2fa8536caef7a28cd9994b8b84a98c9
+        default: eda51713acb53d676165cfa5dbd6906a25837fb5
         type: string
       pilot_release_tag:
         description: Access-controlled Draft Release tag holding the frozen pilot input
@@ -28,108 +51,227 @@ on:
         required: true
         default: pilot-input.tar.gz
         type: string
-      canary_run_id:
-        description: Successful bound formal-pilot-canary workflow run ID
+      calibration_run_id:
+        description: Successful bound formal-pilot-calibration workflow run ID
         required: true
         default: ""
         type: string
+      resume_run_id:
+        description: Pinned failed formal run ID for an infrastructure resume
+        required: true
+        default: "0"
+        type: string
 
 permissions:
-  # Draft Release assets are visible only to repository maintainers. The
-  # protected, manually dispatched pilot job needs this scope to restore its
-  # frozen input; the workflow never invokes a GitHub write operation.
+  # The protected, manually dispatched Pilot needs this scope to restore the
+  # frozen Draft Release asset and atomically reserve campaign budget.
   contents: write
   actions: read
 
 jobs:
   pilot:
     runs-on: ubuntu-latest
+    concurrency:
+      group: joinlint-formal-paid-v1
+      cancel-in-progress: false
     environment: formal-evaluation
     steps:
-      - name: Require the exact approved paid pilot
-        if: inputs.confirm_paid != true || inputs.budget_cny != '20'
+      - name: Block unapproved full Pilot
+        if: inputs.stage == 'full'
         run: exit 1
-      - uses: actions/checkout@v4
+      - name: Require the exact approved paid Pilot stage
+        if: >-
+          github.run_attempt != 1 ||
+          inputs.confirm_paid != true ||
+          (inputs.stage != 'flash_full_dataset_v1' &&
+          inputs.stage != 'semantic_join_safety_v1' &&
+          inputs.stage != 'semantic_join_contract_safety_v1' &&
+          inputs.stage != 'semantic_join_contract_ambiguity_v1' &&
+          inputs.stage != 'semantic_join_contract_safety_resume_v1' &&
+          inputs.stage != 'semantic_join_safety_confirmation_v1') ||
+          (inputs.stage == 'flash_full_dataset_v1' && inputs.budget_cny != '7.4') ||
+          (inputs.stage == 'semantic_join_safety_v1' && inputs.budget_cny != '8') ||
+          (inputs.stage == 'semantic_join_contract_safety_v1' &&
+          inputs.budget_cny != '8') ||
+          (inputs.stage == 'semantic_join_contract_ambiguity_v1' &&
+          inputs.budget_cny != '8') ||
+          (inputs.stage == 'semantic_join_contract_safety_resume_v1' &&
+          (inputs.budget_cny != '6.35' || inputs.resume_run_id != '33242737801')) ||
+          (inputs.stage == 'semantic_join_safety_confirmation_v1' &&
+          inputs.budget_cny != '5.53')
+        run: exit 1
+      - name: Checkout pinned public artifact verifier
+        id: public_artifact_verifier
+        if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.pilot_commit }}
-      - name: Record checked-out pilot commit
-        id: pilot_commit
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-python@v5
+          ref: ${{ github.workflow_sha }}
+          path: .workflow-control
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install -e '.[dev,eval,remote]'
+          cache-dependency-path: .workflow-control/pyproject.toml
+      - name: Install workflow-owned admission code
+        run: python -m pip install -e './.workflow-control[dev,eval,remote]'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.pilot_commit }}
+          path: evaluated-checkout
+          persist-credentials: false
+      - name: Record checked-out pilot commit
+        id: pilot_commit
+        working-directory: evaluated-checkout
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Restore private frozen pilot inputs
         env:
           GH_TOKEN: ${{ github.token }}
           PILOT_RELEASE_TAG: ${{ inputs.pilot_release_tag }}
           PILOT_RELEASE_ASSET: ${{ inputs.pilot_release_asset }}
         run: |
-          mkdir -p pilot-release benchmarks/formal_eval/sealed/pilot-v1
+          mkdir -p pilot-release frozen-pilot-input
           gh release download "$PILOT_RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "$PILOT_RELEASE_ASSET" \
             --dir pilot-release
           tar -xzf "pilot-release/$PILOT_RELEASE_ASSET" \
-            -C benchmarks/formal_eval/sealed/pilot-v1 \
+            -C frozen-pilot-input \
             --no-same-owner --no-same-permissions
       - name: Verify frozen pilot and budget envelope
+        working-directory: .workflow-control
         run: >-
           python -m benchmarks.formal_eval.pilot verify
-          --root benchmarks/formal_eval/sealed/pilot-v1
+          --root "$GITHUB_WORKSPACE/frozen-pilot-input"
           --current-commit "${{ steps.pilot_commit.outputs.sha }}"
-      - name: Restore successful canary attestation
+      - name: Restore successful calibration attestation
         env:
           GH_TOKEN: ${{ github.token }}
-          CANARY_RUN_ID: ${{ inputs.canary_run_id }}
+          CALIBRATION_RUN_ID: ${{ inputs.calibration_run_id }}
         run: |
-          [[ "$CANARY_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-          mkdir -p canary-attestation
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANARY_RUN_ID" \
-            > canary-attestation/run.json
-          gh run download "$CANARY_RUN_ID" \
+          [[ "$CALIBRATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          mkdir -p calibration-attestation
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CALIBRATION_RUN_ID" \
+            > calibration-attestation/run.json
+          gh run download "$CALIBRATION_RUN_ID" \
             --repo "$GITHUB_REPOSITORY" \
-            --name joinlint-formal-pilot-canary-sanitized \
-            --dir canary-attestation/artifact
-      - name: Verify canary attestation binding
+            --name joinlint-formal-pilot-calibration-sanitized \
+            --dir calibration-attestation/artifact
+      - name: Verify calibration attestation binding
         env:
-          CANARY_RUN_ID: ${{ inputs.canary_run_id }}
+          CALIBRATION_RUN_ID: ${{ inputs.calibration_run_id }}
+        working-directory: .workflow-control
         run: >-
-          python -m benchmarks.formal_eval.pilot_canary
+          python -m benchmarks.formal_eval.pilot_calibration
           verify-attestation
-          --root benchmarks/formal_eval/sealed/pilot-v1
-          --attestation canary-attestation/artifact/canary.json
-          --run-metadata canary-attestation/run.json
-          --expected-run-id "$CANARY_RUN_ID"
+          --root "$GITHUB_WORKSPACE/frozen-pilot-input"
+          --attestation "$GITHUB_WORKSPACE/calibration-attestation/artifact/calibration.json"
+          --run-metadata "$GITHUB_WORKSPACE/calibration-attestation/run.json"
+          --expected-run-id "$CALIBRATION_RUN_ID"
           --current-commit "${{ steps.pilot_commit.outputs.sha }}"
+          --expected-workflow-commit 69abef61b490c90f88ae0aa9aae5d6909b1be413
           --repository "$GITHUB_REPOSITORY"
-      - name: Run the approved 20-task pilot
+      - name: Restore pinned incomplete formal stage
+        if: inputs.stage == 'semantic_join_contract_safety_resume_v1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+        run: |
+          mkdir -p resume-source/artifact
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID" \
+            > resume-source/run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID/artifacts" \
+            > resume-source/artifacts.json
+          gh run download "$RESUME_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name joinlint-formal-pilot-stage-sanitized \
+            --dir resume-source/artifact
+      - name: Verify sanitized incomplete formal stage
+        if: inputs.stage == 'semantic_join_contract_safety_resume_v1'
+        working-directory: .workflow-control
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-control/src:${{ github.workspace }}/.workflow-control
+        run: >-
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile pilot-stage
+          --root "$GITHUB_WORKSPACE/resume-source/artifact"
+      - name: Verify incomplete formal stage resume binding
+        if: inputs.stage == 'semantic_join_contract_safety_resume_v1'
+        working-directory: .workflow-control
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-control/src:${{ github.workspace }}/.workflow-control
+        run: >-
+          python -m benchmarks.formal_eval.pilot_resume
+          --root "$GITHUB_WORKSPACE/frozen-pilot-input"
+          --source-root "$GITHUB_WORKSPACE/resume-source/artifact"
+          --run-metadata "$GITHUB_WORKSPACE/resume-source/run.json"
+          --artifact-metadata "$GITHUB_WORKSPACE/resume-source/artifacts.json"
+          --source-run-id 33242737801
+          --source-artifact-sha256 1ada78564601993b5804713e02c4aaeb6a897db20fff9dfbdb72a856a871ec5d
+          --source-workflow-commit a29d218fd882ce9f9081b1d8abc2995c364c2776
+          --source-reservation-id 549120889e6127f845bbf6656d33f81cd777d977684bdf7327e6e39cf9d3e8e1
+      - name: Reserve Pilot stage budget
+        id: campaign_reservation
+        working-directory: .workflow-control
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PILOT_RESERVATION_MODE: ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && 'pilot_stage_safety_confirmation' || inputs.stage == 'semantic_join_contract_safety_resume_v1' && 'pilot_stage_contract_safety_resume' || inputs.stage == 'semantic_join_contract_ambiguity_v1' && 'pilot_stage_contract_ambiguity' || inputs.stage == 'semantic_join_contract_safety_v1' && 'pilot_stage_contract_safety' || inputs.stage == 'semantic_join_safety_v1' && 'pilot_stage_safety' || 'pilot_stage' }}
+        run: >-
+          python -m benchmarks.formal_eval.campaign_reservation
+          reserve
+          --mode "$PILOT_RESERVATION_MODE"
+          --campaign-id joinlint-safety-effect-2026-08-v3
+          --ledger-branch joinlint-campaign-ledger-ambiguity-v1
+          --genesis-commit c3a748b999059cfefe6eeb6eeccc1cfbf998db1d
+          --receipt "$GITHUB_WORKSPACE/campaign-reservation.json"
+      - name: Install evaluated Pilot product
+        run: python -m pip install -e './evaluated-checkout[dev,eval,remote]'
+      - name: Run no-model lifecycle gate
+        working-directory: evaluated-checkout
+        run: python -m pytest -q tests/test_formal_eval_lifecycle*.py
+      - name: Run preregistered Flash full-dataset Pilot stage
+        working-directory: evaluated-checkout
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_BASE_URL: https://api.deepseek.com
+          CAMPAIGN_BUDGET_CNY: ${{ steps.campaign_reservation.outputs.campaign_budget_cny }}
+          CAMPAIGN_SPEND_BEFORE_CNY: ${{ steps.campaign_reservation.outputs.campaign_reserved_before_cny }}
+          CAMPAIGN_RESERVATION_ID: ${{ steps.campaign_reservation.outputs.campaign_reservation_id }}
+          CAMPAIGN_LEDGER_COMMIT_SHA: ${{ steps.campaign_reservation.outputs.campaign_ledger_commit_sha }}
+          PILOT_STAGE_CONFIRMATION_ARG: ${{ inputs.stage == 'semantic_join_safety_confirmation_v1' && '--confirmation' || '' }}
+          PILOT_STAGE_RESUME_ARGS: ${{ inputs.stage == 'semantic_join_contract_safety_resume_v1' && format('--resume-root {0}/resume-source/artifact --resume-run-metadata {0}/resume-source/run.json --resume-artifact-metadata {0}/resume-source/artifacts.json --resume-source-run-id 33242737801 --resume-source-artifact-sha256 1ada78564601993b5804713e02c4aaeb6a897db20fff9dfbdb72a856a871ec5d --resume-source-workflow-commit a29d218fd882ce9f9081b1d8abc2995c364c2776 --resume-source-reservation-id 549120889e6127f845bbf6656d33f81cd777d977684bdf7327e6e39cf9d3e8e1', github.workspace) || '' }}
+          PYTHONPATH: ${{ github.workspace }}/.workflow-control
         run: >-
-          python -m benchmarks.formal_eval.pilot_dispatch
-          --root benchmarks/formal_eval/sealed/pilot-v1
-          --log-dir pilot-logs
-          --output pilot-artifacts
-      - name: Scan sanitized pilot artifacts
-        if: always()
+          python -P "$GITHUB_WORKSPACE/.workflow-control/benchmarks/formal_eval/pilot_stage.py"
+          --root "$GITHUB_WORKSPACE/frozen-pilot-input"
+          --log-dir "$GITHUB_WORKSPACE/pilot-stage-logs"
+          --output "$GITHUB_WORKSPACE/pilot-stage-artifacts"
+          --campaign-budget-cny "$CAMPAIGN_BUDGET_CNY"
+          --campaign-spend-before-cny "$CAMPAIGN_SPEND_BEFORE_CNY"
+          --workflow-run-id "${{ github.run_id }}"
+          --campaign-reservation-id "$CAMPAIGN_RESERVATION_ID"
+          --campaign-ledger-commit-sha "$CAMPAIGN_LEDGER_COMMIT_SHA"
+          $PILOT_STAGE_CONFIRMATION_ARG
+          $PILOT_STAGE_RESUME_ARGS
+      - name: Scan sanitized Pilot stage artifacts
+        id: scan_pilot_stage_sanitized
+        if: >-
+          always() && hashFiles('pilot-stage-artifacts/**') != '' &&
+          steps.public_artifact_verifier.outcome == 'success'
+        working-directory: .workflow-control
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.workflow-control/src:${{ github.workspace }}/.workflow-control
+          PILOT_STAGE_ARTIFACT_PROFILE: ${{ inputs.stage == 'semantic_join_contract_safety_resume_v1' && 'pilot-stage-resume' || 'pilot-stage' }}
         run: >-
-          python -c "from pathlib import Path; text='\n'.join(p.read_text(errors='ignore') for p in Path('pilot-artifacts').rglob('*') if p.is_file()); forbidden=('gold_sql','database_path','schema_text','sk-','DEEPSEEK_API_KEY','MODAL_TOKEN_SECRET'); found=[value for value in forbidden if value in text]; assert not found, found"
-      - uses: actions/upload-artifact@v4
-        if: always()
+          python -m benchmarks.formal_eval.public_artifacts
+          --profile "$PILOT_STAGE_ARTIFACT_PROFILE"
+          --root "$GITHUB_WORKSPACE/pilot-stage-artifacts"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.scan_pilot_stage_sanitized.outcome == 'success'
         with:
-          name: joinlint-formal-pilot-sanitized
-          path: pilot-artifacts
-          if-no-files-found: warn
+          name: ${{ inputs.stage == 'semantic_join_contract_safety_resume_v1' && 'joinlint-formal-pilot-stage-resume-sanitized' || 'joinlint-formal-pilot-stage-sanitized' }}
+          path: pilot-stage-artifacts
+          if-no-files-found: error
           retention-days: 90
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: joinlint-formal-pilot-private-logs
-          path: pilot-logs
-          if-no-files-found: warn
-          retention-days: 30
